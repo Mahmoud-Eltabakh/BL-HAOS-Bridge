@@ -1,17 +1,30 @@
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
+*.pyc
 *$py.class
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
 .venv/
 venv/
 env/
 
 # Node
 node_modules/
+**/node_modules/
 dist/
 !web_ui/dist/
 !web_ui/dist/**
+
+# OS & Logs
+.DS_Store
+Thumbs.db
+*.log
 
 # External reference clones
 /android/
