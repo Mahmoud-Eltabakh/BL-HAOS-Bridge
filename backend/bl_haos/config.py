@@ -83,3 +83,11 @@ class ConfigStore:
                 setattr(speaker, k, v)
         self.save()
         return speaker
+
+    def remove_speaker(self, address: str) -> bool:
+        addr = address.strip().lower()
+        if addr in self.settings.speakers:
+            del self.settings.speakers[addr]
+            self.save()
+            return True
+        return False

@@ -225,6 +225,7 @@ async def remove_device(address: str, request: Request):
     try:
         success = await request.app.state.bt_manager.remove_device(address)
         request.app.state.reconnect_engine.unregister_speaker(address)
+        request.app.state.config_store.remove_speaker(address)
         return {"status": "ok", "removed": success, "address": address}
     except Exception as e:
         logger.error("Remove error for %s: %s", address, e)

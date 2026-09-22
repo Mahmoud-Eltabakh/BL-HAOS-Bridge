@@ -224,20 +224,39 @@ class BluetoothManager:
         return True
 
     async def remove_device(self, address: str) -> bool:
-        """Remove device from adapter cache and unpair."""
-        dev = self.get_device_by_address(address)
+        """Untrust, unpair, disconnect, and completely remove device from adapter cache."""
+        dev = await self.ensure_device(address)
         if not dev:
             return False
+
+        # 1. Untrust first to ensure no auto-reconnect signals or trusted states remain
+        try:
+            await dev.set_trusted(False)
+        except Exception as e:
+            logger.debug("Failed to set trusted=False on %s: %s", address, e)
+
+        # 2. Disconnect if connected
+        if dev.connected:
+            try:
+                await dev.disconnect()
+            except Exception as e:
+                logger.debug("Failed to disconnect %s during removal: %s", address, e)
+
         adapter_path = dev.adapter_path
         if not self.bus:
             if dev.path in self.devices:
                 del self.devices[dev.path]
             return True
 
-        introspection = await self.bus.introspect(BLUEZ_SERVICE, adapter_path)
-        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, adapter_path, introspection)
-        adapter_iface = proxy.get_interface(ADAPTER_INTERFACE)
-        await adapter_iface.call_remove_device(dev.path)
+        # 3. Call adapter RemoveDevice D-Bus method to remove pairing & BlueZ cache completely
+        try:
+            introspection = await self.bus.introspect(BLUEZ_SERVICE, adapter_path)
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, adapter_path, introspection)
+            adapter_iface = proxy.get_interface(ADAPTER_INTERFACE)
+            await adapter_iface.call_remove_device(dev.path)
+        except Exception as e:
+            logger.warning("BlueZ RemoveDevice failed for %s (%s): %s", address, dev.path, e)
+
         if dev.path in self.devices:
             del self.devices[dev.path]
         return True
