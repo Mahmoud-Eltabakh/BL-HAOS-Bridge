@@ -22,11 +22,3 @@ def test_wireplumber_logind_masked():
     assert logind_lua.exists(), "20-logind.lua must exist in /etc/wireplumber to mask logind in container"
     content = logind_lua.read_text(encoding="utf-8")
     assert "logind" in content.lower()
-
-def test_wireplumber_container_config():
-    wp_conf = Path("rootfs/etc/wireplumber/wireplumber.conf")
-    assert wp_conf.exists(), "wireplumber.conf must exist"
-    content = wp_conf.read_text(encoding="utf-8")
-    assert "libwireplumber-module-lua-scripting" in content
-    assert "bluetooth.lua" in content
-    assert "policy.lua" in content

@@ -10,6 +10,7 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
 
 mkdir -p "$PIPEWIRE_RUNTIME_DIR"
 chmod 755 "$PIPEWIRE_RUNTIME_DIR"
+rm -f "$PIPEWIRE_RUNTIME_DIR/pipewire-0.lock" "$PIPEWIRE_RUNTIME_DIR/pipewire-0"
 
 echo "[pipewire] Starting PipeWire audio graph server..."
 exec pipewire

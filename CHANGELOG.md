@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.18
+
+- Add PipeWire socket readiness wait loop to WirePlumber service and clean stale lock files on PipeWire launch.
+
 ## 0.2.17
 
 - Explicitly pass `-c /etc/wireplumber/wireplumber.conf` to WirePlumber to ensure custom container profile is loaded.

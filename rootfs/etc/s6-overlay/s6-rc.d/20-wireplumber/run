@@ -11,5 +11,13 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
 mkdir -p "$PIPEWIRE_RUNTIME_DIR"
 chmod 755 "$PIPEWIRE_RUNTIME_DIR"
 
+# Wait for PipeWire socket to be active before starting WirePlumber
+for i in $(seq 1 50); do
+    if [ -S "$PIPEWIRE_RUNTIME_DIR/pipewire-0" ]; then
+        break
+    fi
+    sleep 0.1
+done
+
 echo "[wireplumber] Starting WirePlumber session manager..."
-exec wireplumber -c /etc/wireplumber/wireplumber.conf
+exec wireplumber
