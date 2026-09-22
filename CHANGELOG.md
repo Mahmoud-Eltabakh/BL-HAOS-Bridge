@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.12
+
+- Mask `20-logind.lua` in WirePlumber to permanently prevent systemd-logind crash and disconnection loop in container environment.
+
 ## 0.2.11
 
 - Unset DBUS_SESSION_BUS_ADDRESS to prevent WirePlumber from triggering desktop session bus portal and logind lookups in headless container.

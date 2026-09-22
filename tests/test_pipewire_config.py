@@ -16,3 +16,9 @@ def test_wireplumber_volume_sync():
     assert 'bluez5.enable-volume-sync' in content
     assert 'bluez5.enable-hw-volume' in content
     assert 'a2dp_sink' in content
+
+def test_wireplumber_logind_masked():
+    logind_lua = Path("rootfs/etc/wireplumber/main.lua.d/20-logind.lua")
+    assert logind_lua.exists(), "20-logind.lua must exist in /etc/wireplumber to mask logind in container"
+    content = logind_lua.read_text(encoding="utf-8")
+    assert "logind" in content.lower()
