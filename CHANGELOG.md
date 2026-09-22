@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3
+
+- Fix WirePlumber crashing and disconnecting in container environment by preserving default PipeWire modules and disabling X11 session D-Bus autolaunch.
+- Add WirePlumber 0.4.x Lua BlueZ configuration for reliable A2DP sink monitoring.
+- Add adapter-level Direct D-Bus connection helper (`ConnectDevice`) for devices not yet present in BlueZ device cache.
+
 ## 0.2.2
 
 - Remove the user-managed bridge token and host port mapping; the HACS integration now discovers BL-HAOS through Supervisor on the private add-on network.
