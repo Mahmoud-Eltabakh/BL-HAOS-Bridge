@@ -12,4 +12,4 @@ mkdir -p "$PIPEWIRE_RUNTIME_DIR"
 chmod 755 "$PIPEWIRE_RUNTIME_DIR"
 
 echo "[wireplumber] Starting WirePlumber session manager..."
-exec wireplumber
+exec wireplumber -c /etc/wireplumber/wireplumber.conf

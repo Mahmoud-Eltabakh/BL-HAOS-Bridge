@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.17
+
+- Explicitly pass `-c /etc/wireplumber/wireplumber.conf` to WirePlumber to ensure custom container profile is loaded.
+
 ## 0.2.16
 
 - Correct WirePlumber 0.4 `wireplumber.conf` schema placing `libwireplumber-module-lua-scripting` in `wireplumber.components` as a module component.
