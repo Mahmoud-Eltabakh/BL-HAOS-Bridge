@@ -23,6 +23,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [audioOnlyFilter, setAudioOnlyFilter] = useState(false);
   const [manualMac, setManualMac] = useState('');
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   if (!isOpen) return null;
 
@@ -41,12 +42,19 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
   const handlePair = async (address: string) => {
     if (!address.trim()) return;
     setActionAddress(address);
+    setStatusMessage(null);
     try {
       await apiClient.pairDevice(address.trim(), pinCode);
-      alert(`Successfully paired and trusted ${address}!`);
+      setStatusMessage({ type: 'success', text: `Successfully paired and trusted ${address}!` });
       onRefresh();
-    } catch (err) {
-      alert(`Pairing failed: ${err}`);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      setStatusMessage({
+        type: 'error',
+        text: msg.includes('Page Timeout')
+          ? `Pairing failed for ${address}: Speaker did not respond. Put your speaker into pairing mode (blinking LED) and try again.`
+          : `Pairing failed for ${address}: ${msg}`,
+      });
     } finally {
       setActionAddress(null);
       setShowPinInput(false);
@@ -55,11 +63,13 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
 
   const handleDisconnect = async (address: string) => {
     setActionAddress(address);
+    setStatusMessage(null);
     try {
       await apiClient.disconnectDevice(address);
+      setStatusMessage({ type: 'success', text: `Disconnected audio stream from ${address}.` });
       onRefresh();
-    } catch (err) {
-      alert(`Disconnect failed: ${err}`);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: `Disconnect failed: ${err?.message || err}` });
     } finally {
       setActionAddress(null);
     }
@@ -67,17 +77,16 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
 
   const handleRemove = async (address: string) => {
     if (!address.trim()) return;
-    if (confirm(`Untrust and completely remove "${address}" from BlueZ cache?`)) {
-      setActionAddress(address);
-      try {
-        await apiClient.removeDevice(address.trim());
-        alert(`Device ${address} untrusted and removed.`);
-        onRefresh();
-      } catch (err) {
-        alert(`Remove failed: ${err}`);
-      } finally {
-        setActionAddress(null);
-      }
+    setActionAddress(address);
+    setStatusMessage(null);
+    try {
+      await apiClient.removeDevice(address.trim());
+      setStatusMessage({ type: 'success', text: `Device ${address} untrusted and completely removed.` });
+      onRefresh();
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: `Remove failed: ${err?.message || err}` });
+    } finally {
+      setActionAddress(null);
     }
   };
 
@@ -111,6 +120,25 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Status / Alert Banner */}
+        {statusMessage && (
+          <div
+            className={`p-3.5 text-xs flex items-center justify-between border-b ${
+              statusMessage.type === 'success'
+                ? 'bg-emerald-950/80 border-emerald-800/80 text-emerald-300'
+                : 'bg-rose-950/80 border-rose-800/80 text-rose-300'
+            }`}
+          >
+            <span>{statusMessage.text}</span>
+            <button
+              onClick={() => setStatusMessage(null)}
+              className="p-1 hover:opacity-75 text-slate-300"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* Scan & Search Action Bar */}
         <div className="p-4 bg-slate-900/30 border-b border-slate-700/80 space-y-3">

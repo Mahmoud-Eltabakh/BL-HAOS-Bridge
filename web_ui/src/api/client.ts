@@ -54,90 +54,89 @@ export interface NativeDiagnostics {
   connected_trusted_speaker_count: number;
 }
 
+async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(url, options);
+  let payload: any;
+  try {
+    payload = await res.json();
+  } catch {
+    payload = null;
+  }
+  if (!res.ok) {
+    const errorDetail = payload && typeof payload === 'object' && payload.detail ? payload.detail : `HTTP ${res.status}`;
+    throw new Error(errorDetail);
+  }
+  return payload as T;
+}
+
 export const apiClient = {
   async getHealth() {
-    const res = await fetch(getApiUrl('/api/health'));
-    return res.json();
+    return requestJson(getApiUrl('/api/health'));
   },
   async getNativeDiagnostics(): Promise<NativeDiagnostics> {
-    const res = await fetch(getApiUrl('/api/diagnostics/native'));
-    if (!res.ok) {
-      throw new Error('Native diagnostics are unavailable');
-    }
-    const payload: unknown = await res.json();
+    const payload = await requestJson<NativeDiagnostics>(getApiUrl('/api/diagnostics/native'));
     if (!payload || typeof payload !== 'object') {
       throw new Error('Native diagnostics response is invalid');
     }
-    return payload as NativeDiagnostics;
+    return payload;
   },
   async getAdapters(): Promise<AdapterInfo[]> {
-    const res = await fetch(getApiUrl('/api/adapters'));
-    return res.json();
+    return requestJson<AdapterInfo[]>(getApiUrl('/api/adapters'));
   },
   async setAdapterPower(name: string, powered: boolean) {
-    const res = await fetch(getApiUrl(`/api/adapters/${name}/power`), {
+    return requestJson(getApiUrl(`/api/adapters/${name}/power`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ powered }),
     });
-    return res.json();
   },
   async startScan(adapterName?: string) {
-    const res = await fetch(getApiUrl('/api/scan/start'), {
+    return requestJson(getApiUrl('/api/scan/start'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ adapter_name: adapterName }),
     });
-    return res.json();
   },
   async stopScan(adapterName?: string) {
-    const res = await fetch(getApiUrl('/api/scan/stop'), {
+    return requestJson(getApiUrl('/api/scan/stop'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ adapter_name: adapterName }),
     });
-    return res.json();
   },
   async getDevices(audioOnly = true): Promise<DeviceInfo[]> {
-    const res = await fetch(getApiUrl(`/api/devices?audio_only=${audioOnly}`));
-    return res.json();
+    return requestJson<DeviceInfo[]>(getApiUrl(`/api/devices?audio_only=${audioOnly}`));
   },
   async pairDevice(address: string, pin = '0000') {
-    const res = await fetch(getApiUrl('/api/devices/pair'), {
+    return requestJson(getApiUrl('/api/devices/pair'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, pin }),
     });
-    return res.json();
   },
   async connectDevice(address: string) {
-    const res = await fetch(getApiUrl(`/api/devices/${address}/connect`), {
+    return requestJson(getApiUrl(`/api/devices/${address}/connect`), {
       method: 'POST',
     });
-    return res.json();
   },
   async disconnectDevice(address: string) {
-    const res = await fetch(getApiUrl(`/api/devices/${address}/disconnect`), {
+    return requestJson(getApiUrl(`/api/devices/${address}/disconnect`), {
       method: 'POST',
     });
-    return res.json();
   },
   async removeDevice(address: string) {
-    const res = await fetch(getApiUrl(`/api/devices/${address}`), {
+    return requestJson(getApiUrl(`/api/devices/${address}`), {
       method: 'DELETE',
     });
-    return res.json();
   },
   async getSettings() {
-    const res = await fetch(getApiUrl('/api/settings'));
-    return res.json();
+    return requestJson(getApiUrl('/api/settings'));
   },
   async updateSpeaker(address: string, settings: any) {
-    const res = await fetch(getApiUrl(`/api/settings/speakers/${address}`), {
+    return requestJson(getApiUrl(`/api/settings/speakers/${address}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
     });
-    return res.json();
   },
 };
