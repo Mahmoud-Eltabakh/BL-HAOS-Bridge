@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.5
+
+- Add automatic BlueZ adapter ConnectDevice fallback for unbonded / temporary device handles during pairing and reconnection.
+
 ## 0.2.4
 
 - Fix WirePlumber D-Bus session bus mapping and disable container logind monitors to achieve rock-solid PipeWire daemon stability.

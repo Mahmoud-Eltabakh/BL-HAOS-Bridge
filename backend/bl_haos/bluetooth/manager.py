@@ -202,8 +202,23 @@ class BluetoothManager:
         """Pair with device and set trusted flag for auto-reconnection."""
         dev = await self.ensure_device(address)
         if not dev:
+            for adapter in self.adapters.values():
+                try:
+                    await adapter.connect_device(address)
+                    break
+                except Exception:
+                    continue
+            dev = await self.ensure_device(address)
+
+        if not dev:
             raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
-        await dev.pair()
+
+        try:
+            await dev.pair()
+        except Exception as e:
+            logger.warning("Pair call fallback for %s: %s", address, e)
+            await dev.connect()
+
         await dev.set_trusted(True)
         return True
 
@@ -211,6 +226,12 @@ class BluetoothManager:
         """Connect to device."""
         dev = await self.ensure_device(address)
         if not dev:
+            for adapter in self.adapters.values():
+                try:
+                    await adapter.connect_device(address)
+                    return True
+                except Exception:
+                    continue
             raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
         await dev.connect()
         return True

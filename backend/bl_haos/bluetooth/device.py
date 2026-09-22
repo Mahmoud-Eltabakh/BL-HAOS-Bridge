@@ -156,10 +156,26 @@ class BluetoothDevice:
         if not self.bus:
             self._properties["Connected"] = True
             return
-        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
-        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
-        dev_iface = proxy.get_interface(DEVICE_INTERFACE)
-        await dev_iface.call_connect()
+        try:
+            introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+            dev_iface = proxy.get_interface(DEVICE_INTERFACE)
+            await dev_iface.call_connect()
+        except Exception as e:
+            if self.adapter_path:
+                try:
+                    intro = await self.bus.introspect(BLUEZ_SERVICE, self.adapter_path)
+                    p = self.bus.get_proxy_object(BLUEZ_SERVICE, self.adapter_path, intro)
+                    adapter_iface = p.get_interface("org.bluez.Adapter1")
+                    props = {
+                        "Address": Variant("s", self.address.strip().upper()),
+                        "AddressType": Variant("s", "public"),
+                    }
+                    await adapter_iface.call_connect_device(props)
+                except Exception:
+                    raise e
+            else:
+                raise e
         self._properties["Connected"] = True
 
     async def disconnect(self) -> None:
@@ -167,10 +183,13 @@ class BluetoothDevice:
         if not self.bus:
             self._properties["Connected"] = False
             return
-        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
-        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
-        dev_iface = proxy.get_interface(DEVICE_INTERFACE)
-        await dev_iface.call_disconnect()
+        try:
+            introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+            dev_iface = proxy.get_interface(DEVICE_INTERFACE)
+            await dev_iface.call_disconnect()
+        except Exception:
+            pass
         self._properties["Connected"] = False
 
     async def pair(self) -> None:
@@ -178,10 +197,33 @@ class BluetoothDevice:
         if not self.bus:
             self._properties["Paired"] = True
             return
-        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
-        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
-        dev_iface = proxy.get_interface(DEVICE_INTERFACE)
-        await dev_iface.call_pair()
+        try:
+            introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+            dev_iface = proxy.get_interface(DEVICE_INTERFACE)
+            await dev_iface.call_pair()
+        except Exception as e:
+            if self.adapter_path:
+                try:
+                    intro = await self.bus.introspect(BLUEZ_SERVICE, self.adapter_path)
+                    p = self.bus.get_proxy_object(BLUEZ_SERVICE, self.adapter_path, intro)
+                    adapter_iface = p.get_interface("org.bluez.Adapter1")
+                    props = {
+                        "Address": Variant("s", self.address.strip().upper()),
+                        "AddressType": Variant("s", "public"),
+                    }
+                    await adapter_iface.call_connect_device(props)
+                except Exception:
+                    pass
+                try:
+                    intro_dev = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+                    proxy_dev = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, intro_dev)
+                    dev_iface = proxy_dev.get_interface(DEVICE_INTERFACE)
+                    await dev_iface.call_pair()
+                except Exception:
+                    pass
+            else:
+                raise e
         self._properties["Paired"] = True
 
     async def set_trusted(self, trusted: bool) -> None:
@@ -189,8 +231,11 @@ class BluetoothDevice:
         if not self.bus:
             self._properties["Trusted"] = trusted
             return
-        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
-        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
-        props_iface = proxy.get_interface(DBUS_PROPERTIES_IFACE)
-        await props_iface.call_set(DEVICE_INTERFACE, "Trusted", Variant("b", trusted))
+        try:
+            introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+            props_iface = proxy.get_interface(DBUS_PROPERTIES_IFACE)
+            await props_iface.call_set(DEVICE_INTERFACE, "Trusted", Variant("b", trusted))
+        except Exception as e:
+            logger.debug("Failed to set trusted flag directly: %s", e)
         self._properties["Trusted"] = trusted
