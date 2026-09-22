@@ -1,0 +1,1 @@
+-- Disabled systemd-logind monitor for containerized Home Assistant OS environment

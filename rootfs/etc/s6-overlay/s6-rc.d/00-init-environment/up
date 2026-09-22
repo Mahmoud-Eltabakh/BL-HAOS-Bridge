@@ -5,9 +5,15 @@
 # ==============================================================================
 
 echo "[bl-haos] Initializing runtime directories..."
-mkdir -p /var/run/pipewire /var/run/user/0 /var/run/snapcast /tmp/snapcast /var/lib/snapserver
+mkdir -p /var/run/pipewire /var/run/user/0 /var/run/snapcast /tmp/snapcast /var/lib/snapserver /run/dbus /var/run/dbus
 chmod 700 /var/run/user/0
 chmod 755 /var/run/pipewire /var/run/snapcast /tmp/snapcast /var/lib/snapserver
+
+if [ -S /run/dbus/system_bus_socket ] && [ ! -e /var/run/dbus/system_bus_socket ]; then
+    ln -s /run/dbus/system_bus_socket /var/run/dbus/system_bus_socket
+elif [ -S /var/run/dbus/system_bus_socket ] && [ ! -e /run/dbus/system_bus_socket ]; then
+    ln -s /var/run/dbus/system_bus_socket /run/dbus/system_bus_socket
+fi
 
 echo "[bl-haos] Executing D-Bus and Bluetooth hardware probe..."
 if [ -x /usr/bin/bl-haos-probe ]; then

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.4
+
+- Fix WirePlumber D-Bus session bus mapping and disable container logind monitors to achieve rock-solid PipeWire daemon stability.
+
 ## 0.2.3
 
 - Fix WirePlumber crashing and disconnecting in container environment by preserving default PipeWire modules and disabling X11 session D-Bus autolaunch.
