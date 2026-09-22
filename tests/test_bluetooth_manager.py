@@ -85,3 +85,33 @@ async def test_bluetooth_manager_device_pairing_and_removal():
     removed = await mgr.remove_device(dev_addr)
     assert removed is True
     assert mgr.get_device_by_address(dev_addr) is None
+
+
+@pytest.mark.asyncio
+async def test_connect_refreshes_device_after_stale_bluez_interface():
+    mgr = BluetoothManager()
+    await mgr.initialize()
+
+    address = "AA:BB:CC:11:22:33"
+
+    class FakeDevice:
+        path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+        adapter_name = "hci0"
+
+        def __init__(self, should_fail):
+            self.should_fail = should_fail
+
+        async def connect(self):
+            if self.should_fail:
+                raise RuntimeError("interface not found on this object: org.bluez.Device1")
+
+    stale = FakeDevice(should_fail=True)
+    refreshed = FakeDevice(should_fail=False)
+    mgr.devices[stale.path] = stale
+
+    async def refresh(_address):
+        return refreshed
+
+    mgr.ensure_device = refresh
+
+    assert await mgr.connect_device(address) is True

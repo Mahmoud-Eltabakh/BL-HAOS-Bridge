@@ -233,8 +233,20 @@ class BluetoothManager:
                 except Exception:
                     continue
             raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
-        await dev.connect()
-        return True
+        try:
+            await dev.connect()
+            return True
+        except Exception as first_error:
+            # BlueZ can replace a discovered device object while scanning or
+            # reconnecting. Refresh the cached object once before surfacing the
+            # transient org.bluez.Device1 error to the API.
+            if dev.path in self.devices:
+                del self.devices[dev.path]
+            refreshed = await self.ensure_device(address)
+            if refreshed:
+                await refreshed.connect()
+                return True
+            raise first_error
 
     async def disconnect_device(self, address: str) -> bool:
         """Disconnect from device."""

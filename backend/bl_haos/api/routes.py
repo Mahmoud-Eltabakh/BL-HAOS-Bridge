@@ -194,6 +194,9 @@ async def pair_device(payload: PairRequest, request: Request):
         success = await request.app.state.bt_manager.pair_and_trust(payload.address)
         # Register in auto reconnect
         request.app.state.reconnect_engine.register_speaker(payload.address)
+        publish = getattr(request.app.state, "publish_native_speaker", None)
+        if publish:
+            await publish(payload.address)
         return {"status": "ok", "paired": success, "address": payload.address}
     except Exception as e:
         logger.error("Pairing error for %s: %s", payload.address, e)
@@ -204,6 +207,9 @@ async def pair_device(payload: PairRequest, request: Request):
 async def connect_device(address: str, request: Request):
     try:
         success = await request.app.state.bt_manager.connect_device(address)
+        publish = getattr(request.app.state, "publish_native_speaker", None)
+        if publish:
+            await publish(address)
         return {"status": "ok", "connected": success, "address": address}
     except Exception as e:
         logger.error("Connection error for %s: %s", address, e)
