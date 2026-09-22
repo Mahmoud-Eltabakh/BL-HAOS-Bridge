@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9
+
+- Enable detailed PipeWire and WirePlumber debug diagnostics for container audio server inspection.
+
 ## 0.2.8
 
 - Fix WirePlumber 0.4 startup crash by removing incompatible WirePlumber 0.5 `.conf` file and standardizing on `bluetooth.lua.d/50-bluez.lua`.
