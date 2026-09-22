@@ -108,3 +108,16 @@ class BluetoothAdapter:
         adapter_iface = proxy.get_interface(ADAPTER_INTERFACE)
         await adapter_iface.call_stop_discovery()
         self._properties["Discovering"] = False
+
+    async def connect_device(self, address: str, address_type: str = "public") -> Optional[str]:
+        """Connect directly to a device by MAC address, creating the D-Bus object if needed."""
+        if not self.bus:
+            return None
+        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+        adapter_iface = proxy.get_interface(ADAPTER_INTERFACE)
+        props = {
+            "Address": Variant("s", address.strip().upper()),
+            "AddressType": Variant("s", address_type),
+        }
+        return await adapter_iface.call_connect_device(props)

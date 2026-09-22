@@ -76,7 +76,7 @@ export const apiClient = {
   async getNativeDiagnostics(): Promise<NativeDiagnostics> {
     const payload = await requestJson<NativeDiagnostics>(getApiUrl('/api/diagnostics/native'));
     if (!payload || typeof payload !== 'object') {
-      throw new Error('Native diagnostics response is invalid');
+      throw new Error('Native diagnostics are unavailable');
     }
     return payload;
   },

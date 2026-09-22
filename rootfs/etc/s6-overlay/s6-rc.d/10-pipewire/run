@@ -5,6 +5,7 @@
 
 export PIPEWIRE_RUNTIME_DIR=/var/run/pipewire
 export XDG_RUNTIME_DIR=/var/run/pipewire
+export DBUS_SESSION_BUS_ADDRESS="disabled:"
 
 mkdir -p "$PIPEWIRE_RUNTIME_DIR"
 chmod 755 "$PIPEWIRE_RUNTIME_DIR"

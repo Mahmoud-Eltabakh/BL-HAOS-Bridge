@@ -95,7 +95,7 @@ export const App: React.FC = () => {
         >
           <div className="flex items-center space-x-2">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="font-medium text-slate-300">Home Assistant Integration</span>
+            <span className="font-medium text-slate-300">Home Assistant Native integration</span>
             <span className="text-[10px] bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.2 rounded">
               {diagnostics?.native_transport_ready ? 'Connected' : 'Ready'}
             </span>
