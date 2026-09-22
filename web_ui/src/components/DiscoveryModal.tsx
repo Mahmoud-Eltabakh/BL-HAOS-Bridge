@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { DeviceInfo, apiClient } from '../api/client';
-import { X, RefreshCw, Bluetooth, Signal, Plus, Key, Search, Volume2, Radio } from 'lucide-react';
+import { X, RefreshCw, Bluetooth, Signal, Plus, Key, Search, Volume2, Radio, Trash2, Power } from 'lucide-react';
 
 interface DiscoveryModalProps {
   isOpen: boolean;
@@ -17,7 +17,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
   isScanning,
   onRefresh,
 }) => {
-  const [pairingAddress, setPairingAddress] = useState<string | null>(null);
+  const [actionAddress, setActionAddress] = useState<string | null>(null);
   const [pinCode, setPinCode] = useState('0000');
   const [showPinInput, setShowPinInput] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -27,7 +27,6 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
   if (!isOpen) return null;
 
   const filteredDevices = devices.filter((d) => {
-    if (d.paired) return false;
     if (audioOnlyFilter && !d.is_audio_sink) return false;
     if (!searchQuery.trim()) return true;
 
@@ -41,7 +40,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
 
   const handlePair = async (address: string) => {
     if (!address.trim()) return;
-    setPairingAddress(address);
+    setActionAddress(address);
     try {
       await apiClient.pairDevice(address.trim(), pinCode);
       alert(`Successfully paired and trusted ${address}!`);
@@ -49,8 +48,36 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
     } catch (err) {
       alert(`Pairing failed: ${err}`);
     } finally {
-      setPairingAddress(null);
+      setActionAddress(null);
       setShowPinInput(false);
+    }
+  };
+
+  const handleDisconnect = async (address: string) => {
+    setActionAddress(address);
+    try {
+      await apiClient.disconnectDevice(address);
+      onRefresh();
+    } catch (err) {
+      alert(`Disconnect failed: ${err}`);
+    } finally {
+      setActionAddress(null);
+    }
+  };
+
+  const handleRemove = async (address: string) => {
+    if (!address.trim()) return;
+    if (confirm(`Untrust and completely remove "${address}" from BlueZ cache?`)) {
+      setActionAddress(address);
+      try {
+        await apiClient.removeDevice(address.trim());
+        alert(`Device ${address} untrusted and removed.`);
+        onRefresh();
+      } catch (err) {
+        alert(`Remove failed: ${err}`);
+      } finally {
+        setActionAddress(null);
+      }
     }
   };
 
@@ -74,7 +101,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
             </div>
             <div>
               <h2 className="text-lg font-bold text-white">Scan for Bluetooth Speakers</h2>
-              <p className="text-xs text-slate-400">Discover, search, and pair nearby Bluetooth devices</p>
+              <p className="text-xs text-slate-400">Discover, search, pair, disconnect, or remove devices</p>
             </div>
           </div>
           <button
@@ -186,21 +213,22 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               <p className="text-sm">
                 {searchQuery
                   ? `No Bluetooth devices matching "${searchQuery}"`
-                  : 'No unpaired Bluetooth devices detected yet.'}
+                  : 'No Bluetooth devices detected yet.'}
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                Put your speaker in pairing mode or pair directly using its MAC address below.
+                Put your speaker in pairing mode or manage MAC addresses directly below.
               </p>
             </div>
           ) : (
             filteredDevices.map((dev) => {
               const hasName = Boolean(dev.name);
               const displayName = dev.name || dev.alias || 'Unknown Device';
+              const isLoading = actionAddress === dev.address;
 
               return (
                 <div
                   key={dev.address}
-                  className="bg-slate-900/60 border border-slate-700/70 hover:border-slate-600 rounded-xl p-4 flex items-center justify-between transition"
+                  className="bg-slate-900/60 border border-slate-700/70 hover:border-slate-600 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition"
                 >
                   <div className="flex items-center space-x-3.5">
                     <div className={`p-2.5 rounded-lg ${dev.is_audio_sink ? 'bg-blue-600/20 text-blue-400' : 'bg-slate-800 text-slate-400'}`}>
@@ -223,6 +251,11 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                             Speaker
                           </span>
                         )}
+                        {dev.connected && (
+                          <span className="text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800 px-1.5 py-0.5 rounded">
+                            Connected
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-slate-400 font-mono flex items-center space-x-2 mt-0.5">
                         <span className="text-blue-300 font-semibold">{dev.address}</span>
@@ -237,14 +270,35 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center space-x-2">
+                  <div className="flex items-center space-x-2 self-end sm:self-auto">
+                    {dev.connected ? (
+                      <button
+                        onClick={() => handleDisconnect(dev.address)}
+                        disabled={isLoading}
+                        className="px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-300 text-xs font-medium rounded-lg flex items-center space-x-1.5 transition disabled:opacity-50"
+                      >
+                        <Power className="w-3.5 h-3.5" />
+                        <span>{isLoading ? '...' : 'Disconnect'}</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handlePair(dev.address)}
+                        disabled={isLoading}
+                        className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg flex items-center space-x-1.5 transition disabled:opacity-50"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>{isLoading ? 'Pairing...' : dev.paired ? 'Connect' : 'Pair & Trust'}</span>
+                      </button>
+                    )}
+
                     <button
-                      onClick={() => handlePair(dev.address)}
-                      disabled={pairingAddress === dev.address}
-                      className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg flex items-center space-x-1.5 transition disabled:opacity-50"
+                      onClick={() => handleRemove(dev.address)}
+                      disabled={isLoading}
+                      className="px-2.5 py-1.5 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 text-rose-300 text-xs font-medium rounded-lg flex items-center space-x-1 transition disabled:opacity-50"
+                      title="Untrust & remove from cache"
                     >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>{pairingAddress === dev.address ? 'Pairing...' : 'Pair & Trust'}</span>
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Remove</span>
                     </button>
                   </div>
                 </div>
@@ -255,23 +309,34 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
 
         {/* Direct / Manual MAC Pair Footer */}
         <div className="p-4 bg-slate-900/70 border-t border-slate-700/80">
-          <p className="text-xs text-slate-400 mb-2 font-medium">Direct Pair by Bluetooth MAC Address:</p>
-          <div className="flex items-center gap-2">
+          <p className="text-xs text-slate-400 mb-2 font-medium">Direct Action by Bluetooth MAC Address:</p>
+          <div className="flex flex-col sm:flex-row items-center gap-2">
             <input
               type="text"
               value={manualMac}
               onChange={(e) => setManualMac(e.target.value)}
               placeholder="e.g. EC:81:93:53:A9:16"
-              className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="w-full sm:flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
-            <button
-              onClick={() => handlePair(manualMac)}
-              disabled={!manualMac.trim() || pairingAddress === manualMac.trim()}
-              className="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-semibold rounded-xl flex items-center space-x-1.5 transition"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>{pairingAddress === manualMac.trim() ? 'Pairing...' : 'Pair MAC'}</span>
-            </button>
+            <div className="flex items-center space-x-2 w-full sm:w-auto">
+              <button
+                onClick={() => handlePair(manualMac)}
+                disabled={!manualMac.trim() || actionAddress === manualMac.trim()}
+                className="flex-1 sm:flex-none px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl flex items-center justify-center space-x-1.5 transition"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>{actionAddress === manualMac.trim() ? 'Pairing...' : 'Pair MAC'}</span>
+              </button>
+              <button
+                onClick={() => handleRemove(manualMac)}
+                disabled={!manualMac.trim() || actionAddress === manualMac.trim()}
+                className="flex-1 sm:flex-none px-4 py-2 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 disabled:opacity-50 text-rose-300 text-xs font-semibold rounded-xl flex items-center justify-center space-x-1.5 transition"
+                title="Untrust & remove MAC"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span>Remove MAC</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>

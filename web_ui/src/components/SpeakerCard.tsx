@@ -90,34 +90,46 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
       )}
 
       {/* Action Footer */}
-      <div className="mt-5 pt-3 border-t border-slate-700 flex items-center justify-between">
-        <button
-          onClick={handleConnectToggle}
-          disabled={loading}
-          className={`px-4 py-2 text-sm font-medium rounded-lg flex items-center space-x-2 transition-colors ${
-            device.connected
-              ? 'bg-slate-700 hover:bg-slate-600 text-rose-300'
-              : 'bg-blue-600 hover:bg-blue-500 text-white'
-          }`}
-        >
-          <Power className="w-4 h-4" />
-          <span>{device.connected ? 'Disconnect' : 'Connect'}</span>
-        </button>
+      <div className="mt-5 pt-3 border-t border-slate-700 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center space-x-2">
+          {device.connected ? (
+            <button
+              onClick={handleConnectToggle}
+              disabled={loading}
+              className="px-3.5 py-2 text-xs font-semibold rounded-lg flex items-center space-x-1.5 bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+            >
+              <Power className="w-3.5 h-3.5" />
+              <span>{loading ? 'Disconnecting...' : 'Disconnect'}</span>
+            </button>
+          ) : (
+            <button
+              onClick={handleConnectToggle}
+              disabled={loading}
+              className="px-3.5 py-2 text-xs font-semibold rounded-lg flex items-center space-x-1.5 bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50 shadow-md shadow-blue-600/20"
+            >
+              <Power className="w-3.5 h-3.5" />
+              <span>{loading ? 'Connecting...' : 'Connect'}</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleRemove}
+            className="px-3 py-2 text-xs font-medium rounded-lg flex items-center space-x-1.5 bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20 transition-colors"
+            title="Untrust and completely remove device"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+            <span>Remove</span>
+          </button>
+        </div>
 
         <div className="flex items-center space-x-1 text-slate-400">
           <button
             onClick={() => onSettingsClick(device)}
-            className="p-2 hover:bg-slate-700 hover:text-slate-200 rounded-lg transition-colors"
+            className="px-2.5 py-2 text-xs font-medium bg-slate-700/60 hover:bg-slate-700 hover:text-slate-200 border border-slate-600/50 rounded-lg transition-colors flex items-center space-x-1"
             title="Speaker Settings"
           >
-            <Settings className="w-4 h-4" />
-          </button>
-          <button
-            onClick={handleRemove}
-            className="p-2 hover:bg-rose-900/40 hover:text-rose-400 rounded-lg transition-colors"
-            title="Remove Device"
-          >
-            <Trash2 className="w-4 h-4" />
+            <Settings className="w-3.5 h-3.5" />
+            <span>Settings</span>
           </button>
         </div>
       </div>
