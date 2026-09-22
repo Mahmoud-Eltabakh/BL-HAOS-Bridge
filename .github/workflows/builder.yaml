@@ -42,5 +42,5 @@ jobs:
           args: >-
             --${{ matrix.arch }}
             --target /data
-            --image ghcr.io/${{ steps.prep.outputs.owner }}/{arch}-bl-haos-bridge
+            --image {arch}-bl-haos-bridge
             --docker-hub ghcr.io/${{ steps.prep.outputs.owner }}
