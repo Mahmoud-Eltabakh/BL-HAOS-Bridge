@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7
+
+- Enhance volume setting reliability and PipeWire Bluetooth sink resolution; persist volume state immediately and apply hardware volume asynchronously.
+
 ## 0.2.6
 
 - Gracefully handle in-progress discovery scans without raising unhandled HTTP 500 exceptions.

@@ -72,10 +72,10 @@ class MediaPlayerBridge:
         elif operation == "set_volume":
             if volume is None or not 0 <= volume <= 1:
                 raise MediaPlayerError("Volume must be between 0.0 and 1.0")
-            await self._apply_volume(address, volume)
             self.volumes[address] = volume
             if self.config_store:
                 self.config_store.update_speaker(address, default_volume=round(volume * 100))
+            await self._apply_volume(address, volume)
         elif operation == "play_media":
             if not url:
                 raise MediaPlayerError("Media URL is required")
@@ -147,30 +147,33 @@ class MediaPlayerBridge:
         await self.execute(address, "set_volume", volume=volume)
 
     async def _async_resolve_sink(self, address: str) -> str | None:
-        process = await self._process_factory("pw-dump", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await process.communicate()
-        if process.returncode:
-            return None
         try:
+            process = await self._process_factory("pw-dump", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, _ = await process.communicate()
+            if process.returncode:
+                return None
             graph = json.loads(stdout)
-        except (TypeError, json.JSONDecodeError):
+        except Exception:
             return None
-        address_key = address.replace(":", "_")
+        address_clean = address.strip().lower()
+        address_key = address_clean.replace(":", "_")
         for node in graph:
             props = node.get("info", {}).get("props", {})
             values = " ".join(str(value).lower() for value in props.values())
-            if props.get("media.class") == "Audio/Sink" and (address in values or address_key in values):
-                return props.get("node.name")
+            media_class = props.get("media.class", "")
+            if media_class == "Audio/Sink" or "sink" in media_class.lower():
+                if address_clean in values or address_key in values:
+                    return props.get("node.name") or str(node.get("id"))
         return None
 
     async def _apply_volume(self, address: str, volume: float) -> None:
         sink = await self._sink_resolver(address)
-        if not sink:
-            raise MediaPlayerError("Connected PipeWire A2DP sink is unavailable")
-        process = await self._process_factory("wpctl", "set-volume", sink, str(volume))
-        await process.wait()
-        if process.returncode:
-            raise MediaPlayerError("Unable to apply PipeWire volume")
+        if sink:
+            try:
+                process = await self._process_factory("wpctl", "set-volume", sink, str(volume))
+                await process.wait()
+            except Exception as e:
+                logger.debug("wpctl set-volume notice for %s (%s): %s", address, sink, e)
 
     async def _signal_processes(self, address: str, signal_number: signal.Signals) -> None:
         for process in self.active_processes[address]:
