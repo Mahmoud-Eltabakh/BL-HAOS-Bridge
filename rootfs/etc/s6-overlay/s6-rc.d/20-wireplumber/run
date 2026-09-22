@@ -1,0 +1,13 @@
+#!/command/with-contenv bash
+# ==============================================================================
+# BL-HAOS: S6-rc WirePlumber Session Manager Service
+# ==============================================================================
+
+export PIPEWIRE_RUNTIME_DIR=/var/run/pipewire
+export XDG_RUNTIME_DIR=/var/run/pipewire
+
+mkdir -p "$PIPEWIRE_RUNTIME_DIR"
+chmod 755 "$PIPEWIRE_RUNTIME_DIR"
+
+echo "[wireplumber] Starting WirePlumber session manager..."
+exec wireplumber

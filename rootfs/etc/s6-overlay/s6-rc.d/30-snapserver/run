@@ -1,0 +1,13 @@
+#!/command/with-contenv bash
+# ==============================================================================
+# BL-HAOS: S6-rc Snapserver Multi-Room Audio Server
+# ==============================================================================
+
+mkdir -p /tmp/snapcast
+if [ ! -p /tmp/snapcast/snapfifo ]; then
+    mkfifo /tmp/snapcast/snapfifo
+    chmod 666 /tmp/snapcast/snapfifo
+fi
+
+echo "[snapserver] Starting Snapserver multi-room audio daemon..."
+exec snapserver -c /etc/snapcast/snapserver.conf

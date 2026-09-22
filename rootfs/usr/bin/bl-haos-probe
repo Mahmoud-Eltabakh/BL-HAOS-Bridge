@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""
+BL-HAOS D-Bus and Bluetooth Hardware Probe
+Checks D-Bus socket connectivity and queries BlueZ adapter status.
+"""
+
+import os
+import sys
+import json
+import logging
+from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="[bl-haos-probe] %(levelname)s: %(message)s")
+logger = logging.getLogger("bl-haos-probe")
+
+DBUS_SYSTEM_SOCKET = "/var/run/dbus/system_bus_socket"
+
+def probe_dbus_socket(socket_path: str = DBUS_SYSTEM_SOCKET) -> bool:
+    """Check if the system D-Bus socket exists."""
+    return Path(socket_path).exists()
+
+def probe_bluetooth_adapters() -> dict:
+    """
+    Probe BlueZ adapters via live D-Bus connection.
+    Returns structured adapter telemetry.
+    """
+    dbus_available = probe_dbus_socket()
+    if not dbus_available:
+        return {
+            "status": "warning",
+            "dbus_connected": False,
+            "adapters": [],
+            "error": f"D-Bus system socket not found at {DBUS_SYSTEM_SOCKET}. Ensure host_dbus: true is enabled in add-on configuration.",
+        }
+
+    try:
+        import asyncio
+        from dbus_fast.aio import MessageBus
+        from dbus_fast import BusType, Variant
+
+        async def _query():
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            introspection = await bus.introspect("org.bluez", "/")
+            proxy = bus.get_proxy_object("org.bluez", "/", introspection)
+            om = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
+            objects = await om.call_get_managed_objects()
+            
+            adapters = []
+            for path, ifaces in objects.items():
+                if "org.bluez.Adapter1" in ifaces:
+                    props = ifaces["org.bluez.Adapter1"]
+                    def get_val(k, default=None):
+                        v = props.get(k, default)
+                        return v.value if isinstance(v, Variant) else v
+                    adapters.append({
+                        "path": path,
+                        "interface": path.split("/")[-1],
+                        "address": get_val("Address", ""),
+                        "name": get_val("Name", ""),
+                        "alias": get_val("Alias", ""),
+                        "powered": bool(get_val("Powered", False)),
+                        "discoverable": bool(get_val("Discoverable", False)),
+                        "pairable": bool(get_val("Pairable", False)),
+                    })
+            return adapters
+
+        adapters = asyncio.run(_query())
+        return {
+            "status": "ok",
+            "dbus_connected": True,
+            "adapters": adapters,
+        }
+    except Exception as e:
+        return {
+            "status": "warning",
+            "dbus_connected": True,
+            "adapters": [],
+            "error": f"BlueZ query note: {str(e)}",
+        }
+
+def main():
+    result = probe_bluetooth_adapters()
+    print(json.dumps(result, indent=2))
+    if result["status"] == "ok":
+        sys.exit(0)
+    else:
+        # Non-zero exit if D-Bus is totally absent and not in test/mock mode
+        sys.exit(0 if os.getenv("BL_HAOS_ALLOW_WARN", "1") == "1" else 1)
+
+if __name__ == "__main__":
+    main()

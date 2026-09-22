@@ -1,0 +1,14 @@
+# Force LF line endings for all shell and configuration files
+* text eol=lf
+
+*.py text eol=lf
+*.sh text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.conf text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+up text eol=lf
+run text eol=lf
+type text eol=lf

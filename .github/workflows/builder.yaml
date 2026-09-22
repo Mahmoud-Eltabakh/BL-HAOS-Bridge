@@ -1,0 +1,46 @@
+name: Build Add-on
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: ["aarch64", "amd64", "armv7"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare image repository name
+        id: prep
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Publish Add-on with Home Assistant Builder
+        uses: home-assistant/builder@2025.03.0
+        with:
+          args: >-
+            --${{ matrix.arch }}
+            --target /data
+            --image ghcr.io/${{ steps.prep.outputs.owner }}/{arch}-bl-haos-bridge
+            --docker-hub ghcr.io/${{ steps.prep.outputs.owner }}

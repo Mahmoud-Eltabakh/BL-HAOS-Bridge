@@ -1,0 +1,19 @@
+#!/command/with-contenv bash
+# ==============================================================================
+# BL-HAOS: S6-rc Init Environment Service
+# Prepares runtime directories and executes startup system audit
+# ==============================================================================
+
+echo "[bl-haos] Initializing runtime directories..."
+mkdir -p /var/run/pipewire /var/run/user/0 /var/run/snapcast /tmp/snapcast /var/lib/snapserver
+chmod 700 /var/run/user/0
+chmod 755 /var/run/pipewire /var/run/snapcast /tmp/snapcast /var/lib/snapserver
+
+echo "[bl-haos] Executing D-Bus and Bluetooth hardware probe..."
+if [ -x /usr/bin/bl-haos-probe ]; then
+    /usr/bin/bl-haos-probe || echo "[bl-haos] Warning: bl-haos-probe reported warnings or no physical adapters found."
+else
+    echo "[bl-haos] Note: /usr/bin/bl-haos-probe not found yet."
+fi
+
+echo "[bl-haos] Environment initialization complete."

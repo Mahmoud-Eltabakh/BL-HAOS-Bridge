@@ -1,0 +1,10 @@
+configuration:
+  log_level:
+    name: "Log Level"
+    description: "Defines the logging verbosity level for BL-HAOS and PipeWire services."
+  default_codec:
+    name: "Default Codec"
+    description: "Preferred Bluetooth A2DP audio codec (auto will negotiate highest supported: LDAC -> aptX HD -> aptX -> AAC -> SBC-XQ -> SBC)."
+  bridge_token:
+    name: "Bridge token"
+    description: "Long random token required by the separate BL-HAOS HACS integration. Keep it secret and configure the same value in the integration."
