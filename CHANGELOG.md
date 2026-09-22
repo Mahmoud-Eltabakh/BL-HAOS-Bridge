@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.14
+
+- Provide dedicated container `wireplumber.conf` tailored for Bluetooth audio and stream policy, permanently bypassing desktop seat and logind monitors.
+
 ## 0.2.13
 
 - Remove systemd-logind monitor scripts at container build time and map DBUS_SESSION_BUS_ADDRESS to system bus socket to prevent WirePlumber crash loop in container.
