@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.11
+
+- Unset DBUS_SESSION_BUS_ADDRESS to prevent WirePlumber from triggering desktop session bus portal and logind lookups in headless container.
+
 ## 0.2.10
 
 - Use stock distribution PipeWire configuration to prevent session manager proxy activation aborts.

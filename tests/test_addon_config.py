@@ -10,7 +10,7 @@ def test_config_yaml_syntax_and_fields():
 
     assert data["name"] == "BL-HAOS"
     assert data["slug"] == "bl_haos"
-    assert data["version"] == "0.2.10"
+    assert data["version"] == "0.2.11"
     assert data["init"] is False, "S6-overlay v3 requires init: false"
     assert data["ingress"] is True, "Ingress must be enabled"
     assert data["ingress_port"] == 8099
