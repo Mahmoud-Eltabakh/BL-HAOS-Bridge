@@ -92,10 +92,16 @@ class BluetoothAdapter:
         if not self.bus:
             self._properties["Discovering"] = True
             return
-        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
-        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
-        adapter_iface = proxy.get_interface(ADAPTER_INTERFACE)
-        await adapter_iface.call_start_discovery()
+        try:
+            introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+            adapter_iface = proxy.get_interface(ADAPTER_INTERFACE)
+            await adapter_iface.call_start_discovery()
+        except Exception as e:
+            if "InProgress" in str(e) or "already in progress" in str(e).lower():
+                logger.debug("Discovery already in progress on %s", self.interface_name)
+            else:
+                raise e
         self._properties["Discovering"] = True
 
     async def stop_discovery(self) -> None:
@@ -103,10 +109,16 @@ class BluetoothAdapter:
         if not self.bus:
             self._properties["Discovering"] = False
             return
-        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
-        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
-        adapter_iface = proxy.get_interface(ADAPTER_INTERFACE)
-        await adapter_iface.call_stop_discovery()
+        try:
+            introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+            adapter_iface = proxy.get_interface(ADAPTER_INTERFACE)
+            await adapter_iface.call_stop_discovery()
+        except Exception as e:
+            if "InProgress" in str(e) or "not discovering" in str(e).lower() or "not in progress" in str(e).lower():
+                logger.debug("Discovery already stopped on %s", self.interface_name)
+            else:
+                pass
         self._properties["Discovering"] = False
 
     async def connect_device(self, address: str, address_type: str = "public") -> Optional[str]:

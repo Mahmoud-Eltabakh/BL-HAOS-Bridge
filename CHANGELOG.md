@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.6
+
+- Gracefully handle in-progress discovery scans without raising unhandled HTTP 500 exceptions.
+
 ## 0.2.5
 
 - Add automatic BlueZ adapter ConnectDevice fallback for unbonded / temporary device handles during pairing and reconnection.
