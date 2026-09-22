@@ -62,9 +62,11 @@ async def lifespan(app: FastAPI):
                 asyncio.create_task(_publish_native_speaker(data.address))
                 if not is_conn:
                     asyncio.create_task(ha_bridge.execute(data.address, "stop"))
+                    ha_bridge.unregister_keepalive(data.address)
                 reconnect_engine.register_speaker(data.address)
             if is_conn and is_audio:
                 multiroom_manager.attach_speaker(data.address, getattr(data, "alias", None) or getattr(data, "name", None) or data.address)
+                ha_bridge.register_keepalive(data.address)
             elif not is_conn and is_audio:
                 multiroom_manager.detach_speaker(data.address)
 
@@ -77,6 +79,8 @@ async def lifespan(app: FastAPI):
     for device in bt_manager.get_devices():
         if device.trusted or device.paired or device.connected:
             reconnect_engine.register_speaker(device.address)
+        if device.connected and device.is_audio_sink:
+            ha_bridge.register_keepalive(device.address)
 
     # Register known speakers from config
     for addr, spk in config_store.settings.speakers.items():
@@ -84,6 +88,7 @@ async def lifespan(app: FastAPI):
             reconnect_engine.register_speaker(addr, preferred_adapter=spk.preferred_adapter)
 
     await reconnect_engine.start()
+    await ha_bridge.start_keepalive()
     logger.info("BL-HAOS backend daemon is ready.")
 
     yield

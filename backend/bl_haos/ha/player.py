@@ -31,6 +31,10 @@ class MediaPlayerBridge:
         self.volumes: dict[str, float] = {}
         self.active_processes: dict[str, tuple[asyncio.subprocess.Process, asyncio.subprocess.Process]] = {}
         self.last_urls: dict[str, str] = {}
+        self.keepalive_addresses: set[str] = set()
+        self.keepalive_interval: float = 240.0
+        self.keepalive_pulse_duration: float = 1.0
+        self._keepalive_task: Optional[asyncio.Task] = None
         self._sink_resolver = sink_resolver or self._async_resolve_sink
         self._process_factory = process_factory or asyncio.create_subprocess_exec
         self._state_callback = state_callback
@@ -152,6 +156,73 @@ class MediaPlayerBridge:
         """Set volume level (0.0 - 1.0)."""
         await self.execute(address, "set_volume", volume=volume)
 
+    def register_keepalive(self, address: str) -> None:
+        """Track a connected speaker so its BT radio is periodically nudged awake."""
+        self.keepalive_addresses.add(self._address(address))
+
+    def unregister_keepalive(self, address: str) -> None:
+        """Stop nudging a speaker that is no longer connected/trusted."""
+        self.keepalive_addresses.discard(self._address(address))
+
+    async def start_keepalive(self) -> None:
+        """Start the background low-duty-cycle keep-alive loop."""
+        if self._keepalive_task is None:
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+
+    async def stop_keepalive(self) -> None:
+        """Stop the keep-alive loop."""
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
+            except asyncio.CancelledError:
+                pass
+            self._keepalive_task = None
+
+    async def _keepalive_loop(self) -> None:
+        """Send a brief silent pulse to idle speakers so they don't auto-sleep."""
+        try:
+            while True:
+                await asyncio.sleep(self.keepalive_interval)
+                for address in list(self.keepalive_addresses):
+                    await self._send_keepalive_pulse(address)
+        except asyncio.CancelledError:
+            pass
+
+    async def _send_keepalive_pulse(self, address: str) -> None:
+        """Play a short, silent PCM burst to the sink without touching playback state."""
+        address = self._address(address)
+        if address in self.active_processes:
+            return  # already streaming real audio; no nudge needed
+        sink = await self._sink_resolver(address)
+        if not sink:
+            return
+        try:
+            source = await self._process_factory(
+                "ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi",
+                "-i", "anullsrc=r=48000:cl=stereo", "-t", str(self.keepalive_pulse_duration),
+                "-f", "s16le", "pipe:1",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            player = await self._process_factory(
+                "pw-play", "--target", sink, "--raw", "--rate", "48000", "--channels", "2", "-",
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        except (OSError, asyncio.SubprocessError) as error:
+            logger.debug("Keep-alive pulse failed to start for %s: %s", address, error)
+            return
+        if hasattr(source.stdout, "read") and hasattr(player.stdin, "write"):
+            await self._pipe_audio(source, player)
+        for process in (source, player):
+            if process.returncode is None:
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=self.keepalive_pulse_duration + 5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+
     async def _async_resolve_sink(self, address: str) -> str | None:
         try:
             process = await self._process_factory("pw-dump", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -221,6 +292,7 @@ class MediaPlayerBridge:
             await self._notify(address)
 
     async def async_shutdown(self) -> None:
+        await self.stop_keepalive()
         for address in tuple(self.active_processes):
             await self._stop_processes(address)
             self.states[address] = "idle"

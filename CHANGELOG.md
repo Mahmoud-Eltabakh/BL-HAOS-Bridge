@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.23
+
+- Prevent connected Bluetooth audio adapters from auto-sleeping (and dropping the link) by sending a 1-second silent pulse every 4 minutes while idle. Skipped whenever real audio is already playing, so battery use stays minimal.
+
 ## 0.2.22
 
 - Tune the auto-reconnect engine for faster recovery from real Bluetooth link drops: lower initial backoff (2.0s -> 1.0s), gentler backoff growth (2.0x -> 1.5x), lower backoff cap (60s -> 20s), more retries before the circuit breaker trips (5 -> 8), and a shorter breaker cooldown (30s -> 10s).

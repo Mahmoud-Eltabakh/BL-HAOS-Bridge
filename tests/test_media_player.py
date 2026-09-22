@@ -102,3 +102,55 @@ async def test_play_without_any_prior_media_still_raises():
 
     with pytest.raises(Exception, match="No active playback to resume"):
         await bridge.execute(address, "play")
+
+
+@pytest.mark.asyncio
+async def test_keepalive_pulses_idle_speakers_without_changing_state():
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append(args[0])
+        return FakeProcess(returncode=0)
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "11:22:33:44:55:66"
+    bridge.register_keepalive(address)
+
+    assert bridge.get_state(address) == "idle"
+    await bridge._send_keepalive_pulse(address)
+
+    assert calls[0] == "ffmpeg"
+    assert calls[1] == "pw-play"
+    # A keep-alive pulse must never surface as playback in the entity state.
+    assert bridge.get_state(address) == "idle"
+    assert address not in bridge.active_processes
+
+
+@pytest.mark.asyncio
+async def test_keepalive_skips_speakers_with_active_playback():
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append(args[0])
+        return FakeProcess(returncode=0 if args[0] == "wpctl" else None)
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "11:22:33:44:55:66"
+    bridge.register_keepalive(address)
+
+    await bridge.handle_command(address, "PLAY_MEDIA:https://example.test/audio.mp3")
+    calls.clear()
+
+    await bridge._send_keepalive_pulse(address)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_unregister_keepalive_removes_address():
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "11:22:33:44:55:66"
+    bridge.register_keepalive(address)
+    assert address in bridge.keepalive_addresses
+
+    bridge.unregister_keepalive(address)
+    assert address not in bridge.keepalive_addresses
