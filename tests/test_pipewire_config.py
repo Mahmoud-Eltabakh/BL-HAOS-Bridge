@@ -11,18 +11,18 @@ def test_pipewire_clock_config():
     assert "default.clock.max-quantum = 2048" in content
 
 def test_wireplumber_codec_ranking():
-    bluez_conf = Path("rootfs/etc/wireplumber/wireplumber.conf.d/50-bluez.conf")
-    assert bluez_conf.exists(), "50-bluez.conf must exist"
+    bluez_lua = Path("rootfs/etc/wireplumber/bluetooth.lua.d/50-bluez.lua")
+    assert bluez_lua.exists(), "50-bluez.lua must exist"
 
-    content = bluez_conf.read_text(encoding="utf-8")
-    assert "bluez5.enable-sbc-xq = true" in content
-    assert "bluez5.codecs = [ ldac aptx_hd aptx aac sbc_xq sbc ]" in content
+    content = bluez_lua.read_text(encoding="utf-8")
+    assert 'bluez5.enable-sbc-xq' in content
+    assert 'ldac aptx_hd aptx aac sbc_xq sbc' in content
 
 def test_wireplumber_volume_sync():
-    bluez_conf = Path("rootfs/etc/wireplumber/wireplumber.conf.d/50-bluez.conf")
-    assert bluez_conf.exists(), "50-bluez.conf must exist"
+    bluez_lua = Path("rootfs/etc/wireplumber/bluetooth.lua.d/50-bluez.lua")
+    assert bluez_lua.exists(), "50-bluez.lua must exist"
 
-    content = bluez_conf.read_text(encoding="utf-8")
-    assert "bluez5.enable-volume-sync = true" in content
-    assert "bluez5.enable-hw-volume = true" in content
-    assert "bluez5.auto-connect = [ a2dp_sink ]" in content
+    content = bluez_lua.read_text(encoding="utf-8")
+    assert 'bluez5.enable-volume-sync' in content
+    assert 'bluez5.enable-hw-volume' in content
+    assert 'a2dp_sink' in content

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8
+
+- Fix WirePlumber 0.4 startup crash by removing incompatible WirePlumber 0.5 `.conf` file and standardizing on `bluetooth.lua.d/50-bluez.lua`.
+
 ## 0.2.7
 
 - Enhance volume setting reliability and PipeWire Bluetooth sink resolution; persist volume state immediately and apply hardware volume asynchronously.
