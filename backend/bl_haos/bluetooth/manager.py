@@ -144,10 +144,32 @@ class BluetoothManager:
         return devices
 
     def get_device_by_address(self, address: str) -> Optional[BluetoothDevice]:
-        target = address.strip().lower()
+        target = address.strip().lower().replace("-", ":")
         for dev in self.devices.values():
-            if dev.address.lower() == target:
+            if dev.address.strip().lower().replace("-", ":") == target:
                 return dev
+        return None
+
+    async def ensure_device(self, address: str) -> Optional[BluetoothDevice]:
+        """Look up device in local cache or query BlueZ D-Bus directly by MAC."""
+        dev = self.get_device_by_address(address)
+        if dev:
+            return dev
+        if not self.bus:
+            return None
+        formatted_addr = address.strip().upper().replace(":", "_").replace("-", "_")
+        for adapter in self.adapters.values():
+            dev_path = f"{adapter.path}/dev_{formatted_addr}"
+            try:
+                introspection = await self.bus.introspect(BLUEZ_SERVICE, dev_path)
+                proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, dev_path, introspection)
+                props_iface = proxy.get_interface(DBUS_PROPERTIES_IFACE)
+                props = await props_iface.call_get_all(DEVICE_INTERFACE)
+                dev = BluetoothDevice(self.bus, dev_path, props)
+                self.devices[dev_path] = dev
+                return dev
+            except Exception:
+                continue
         return None
 
     def get_adapter_by_name(self, name: str = "hci0") -> Optional[BluetoothAdapter]:
@@ -178,24 +200,24 @@ class BluetoothManager:
 
     async def pair_and_trust(self, address: str) -> bool:
         """Pair with device and set trusted flag for auto-reconnection."""
-        dev = self.get_device_by_address(address)
+        dev = await self.ensure_device(address)
         if not dev:
-            raise ValueError(f"Device with address {address} not found")
+            raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
         await dev.pair()
         await dev.set_trusted(True)
         return True
 
     async def connect_device(self, address: str) -> bool:
         """Connect to device."""
-        dev = self.get_device_by_address(address)
+        dev = await self.ensure_device(address)
         if not dev:
-            raise ValueError(f"Device with address {address} not found")
+            raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
         await dev.connect()
         return True
 
     async def disconnect_device(self, address: str) -> bool:
         """Disconnect from device."""
-        dev = self.get_device_by_address(address)
+        dev = await self.ensure_device(address)
         if not dev:
             raise ValueError(f"Device with address {address} not found")
         await dev.disconnect()
