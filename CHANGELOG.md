@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.10
+
+- Use stock distribution PipeWire configuration to prevent session manager proxy activation aborts.
+
 ## 0.2.9
 
 - Enable detailed PipeWire and WirePlumber debug diagnostics for container audio server inspection.

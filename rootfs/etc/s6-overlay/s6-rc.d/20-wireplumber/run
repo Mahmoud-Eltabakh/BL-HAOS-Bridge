@@ -7,8 +7,6 @@ export PIPEWIRE_RUNTIME_DIR=/var/run/pipewire
 export XDG_RUNTIME_DIR=/var/run/pipewire
 export DBUS_SYSTEM_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
 export DBUS_SESSION_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
-export WIREPLUMBER_DEBUG=4
-export PIPEWIRE_DEBUG=3
 
 mkdir -p "$PIPEWIRE_RUNTIME_DIR"
 chmod 755 "$PIPEWIRE_RUNTIME_DIR"
