@@ -30,6 +30,7 @@ class MediaPlayerBridge:
         self.states: dict[str, str] = {}
         self.volumes: dict[str, float] = {}
         self.active_processes: dict[str, tuple[asyncio.subprocess.Process, asyncio.subprocess.Process]] = {}
+        self.last_urls: dict[str, str] = {}
         self._sink_resolver = sink_resolver or self._async_resolve_sink
         self._process_factory = process_factory or asyncio.create_subprocess_exec
         self._state_callback = state_callback
@@ -58,7 +59,11 @@ class MediaPlayerBridge:
         address = self._address(address)
         if operation == "play":
             if address not in self.active_processes:
-                raise MediaPlayerError("No active playback to resume")
+                last_url = self.last_urls.get(address)
+                if not last_url:
+                    raise MediaPlayerError("No active playback to resume")
+                await self.play_url(address, last_url)
+                return
             await self._signal_processes(address, getattr(signal, "SIGCONT", signal.SIGTERM))
             self.states[address] = "playing"
         elif operation == "pause":
@@ -120,6 +125,7 @@ class MediaPlayerBridge:
         sink = await self._sink_resolver(addr)
         if not sink:
             raise MediaPlayerError("Connected PipeWire A2DP sink is unavailable")
+        self.last_urls[addr] = url
         await self._stop_processes(addr)
         try:
             decoder = await self._process_factory(

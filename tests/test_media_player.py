@@ -78,3 +78,27 @@ async def test_media_player_rejects_unsafe_url_before_subprocess_creation():
     with pytest.raises(Exception, match="safe HTTP"):
         await bridge.play_url("11:22:33:44:55:66", "file:///etc/passwd")
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_play_replays_last_url_after_stop():
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "11:22:33:44:55:66"
+
+    await bridge.handle_command(address, "PLAY_MEDIA:https://example.test/audio.mp3")
+    await bridge.handle_command(address, "STOP")
+    assert bridge.get_state(address) == "idle"
+
+    # Pressing Play with nothing running (e.g. after a stop or add-on restart)
+    # should resume the last known stream instead of erroring.
+    await bridge.execute(address, "play")
+    assert bridge.get_state(address) == "playing"
+
+
+@pytest.mark.asyncio
+async def test_play_without_any_prior_media_still_raises():
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "11:22:33:44:55:66"
+
+    with pytest.raises(Exception, match="No active playback to resume"):
+        await bridge.execute(address, "play")

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.21
+
+- Fix `media_player.media_play` failing with "No active playback to resume" after a stop or add-on restart by replaying the last played URL instead of requiring an already-running stream.
+
 ## 0.2.20
 
 - Enhance Bluetooth audio sink recognition to detect connected and paired audio devices (such as Bluetooth adapters and speakers) and publish native speaker state updates immediately.
