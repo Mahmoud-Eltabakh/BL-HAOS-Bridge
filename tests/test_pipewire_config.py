@@ -27,5 +27,6 @@ def test_wireplumber_container_config():
     wp_conf = Path("rootfs/etc/wireplumber/wireplumber.conf")
     assert wp_conf.exists(), "wireplumber.conf must exist"
     content = wp_conf.read_text(encoding="utf-8")
+    assert "libwireplumber-module-lua-scripting" in content
     assert "bluetooth.lua" in content
     assert "policy.lua" in content

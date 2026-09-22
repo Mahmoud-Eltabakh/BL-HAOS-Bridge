@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.15
+
+- Include `libwireplumber-module-lua-scripting` in container `wireplumber.conf` to properly load Lua components for Bluetooth audio.
+
 ## 0.2.14
 
 - Provide dedicated container `wireplumber.conf` tailored for Bluetooth audio and stream policy, permanently bypassing desktop seat and logind monitors.
