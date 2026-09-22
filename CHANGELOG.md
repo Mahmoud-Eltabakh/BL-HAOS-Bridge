@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.19
+
+- Strip `libwireplumber-module-logind` directly from `/usr/share/wireplumber/wireplumber.conf` during Docker build and initialize systemd seats runtime directory to permanently resolve the container logind crash loop.
+
 ## 0.2.18
 
 - Add PipeWire socket readiness wait loop to WirePlumber service and clean stale lock files on PipeWire launch.

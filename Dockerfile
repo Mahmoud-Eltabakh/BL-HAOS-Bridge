@@ -29,8 +29,8 @@ RUN apt-get update \
         jq \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /usr/share/wireplumber/scripts/monitors/*logind* \
-    && rm -rf /usr/share/wireplumber/main.lua.d/*logind*
+    && sed -i '/libwireplumber-module-logind/d' /usr/share/wireplumber/wireplumber.conf 2>/dev/null || true \
+    && rm -f /usr/lib/*/wireplumber-0.4/libwireplumber-module-logind.so 2>/dev/null || true
 
 # Copy root filesystem overlay and application code
 COPY rootfs /

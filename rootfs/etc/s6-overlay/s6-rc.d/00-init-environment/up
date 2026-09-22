@@ -5,7 +5,7 @@
 # ==============================================================================
 
 echo "[bl-haos] Initializing runtime directories..."
-mkdir -p /var/run/pipewire /var/run/user/0 /var/run/snapcast /tmp/snapcast /var/lib/snapserver /run/dbus /var/run/dbus
+mkdir -p /var/run/pipewire /var/run/user/0 /var/run/snapcast /tmp/snapcast /var/lib/snapserver /run/dbus /var/run/dbus /run/systemd/seats /var/run/systemd/seats
 chmod 700 /var/run/user/0
 chmod 755 /var/run/pipewire /var/run/snapcast /tmp/snapcast /var/lib/snapserver
 

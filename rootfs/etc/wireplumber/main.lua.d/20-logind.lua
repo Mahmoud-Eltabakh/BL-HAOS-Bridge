@@ -1,5 +1,0 @@
--- ==============================================================================
--- BL-HAOS: Disable systemd-logind monitor for containerized environment
--- This empty file overrides /usr/share/wireplumber/main.lua.d/20-logind.lua
--- to prevent WirePlumber from crashing in containers without systemd-logind.
--- ==============================================================================
