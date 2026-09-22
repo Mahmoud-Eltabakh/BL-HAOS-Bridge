@@ -116,9 +116,14 @@ class BluetoothManager:
         if iface == ADAPTER_INTERFACE and path in self.adapters:
             self.adapters[path].update_properties(changed)
             self._notify("adapter_updated", self.adapters[path].to_info())
-        elif iface == DEVICE_INTERFACE and path in self.devices:
-            self.devices[path].update_properties(changed)
-            self._notify("device_updated", self.devices[path].to_info())
+        elif iface == DEVICE_INTERFACE:
+            if path in self.devices:
+                self.devices[path].update_properties(changed)
+                self._notify("device_updated", self.devices[path].to_info())
+            elif self.bus:
+                dev = BluetoothDevice(self.bus, path, changed)
+                self.devices[path] = dev
+                self._notify("device_discovered", dev.to_info())
 
     async def _load_managed_objects(self):
         if not self.bus:
@@ -229,12 +234,18 @@ class BluetoothManager:
             for adapter in self.adapters.values():
                 try:
                     await adapter.connect_device(address)
-                    return True
+                    dev = await self.ensure_device(address)
+                    break
                 except Exception:
                     continue
-            raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
+            if not dev:
+                raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
         try:
             await dev.connect()
+            try:
+                await dev.set_trusted(True)
+            except Exception as e:
+                logger.debug("Failed to set trusted flag on connect: %s", e)
             return True
         except Exception as first_error:
             # BlueZ can replace a discovered device object while scanning or
@@ -245,6 +256,10 @@ class BluetoothManager:
             refreshed = await self.ensure_device(address)
             if refreshed:
                 await refreshed.connect()
+                try:
+                    await refreshed.set_trusted(True)
+                except Exception:
+                    pass
                 return True
             raise first_error
 

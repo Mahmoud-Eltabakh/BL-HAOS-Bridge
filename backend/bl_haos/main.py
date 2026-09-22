@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
              if candidate.address.strip().lower().replace("-", ":") == address.strip().lower().replace("-", ":")),
             None,
         )
-        if device and device.trusted and device.is_audio_sink:
+        if device and (device.trusted or device.paired or device.connected) and device.is_audio_sink:
             await native_ws_manager.broadcast(NATIVE_SPEAKER_UPDATED_EVENT, native_speaker_record(app, device))
 
     ha_bridge = MediaPlayerBridge(config_store=config_store, state_callback=_publish_native_speaker)
@@ -52,15 +52,20 @@ async def lifespan(app: FastAPI):
     # Wire event broadcaster to WebSocket manager and HA Discovery
     def _on_bt_event(event_type: str, data):
         asyncio.create_task(ws_manager.broadcast(event_type, data))
-        if event_type == "device_updated" and hasattr(data, "connected") and hasattr(data, "address"):
-            if data.is_audio_sink and data.trusted:
+        if event_type in ("device_updated", "device_discovered") and hasattr(data, "address"):
+            is_audio = getattr(data, "is_audio_sink", False)
+            is_conn = getattr(data, "connected", False)
+            is_trust = getattr(data, "trusted", False)
+            is_paired = getattr(data, "paired", False)
+
+            if is_audio and (is_trust or is_paired or is_conn):
                 asyncio.create_task(_publish_native_speaker(data.address))
-                if not data.connected:
+                if not is_conn:
                     asyncio.create_task(ha_bridge.execute(data.address, "stop"))
                 reconnect_engine.register_speaker(data.address)
-            if data.connected and data.is_audio_sink:
-                multiroom_manager.attach_speaker(data.address, data.alias or data.name or data.address)
-            elif not data.connected:
+            if is_conn and is_audio:
+                multiroom_manager.attach_speaker(data.address, getattr(data, "alias", None) or getattr(data, "name", None) or data.address)
+            elif not is_conn and is_audio:
                 multiroom_manager.detach_speaker(data.address)
 
     bt_manager.add_event_listener(_on_bt_event)
@@ -70,7 +75,7 @@ async def lifespan(app: FastAPI):
     app.state.reconnect_engine = reconnect_engine
 
     for device in bt_manager.get_devices():
-        if device.trusted:
+        if device.trusted or device.paired or device.connected:
             reconnect_engine.register_speaker(device.address)
 
     # Register known speakers from config

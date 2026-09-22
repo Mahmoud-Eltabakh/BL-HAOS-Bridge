@@ -85,7 +85,11 @@ class BluetoothDevice:
         """Determine if this device functions as a Bluetooth audio sink (speaker/headphone)."""
         # Check UUIDs
         for uuid in self.uuids:
-            if uuid in AUDIO_SINK_UUIDS:
+            u_clean = str(uuid).lower().strip()
+            if u_clean in AUDIO_SINK_UUIDS:
+                return True
+            # Also check if 16-bit audio service identifier is embedded in standard 128-bit UUID
+            if any(part in u_clean for part in ("110a", "110b", "110c", "110d", "110e", "110f", "1108", "1112", "111e", "111f", "1131")):
                 return True
 
         # Check Class of Device
@@ -93,10 +97,27 @@ class BluetoothDevice:
             major = self.class_of_device & 0x1F00
             if major == MAJOR_DEVICE_CLASS_AUDIO_VIDEO:
                 return True
+            minor = self.class_of_device & 0x1FFC
+            if minor in MINOR_DEVICE_CLASSES_AUDIO:
+                return True
 
         # Check icon hint
-        icon = self._get_prop("Icon", "")
-        if icon in ("audio-card", "audio-speakers", "audio-headphones", "audio-headset"):
+        icon = str(self._get_prop("Icon", "")).lower()
+        if any(h in icon for h in ("audio", "sound", "speaker", "headphone", "headset")):
+            return True
+
+        # Check name or alias audio keywords
+        name_or_alias = f"{self.name or ''} {self.alias or ''}".lower()
+        audio_keywords = (
+            "speaker", "sound", "audio", "headphone", "headset", "earbuds", "airpods",
+            "receiver", "adapter", "logitech", "soundbar", "soundlink", "jbl", "bose",
+            "sony", "anker", "soundcore", "echo", "nest", "marshall", "sonos"
+        )
+        if any(kw in name_or_alias for kw in audio_keywords):
+            return True
+
+        # If currently connected or paired (and not an explicit non-audio input device)
+        if (self.connected or self.paired) and icon not in ("input-keyboard", "input-mouse", "input-gaming"):
             return True
 
         return False

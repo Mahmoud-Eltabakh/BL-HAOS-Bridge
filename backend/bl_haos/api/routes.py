@@ -19,7 +19,7 @@ NATIVE_BRIDGE_VERSION = 1
 def native_diagnostics(app: Any) -> dict[str, Any]:
     """Return only bounded, non-secret native bridge readiness details."""
     devices = app.state.bt_manager.get_devices(audio_only=True)
-    trusted_speakers = [device for device in devices if device.trusted and device.is_audio_sink]
+    trusted_speakers = [device for device in devices if (device.trusted or device.paired or device.connected) and device.is_audio_sink]
     return {
         "bridge_version": NATIVE_BRIDGE_VERSION,
         "native_transport_ready": hasattr(app.state, "ha_bridge"),
@@ -71,7 +71,7 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
         "available": device.connected,
         "connected": device.connected,
         "adapter": device.adapter_name,
-        "trusted": device.trusted,
+        "trusted": bool(device.trusted or device.paired or device.connected),
         "is_audio_sink": device.is_audio_sink,
         "playback": {
             "state": bridge.get_state(device.address) if bridge else "idle",
@@ -110,7 +110,7 @@ async def list_native_speakers(request: Request):
     speakers = {
         record["address"]: record
         for device in request.app.state.bt_manager.get_devices(audio_only=True)
-        if device.trusted
+        if device.trusted or device.paired or device.connected
         for record in [native_speaker_record(request, device)]
     }
     return {"speakers": speakers}
@@ -127,7 +127,7 @@ async def command_native_speaker(address: str, payload: NativeCommandRequest, re
     )
     if device is None:
         raise HTTPException(status_code=404, detail="Native speaker was not found")
-    if not (device.trusted and device.is_audio_sink and device.connected):
+    if not ((device.trusted or device.paired or device.connected) and device.is_audio_sink and device.connected):
         raise HTTPException(status_code=409, detail="Native speaker is unavailable")
     if payload.operation == "set_volume" and payload.volume is None:
         raise HTTPException(status_code=422, detail="Volume is required")

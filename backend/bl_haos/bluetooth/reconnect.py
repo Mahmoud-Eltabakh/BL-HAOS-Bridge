@@ -102,7 +102,7 @@ class AutoReconnectEngine:
         addr = device.address.lower()
         if addr not in self.profiles:
             # Auto-register trusted audio sinks
-            if device.trusted and device.is_audio_sink:
+            if (device.trusted or device.paired or device.connected) and device.is_audio_sink:
                 self.register_speaker(addr)
             else:
                 return

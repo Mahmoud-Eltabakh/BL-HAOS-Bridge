@@ -48,6 +48,29 @@ def test_native_snapshot_filters_trusted_sinks(monkeypatch):
     assert list(snapshot.json()["speakers"]) == ["aa:bb:cc:dd:ee:ff"]
 
 
+def test_native_snapshot_includes_connected_speaker(monkeypatch):
+    speakers = [
+        DeviceInfo(
+            path="/speaker",
+            adapter_path="/adapter",
+            address="EC:81:93:53:A9:16",
+            trusted=False,
+            is_audio_sink=True,
+            connected=True,
+            paired=True,
+        ),
+    ]
+
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state.bt_manager, "get_devices", lambda audio_only=True: speakers)
+        snapshot = client.get("/api/native/speakers")
+
+    assert snapshot.status_code == 200
+    assert "ec:81:93:53:a9:16" in snapshot.json()["speakers"]
+    assert snapshot.json()["speakers"]["ec:81:93:53:a9:16"]["connected"] is True
+    assert snapshot.json()["speakers"]["ec:81:93:53:a9:16"]["trusted"] is True
+
+
 def test_native_command_returns_bridge_record(monkeypatch):
     speaker = DeviceInfo(
         path="/speaker",
