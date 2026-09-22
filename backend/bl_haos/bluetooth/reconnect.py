@@ -181,6 +181,27 @@ class AutoReconnectEngine:
                 # Fire reconnect task
                 asyncio.create_task(self._attempt_reconnect(profile))
 
+    async def _recover_stale_device(self, profile: SpeakerReconnectProfile) -> None:
+        """Clear stale BlueZ state and re-establish pairing for a blocked speaker."""
+        addr = profile.address
+        logger.warning("Attempting self-healing recovery for stale Bluetooth speaker %s", addr)
+
+        try:
+            await self.manager.remove_device(addr)
+        except Exception as exc:
+            logger.debug("Cleanup remove for %s failed during auto-recovery: %s", addr, exc)
+
+        try:
+            await self.manager.pair_and_trust(addr)
+        except Exception as exc:
+            logger.warning("Pair & trust recovery for %s failed: %s", addr, exc)
+
+        try:
+            await self.manager.connect_device(addr)
+            logger.info("Self-healing recovery succeeded for %s", addr)
+        except Exception as exc:
+            logger.warning("Reconnect after recovery failed for %s: %s", addr, exc)
+
     async def _attempt_reconnect(self, profile: SpeakerReconnectProfile) -> None:
         addr = profile.address
         dev = self.manager.get_device_by_address(addr)
@@ -209,6 +230,17 @@ class AutoReconnectEngine:
                 profile.consecutive_failures += 1
                 profile.backoff_step += 1
                 logger.warning("Failed to reconnect to %s: %s (Failures: %d)", addr, e, profile.consecutive_failures)
+
+                if profile.consecutive_failures >= 2:
+                    try:
+                        await self._recover_stale_device(profile)
+                        profile.state = ReconnectState.BACKOFF
+                        profile.next_retry_time = time.time() + self.initial_backoff
+                        profile.consecutive_failures = max(profile.consecutive_failures, 3)
+                        logger.info("Triggered self-healing recovery for stale speaker %s", addr)
+                        return
+                    except Exception as recovery_exc:
+                        logger.warning("Auto-recovery failed for %s: %s", addr, recovery_exc)
 
                 if profile.consecutive_failures >= self.max_failures:
                     logger.error("Max failures reached for %s. Tripping circuit breaker for %.1fs.", addr, self.breaker_cooldown)

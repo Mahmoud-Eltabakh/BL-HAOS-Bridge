@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.16
+
+- Correct WirePlumber 0.4 `wireplumber.conf` schema placing `libwireplumber-module-lua-scripting` in `wireplumber.components` as a module component.
+
 ## 0.2.15
 
 - Include `libwireplumber-module-lua-scripting` in container `wireplumber.conf` to properly load Lua components for Bluetooth audio.

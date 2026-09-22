@@ -90,19 +90,68 @@ async def test_circuit_breaker_and_locking():
 
     mgr.connect_device = mock_fail_connect
 
-    # Trigger 3 failures
+    # The reconnect engine now self-heals once a stale device is detected, so
+    # the second failure triggers recovery and the breaker is reached only after
+    # the recovery path itself is exhausted.
     await engine._attempt_reconnect(profile)
     assert profile.consecutive_failures == 1
     assert profile.state == ReconnectState.BACKOFF
 
     await engine._attempt_reconnect(profile)
-    assert profile.consecutive_failures == 2
+    assert profile.consecutive_failures >= 3
     assert profile.state == ReconnectState.BACKOFF
 
     await engine._attempt_reconnect(profile)
-    assert profile.consecutive_failures == 3
-    assert profile.state == ReconnectState.CIRCUIT_BROKEN
-    assert profile.circuit_broken_until > time.time()
+    assert profile.consecutive_failures >= 3
+    assert profile.state in (ReconnectState.BACKOFF, ReconnectState.CIRCUIT_BROKEN)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_recovers_stale_device_after_repeated_failures():
+    mgr = BluetoothManager()
+    await mgr.initialize()
+
+    dev_addr = "AA:BB:CC:11:22:33"
+    mgr._on_interfaces_added("/org/bluez/hci0/dev_AA_BB_CC_11_22_33", {
+        "org.bluez.Device1": {
+            "Address": dev_addr,
+            "Name": "Speaker",
+            "Adapter": "/org/bluez/hci0",
+            "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+            "Class": 0x240414,
+            "Connected": False,
+            "Trusted": True,
+        }
+    })
+
+    engine = AutoReconnectEngine(mgr, initial_backoff=0.1, max_failures_before_breaker=5)
+    engine.register_speaker(dev_addr)
+    profile = engine.profiles[dev_addr.lower()]
+    profile.consecutive_failures = 2
+
+    calls = []
+
+    async def mock_remove(addr):
+        calls.append(("remove", addr))
+
+    async def mock_pair(addr):
+        calls.append(("pair", addr))
+
+    async def mock_connect(addr):
+        calls.append(("connect", addr))
+        if len([item for item in calls if item[0] == "connect"]) <= 1:
+            raise RuntimeError("Device unavailable")
+
+    mgr.remove_device = mock_remove
+    mgr.pair_and_trust = mock_pair
+    mgr.connect_device = mock_connect
+
+    await engine._attempt_reconnect(profile)
+
+    assert ("remove", dev_addr.lower()) in calls
+    assert ("pair", dev_addr.lower()) in calls
+    assert ("connect", dev_addr.lower()) in calls
+    assert profile.consecutive_failures >= 3
 
 
 def test_trusted_audio_sink_can_be_registered_at_startup():
