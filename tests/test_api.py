@@ -13,15 +13,13 @@ def test_api_health():
 
 
 def test_native_diagnostics_are_sanitized(monkeypatch):
-    monkeypatch.setenv("BL_HAOS_BRIDGE_TOKEN", "test-credential")
     with TestClient(app) as client:
         response = client.get("/api/diagnostics/native")
 
     assert response.status_code == 200
     diagnostics = response.json()
-    assert diagnostics["bridge_credential_present"] is True
     assert diagnostics["bridge_version"] == 1
-    assert "test-credential" not in str(diagnostics)
+    assert "credential" not in str(diagnostics).lower()
 
 def test_api_adapters_and_scan():
     with TestClient(app) as client:

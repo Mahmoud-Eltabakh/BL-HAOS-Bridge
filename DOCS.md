@@ -21,10 +21,9 @@ BL-HAOS turns your Home Assistant OS device into a Bluetooth audio transmitter a
 ### 3. Install the Native Media Player Integration
 1. In HACS, add `https://github.com/Mahmoud-Eltabakh/BL-HAOS-Integration` as a custom **Integration** repository and install **BL-HAOS Bluetooth Audio**.
 2. Restart Home Assistant Core.
-3. Generate a long random value, save it as the add-on `bridge_token`, and restart BL-HAOS.
-4. Go to **Settings** -> **Devices & services** -> **Add integration**, then add **BL-HAOS Bluetooth Audio**. Enter the add-on local HTTP endpoint and the same bridge token.
+3. Home Assistant discovers the add-on automatically. Confirm the **BL-HAOS Bluetooth Audio** setup prompt.
 
-The integration authenticates the local REST/WebSocket bridge before creating entities for trusted Bluetooth speakers. It is not installed or discovered automatically by the add-on.
+The integration connects through Home Assistant's private add-on network before creating entities for trusted Bluetooth speakers. It is not installed automatically, but it is discovered once installed.
 
 ---
 
@@ -55,13 +54,12 @@ The integration authenticates the local REST/WebSocket bridge before creating en
 |---|---|---|
 | `log_level` | `info` | Logging verbosity (`trace`, `debug`, `info`, `warning`, `error`). |
 | `default_codec` | `auto` | Preferred Bluetooth A2DP audio codec. `auto` prioritizes highest fidelity supported by speaker: LDAC -> aptX HD -> aptX -> AAC -> SBC-XQ -> SBC. |
-| `bridge_token` | `""` | Required long random credential for the separate HACS integration. Configure the same value in its config flow; do not put it in logs or source control. |
 
 ## Native Integration Verification
 
 1. Take a Home Assistant backup before upgrading.
-2. Install the HACS integration using the steps above, configure the local endpoint and bridge token, then restart Home Assistant Core.
-3. Verify the Ingress **Native integration** panel reports the bridge and credential as ready.
+2. Install the HACS integration using the steps above, then restart Home Assistant Core and confirm the discovery prompt.
+3. Verify the Ingress **Native integration** panel reports the bridge as ready.
 4. Confirm a trusted connected speaker appears as a native `media_player` entity.
 5. Remove any old legacy-discovery entities manually after the native entity is working; BL-HAOS no longer publishes compatibility state or commands.
 

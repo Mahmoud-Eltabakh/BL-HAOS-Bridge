@@ -14,7 +14,7 @@
 
 - **Native Home Assistant OS Add-on**: Packages PipeWire, WirePlumber, BlueZ, and Snapcast into a container supervised by S6-Overlay v3 with Ingress support.
 - **Embedded Ingress Web Dashboard**: Visual discovery scanner with real-time RSSI signal strength meters, one-click PIN/SSP pairing, speaker control cards, and volume sliders directly inside the Home Assistant sidebar.
-- **Native `media_player` Integration**: Trusted connected speakers are exposed through the separate [BL-HAOS HACS integration](https://github.com/Mahmoud-Eltabakh/BL-HAOS-Integration) over an authenticated local REST/WebSocket bridge.
+- **Native `media_player` Integration**: Trusted connected speakers are exposed through the separate [BL-HAOS HACS integration](https://github.com/Mahmoud-Eltabakh/BL-HAOS-Integration) over the private Supervisor add-on network.
 - **Audiophile Codec Priority**: Automatically negotiates the highest quality codec supported by your speaker: `LDAC` &rarr; `aptX HD` &rarr; `aptX` &rarr; `AAC` &rarr; `SBC-XQ` &rarr; `SBC`.
 - **Bidirectional AVRCP Volume Sync**: Physical volume buttons on the speaker update Home Assistant in real time, and Home Assistant automations adjust physical speaker volume.
 - **Aggressive Auto-Reconnect Engine**: Background daemon actively monitors connection health and instantly reconnects speakers when they wake from sleep or re-enter range.
@@ -35,6 +35,16 @@
 5. Enable **Show in sidebar** to access the dashboard directly from your Home Assistant menu.
 
 See [DOCS.md](DOCS.md) for complete configuration options and troubleshooting guidance.
+
+## GHCR Publishing
+
+The add-on manifest pulls architecture-specific images from:
+
+```text
+ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge
+```
+
+After the first GitHub Actions build, set each package visibility to **Public** in GitHub Packages. Home Assistant OS cannot pull a private GHCR package anonymously and reports `403 denied` or `401` during installation.
 
 ---
 

@@ -3,9 +3,7 @@
 import json
 import logging
 from typing import List, Any
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-
-from .routes import require_native_bridge
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger("bl_haos.api.ws")
 router = APIRouter(tags=["websocket"])
@@ -73,16 +71,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @router.websocket("/ws/native")
 async def native_websocket_endpoint(websocket: WebSocket):
-    """Serve credentialed speaker updates separately from the Ingress socket."""
-    try:
-        await require_native_bridge(
-            authorization=websocket.headers.get("authorization"),
-            bridge_credential=websocket.headers.get("x-bl-haos-bridge-credential"),
-        )
-    except HTTPException:
-        await websocket.close(code=1008)
-        return
-
+    """Serve native speaker updates on the private Supervisor network."""
     await native_ws_manager.connect(websocket)
     try:
         while True:

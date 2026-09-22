@@ -1,10 +1,8 @@
 """REST API Route Handlers for BL-HAOS."""
 
-import hmac
 import logging
-import os
 from typing import List, Optional, Dict, Any, Literal
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..ha.player import MediaPlayerError
@@ -22,11 +20,9 @@ def native_diagnostics(app: Any) -> dict[str, Any]:
     """Return only bounded, non-secret native bridge readiness details."""
     devices = app.state.bt_manager.get_devices(audio_only=True)
     trusted_speakers = [device for device in devices if device.trusted and device.is_audio_sink]
-    credential_present = bool(_bridge_credential())
     return {
-        "bridge_credential_present": credential_present,
         "bridge_version": NATIVE_BRIDGE_VERSION,
-        "native_transport_ready": credential_present and hasattr(app.state, "ha_bridge"),
+        "native_transport_ready": hasattr(app.state, "ha_bridge"),
         "native_client_count": len(getattr(app.state.native_ws_manager, "active_connections", [])),
         "trusted_speaker_count": len(trusted_speakers),
         "connected_trusted_speaker_count": sum(device.connected for device in trusted_speakers),
@@ -62,22 +58,6 @@ class NativeCommandRequest(BaseModel):
     volume: float | None = Field(default=None, ge=0, le=1)
     url: str | None = None
     media_type: str | None = Field(default=None, max_length=128)
-
-
-def _bridge_credential() -> str:
-    """Read the configured bridge token without logging it."""
-    return os.environ.get("BL_HAOS_BRIDGE_TOKEN", "").strip()
-
-
-async def require_native_bridge(
-    authorization: Optional[str] = Header(default=None),
-    bridge_credential: Optional[str] = Header(default=None, alias="X-BL-HAOS-Bridge-Credential"),
-) -> None:
-    """Reject uncredentialed native bridge requests before sending data."""
-    supplied = bridge_credential or (authorization.removeprefix("Bearer ") if authorization else "")
-    expected = _bridge_credential()
-    if not expected or not hmac.compare_digest(supplied, expected):
-        raise HTTPException(status_code=401, detail="Invalid native bridge credential")
 
 
 def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str, Any]:
@@ -118,13 +98,13 @@ async def get_native_diagnostics(request: Request):
     return native_diagnostics(request.app)
 
 
-@router.get("/native/identity", dependencies=[Depends(require_native_bridge)])
+@router.get("/native/identity")
 async def get_native_identity():
     """Return the fixed, versioned native bridge identity."""
     return {"bridge_id": NATIVE_BRIDGE_ID, "version": NATIVE_BRIDGE_VERSION}
 
 
-@router.get("/native/speakers", dependencies=[Depends(require_native_bridge)])
+@router.get("/native/speakers")
 async def list_native_speakers(request: Request):
     """Return the current trusted Bluetooth audio-sink snapshot."""
     speakers = {
@@ -136,7 +116,7 @@ async def list_native_speakers(request: Request):
     return {"speakers": speakers}
 
 
-@router.post("/native/speakers/{address}/command", dependencies=[Depends(require_native_bridge)])
+@router.post("/native/speakers/{address}/command")
 async def command_native_speaker(address: str, payload: NativeCommandRequest, request: Request):
     """Apply an authenticated command and return the post-operation speaker record."""
     normalized = address.strip().lower().replace("-", ":")

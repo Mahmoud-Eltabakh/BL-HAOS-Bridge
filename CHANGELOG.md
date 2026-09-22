@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- Remove the user-managed bridge token and host port mapping; the HACS integration now discovers BL-HAOS through Supervisor on the private add-on network.
+
 ## 0.2.1
 
 - Ensure S6 restarts recreate the PipeWire runtime directory before PipeWire and WirePlumber launch, preventing the audio-service restart loop on HAOS.

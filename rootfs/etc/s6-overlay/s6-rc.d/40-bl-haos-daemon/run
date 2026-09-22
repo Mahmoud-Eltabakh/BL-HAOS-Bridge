@@ -7,7 +7,5 @@ export PIPEWIRE_RUNTIME_DIR=/var/run/pipewire
 export XDG_RUNTIME_DIR=/var/run/pipewire
 export PYTHONPATH=/backend:$PYTHONPATH
 
-export BL_HAOS_BRIDGE_TOKEN="$(bashio::config 'bridge_token' 2>/dev/null || true)"
-
 echo "[bl-haos-daemon] Starting FastAPI backend daemon on port 8099..."
 exec python3 -m uvicorn bl_haos.main:app --host 0.0.0.0 --port 8099 --log-level info
