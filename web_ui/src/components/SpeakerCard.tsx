@@ -29,7 +29,7 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
   };
 
   const handleRemove = async () => {
-    if (confirm(`Remove and unpair "${device.alias || device.name}"?`)) {
+    if (confirm(`Remove "${device.alias || device.name || device.address}"?`)) {
       await apiClient.removeDevice(device.address);
       onRefresh();
     }
@@ -115,7 +115,7 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
           <button
             onClick={handleRemove}
             className="px-3 py-2 text-xs font-medium rounded-lg flex items-center space-x-1.5 bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20 transition-colors"
-            title="Untrust and completely remove device"
+            title="Remove speaker"
           >
             <Trash2 className="w-3.5 h-3.5 text-rose-400" />
             <span>Remove</span>
@@ -126,7 +126,7 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
           <button
             onClick={() => onSettingsClick(device)}
             className="px-2.5 py-2 text-xs font-medium bg-slate-700/60 hover:bg-slate-700 hover:text-slate-200 border border-slate-600/50 rounded-lg transition-colors flex items-center space-x-1"
-            title="Speaker Settings"
+            title="Settings"
           >
             <Settings className="w-3.5 h-3.5" />
             <span>Settings</span>

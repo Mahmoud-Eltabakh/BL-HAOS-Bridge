@@ -45,15 +45,15 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
     setStatusMessage(null);
     try {
       await apiClient.pairDevice(address.trim(), pinCode);
-      setStatusMessage({ type: 'success', text: `Successfully paired and trusted ${address}!` });
+      setStatusMessage({ type: 'success', text: `Connected to ${address}.` });
       onRefresh();
     } catch (err: any) {
       const msg = err?.message || String(err);
       setStatusMessage({
         type: 'error',
         text: msg.includes('Page Timeout')
-          ? `Pairing failed for ${address}: Speaker did not respond. Put your speaker into pairing mode (blinking LED) and try again.`
-          : `Pairing failed for ${address}: ${msg}`,
+          ? `Could not connect to ${address}. Ensure the speaker is in pairing mode (blinking LED) and try again.`
+          : `Connection failed for ${address}: ${msg}`,
       });
     } finally {
       setActionAddress(null);
@@ -66,7 +66,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
     setStatusMessage(null);
     try {
       await apiClient.disconnectDevice(address);
-      setStatusMessage({ type: 'success', text: `Disconnected audio stream from ${address}.` });
+      setStatusMessage({ type: 'success', text: `Disconnected from ${address}.` });
       onRefresh();
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: `Disconnect failed: ${err?.message || err}` });
@@ -81,7 +81,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
     setStatusMessage(null);
     try {
       await apiClient.removeDevice(address.trim());
-      setStatusMessage({ type: 'success', text: `Device ${address} untrusted and completely removed.` });
+      setStatusMessage({ type: 'success', text: `Removed ${address}.` });
       onRefresh();
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: `Remove failed: ${err?.message || err}` });
@@ -109,8 +109,8 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               <Bluetooth className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Scan for Bluetooth Speakers</h2>
-              <p className="text-xs text-slate-400">Discover, search, pair, disconnect, or remove devices</p>
+              <h2 className="text-lg font-bold text-white">Add Bluetooth Speaker</h2>
+              <p className="text-xs text-slate-400">Discover and connect nearby Bluetooth audio devices</p>
             </div>
           </div>
           <button
@@ -315,19 +315,21 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                         className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg flex items-center space-x-1.5 transition disabled:opacity-50"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        <span>{isLoading ? 'Pairing...' : dev.paired ? 'Connect' : 'Pair & Trust'}</span>
+                        <span>{isLoading ? 'Connecting...' : 'Connect'}</span>
                       </button>
                     )}
 
-                    <button
-                      onClick={() => handleRemove(dev.address)}
-                      disabled={isLoading}
-                      className="px-2.5 py-1.5 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 text-rose-300 text-xs font-medium rounded-lg flex items-center space-x-1 transition disabled:opacity-50"
-                      title="Untrust & remove from cache"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                      <span>Remove</span>
-                    </button>
+                    {(dev.paired || dev.connected) && (
+                      <button
+                        onClick={() => handleRemove(dev.address)}
+                        disabled={isLoading}
+                        className="px-2.5 py-1.5 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 text-rose-300 text-xs font-medium rounded-lg flex items-center space-x-1 transition disabled:opacity-50"
+                        title="Remove device"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                        <span>Remove</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -337,7 +339,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
 
         {/* Direct / Manual MAC Pair Footer */}
         <div className="p-4 bg-slate-900/70 border-t border-slate-700/80">
-          <p className="text-xs text-slate-400 mb-2 font-medium">Direct Action by Bluetooth MAC Address:</p>
+          <p className="text-xs text-slate-400 mb-2 font-medium">Connect by Bluetooth MAC Address:</p>
           <div className="flex flex-col sm:flex-row items-center gap-2">
             <input
               type="text"
@@ -353,16 +355,16 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                 className="flex-1 sm:flex-none px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl flex items-center justify-center space-x-1.5 transition"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>{actionAddress === manualMac.trim() ? 'Pairing...' : 'Pair MAC'}</span>
+                <span>{actionAddress === manualMac.trim() ? 'Connecting...' : 'Connect'}</span>
               </button>
               <button
                 onClick={() => handleRemove(manualMac)}
                 disabled={!manualMac.trim() || actionAddress === manualMac.trim()}
                 className="flex-1 sm:flex-none px-4 py-2 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 disabled:opacity-50 text-rose-300 text-xs font-semibold rounded-xl flex items-center justify-center space-x-1.5 transition"
-                title="Untrust & remove MAC"
+                title="Remove MAC"
               >
                 <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                <span>Remove MAC</span>
+                <span>Remove</span>
               </button>
             </div>
           </div>

@@ -109,7 +109,7 @@ export const App: React.FC = () => {
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-lg font-bold text-slate-200 flex items-center gap-2">
             <Volume2 className="w-5 h-5 text-blue-400" />
-            <span>Connected & Paired Speakers</span>
+            <span>Speakers</span>
             <span className="text-xs font-normal text-slate-400">({pairedSpeakers.length})</span>
           </h2>
         </div>
@@ -117,16 +117,16 @@ export const App: React.FC = () => {
         {pairedSpeakers.length === 0 ? (
           <div className="bg-slate-800/40 border border-dashed border-slate-700 rounded-2xl p-12 text-center">
             <Volume2 className="w-12 h-12 mx-auto text-slate-600 mb-3" />
-            <h3 className="text-base font-semibold text-slate-300">No paired Bluetooth speakers</h3>
+            <h3 className="text-base font-semibold text-slate-300">No speakers added yet</h3>
             <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-              Scan for nearby speakers in pairing mode to connect them to Home Assistant.
+              Click Add Speaker to discover and connect your Bluetooth speaker.
             </p>
             <button
               onClick={() => setIsDiscoveryOpen(true)}
               className="mt-5 px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg inline-flex items-center space-x-1.5 transition"
             >
               <Plus className="w-4 h-4" />
-              <span>Scan Nearby Devices</span>
+              <span>Add Speaker</span>
             </button>
           </div>
         ) : (
