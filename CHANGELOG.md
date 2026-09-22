@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.22
+
+- Tune the auto-reconnect engine for faster recovery from real Bluetooth link drops: lower initial backoff (2.0s -> 1.0s), gentler backoff growth (2.0x -> 1.5x), lower backoff cap (60s -> 20s), more retries before the circuit breaker trips (5 -> 8), and a shorter breaker cooldown (30s -> 10s).
+
 ## 0.2.21
 
 - Fix `media_player.media_play` failing with "No active playback to resume" after a stop or add-on restart by replaying the last played URL instead of requiring an already-running stream.

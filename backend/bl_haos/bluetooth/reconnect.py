@@ -37,11 +37,11 @@ class AutoReconnectEngine:
     def __init__(
         self,
         manager: BluetoothManager,
-        initial_backoff: float = 2.0,
-        backoff_multiplier: float = 2.0,
-        max_backoff: float = 60.0,
-        max_failures_before_breaker: int = 5,
-        circuit_breaker_cooldown: float = 30.0,
+        initial_backoff: float = 1.0,
+        backoff_multiplier: float = 1.5,
+        max_backoff: float = 20.0,
+        max_failures_before_breaker: int = 8,
+        circuit_breaker_cooldown: float = 10.0,
     ):
         self.manager = manager
         self.initial_backoff = initial_backoff
