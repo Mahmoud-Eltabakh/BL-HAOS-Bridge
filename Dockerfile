@@ -38,7 +38,8 @@ COPY web_ui/dist /var/www/bl-haos
 # Install python dependencies for backend
 RUN pip3 install --no-cache-dir --prefer-binary --break-system-packages \
     fastapi \
-    "uvicorn[standard]" \
+    uvicorn \
+    wsproto \
     pydantic \
     httpx
 

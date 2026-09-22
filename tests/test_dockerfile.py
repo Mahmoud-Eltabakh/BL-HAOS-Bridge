@@ -22,7 +22,9 @@ def test_dockerfile_structure():
     for pkg in expected_pkgs:
         assert pkg in content, f"Dockerfile must install {pkg}"
 
-    assert '"uvicorn[standard]"' in content, "Uvicorn must include WebSocket support"
+    assert "uvicorn" in content, "Uvicorn must be installed"
+    assert "wsproto" in content, "Uvicorn must include a pure-Python WebSocket implementation"
+    assert '"uvicorn[standard]"' not in content, "Standard extras require native armv7 builds"
 
 def test_build_yaml_structure():
     build_path = Path("build.yaml")
