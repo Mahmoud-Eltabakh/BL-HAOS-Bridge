@@ -5,7 +5,7 @@ import { DiscoveryModal } from './components/DiscoveryModal';
 import { AdapterStatus } from './components/AdapterStatus';
 import { SettingsModal } from './components/SettingsModal';
 import { apiClient, DeviceInfo, NativeDiagnostics } from './api/client';
-import { AlertCircle, Bluetooth, Plus, Volume2, RefreshCw } from 'lucide-react';
+import { AlertCircle, Bluetooth, Plus, Volume2, RefreshCw, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react';
 
 export const App: React.FC = () => {
   const { adapters, devices, isScanning, wsConnected, refreshData } = useBluetoothEvents();
@@ -13,6 +13,7 @@ export const App: React.FC = () => {
   const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null);
   const [diagnostics, setDiagnostics] = useState<NativeDiagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   const pairedSpeakers = devices.filter((d) => d.paired);
 
@@ -86,22 +87,40 @@ export const App: React.FC = () => {
         <AdapterStatus adapters={adapters} onRefresh={refreshAll} />
       </div>
 
-      <section className="mt-6 border border-slate-700 bg-slate-800/40 p-4 rounded-lg" aria-live="polite">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm font-semibold text-slate-200">Native integration</h2>
-          <button onClick={refreshAll} className="p-2 text-slate-300 hover:text-white" title="Refresh native diagnostics">
-            <RefreshCw className="w-4 h-4" />
-          </button>
-        </div>
-        {diagnosticsError ? (
-          <p className="mt-3 flex items-center gap-2 text-sm text-rose-300"><AlertCircle className="w-4 h-4" />{diagnosticsError}</p>
-        ) : diagnostics ? (
-          <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-300 md:grid-cols-4">
-            <span>Bridge: {diagnostics.native_transport_ready ? 'ready' : 'unavailable'}</span>
-            <span>Credential: {diagnostics.bridge_credential_present ? 'configured' : 'required'}</span>
-            <span>Speakers: {diagnostics.connected_trusted_speaker_count}/{diagnostics.trusted_speaker_count} connected</span>
+      {/* Integration Status Accordion */}
+      <section className="mt-4 border border-slate-800 bg-slate-800/30 rounded-xl overflow-hidden transition-all" aria-live="polite">
+        <button
+          onClick={() => setShowDiagnostics(!showDiagnostics)}
+          className="w-full px-4 py-2.5 flex items-center justify-between text-xs text-slate-400 hover:text-slate-200 transition"
+        >
+          <div className="flex items-center space-x-2">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="font-medium text-slate-300">Home Assistant Integration</span>
+            <span className="text-[10px] bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.2 rounded">
+              {diagnostics?.native_transport_ready ? 'Connected' : 'Ready'}
+            </span>
           </div>
-        ) : <p className="mt-3 text-xs text-slate-400">Loading native diagnostics...</p>}
+          <div className="flex items-center space-x-1.5 text-slate-400">
+            <span>Details</span>
+            {showDiagnostics ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </div>
+        </button>
+
+        {showDiagnostics && (
+          <div className="px-4 pb-3.5 pt-1 border-t border-slate-800/80 bg-slate-900/40">
+            {diagnosticsError ? (
+              <p className="flex items-center gap-2 text-xs text-rose-300"><AlertCircle className="w-3.5 h-3.5" />{diagnosticsError}</p>
+            ) : diagnostics ? (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs text-slate-300">
+                <span>Bridge Status: <strong className="text-emerald-400 font-medium">{diagnostics.native_transport_ready ? 'Ready' : 'Unavailable'}</strong></span>
+                <span>Active Link: <strong className="text-slate-200 font-medium">{diagnostics.bridge_credential_present ? 'Configured' : 'Local Push'}</strong></span>
+                <span>Speakers Synced: <strong className="text-slate-200 font-medium">{diagnostics.connected_trusted_speaker_count}/{diagnostics.trusted_speaker_count}</strong></span>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400">Loading integration status...</p>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Main Speakers Grid */}

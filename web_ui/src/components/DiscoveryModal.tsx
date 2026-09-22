@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { DeviceInfo, apiClient } from '../api/client';
 import { X, RefreshCw, Bluetooth, Signal, Plus, Key, Search, Volume2, Radio, Trash2, Power } from 'lucide-react';
 
@@ -24,6 +24,16 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
   const [audioOnlyFilter, setAudioOnlyFilter] = useState(false);
   const [manualMac, setManualMac] = useState('');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -100,7 +110,13 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-150"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Add Bluetooth Speaker"
+    >
       <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]">
         {/* Header */}
         <div className="p-5 border-b border-slate-700 flex items-center justify-between bg-slate-900/50">
@@ -116,6 +132,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
           <button
             onClick={onClose}
             className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700 transition"
+            aria-label="Close dialog"
           >
             <X className="w-5 h-5" />
           </button>
@@ -216,7 +233,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                 }`}
               >
                 <Radio className="w-3.5 h-3.5" />
-                <span>All MACs</span>
+                <span>All Devices</span>
               </button>
               <button
                 onClick={() => setAudioOnlyFilter(true)}
@@ -227,7 +244,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                 }`}
               >
                 <Volume2 className="w-3.5 h-3.5" />
-                <span>Audio Sinks</span>
+                <span>Speakers</span>
               </button>
             </div>
           </div>
@@ -271,7 +288,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                           </span>
                         ) : (
                           <span className="text-[10px] bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.5 rounded">
-                            MAC Beacon
+                            Unnamed Device
                           </span>
                         )}
                         {dev.is_audio_sink && (
