@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.20
+
+- Enhance Bluetooth audio sink recognition to detect connected and paired audio devices (such as Bluetooth adapters and speakers) and publish native speaker state updates immediately.
+
 ## 0.2.19
 
 - Strip `libwireplumber-module-logind` directly from `/usr/share/wireplumber/wireplumber.conf` during Docker build and initialize systemd seats runtime directory to permanently resolve the container logind crash loop.
