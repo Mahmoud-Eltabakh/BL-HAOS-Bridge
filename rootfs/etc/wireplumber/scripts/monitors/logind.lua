@@ -1,0 +1,1 @@
+-- BL-HAOS: Disabled systemd-logind monitor for container environment

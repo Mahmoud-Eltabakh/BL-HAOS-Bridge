@@ -28,7 +28,9 @@ RUN apt-get update \
         curl \
         jq \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/share/wireplumber/scripts/monitors/*logind* \
+    && rm -rf /usr/share/wireplumber/main.lua.d/*logind*
 
 # Copy root filesystem overlay and application code
 COPY rootfs /

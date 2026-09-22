@@ -1,0 +1,21 @@
+#!/bin/sh
+# Local post-commit hook: rebuilds and pushes BL-HAOS Bridge images when
+# build-relevant files changed in the commit just made. Requires
+# `git config core.hooksPath .githooks` (run once per clone) and a prior
+# `docker login ghcr.io`.
+
+repo_root="$(git rev-parse --show-toplevel)"
+changed="$(git diff --name-only HEAD~1 HEAD 2>/dev/null)"
+
+# First commit in a repo has no HEAD~1; fall back to diffing against the empty tree.
+if [ -z "$changed" ]; then
+    changed="$(git diff --name-only "$(git hash-object -t tree /dev/null)" HEAD 2>/dev/null)"
+fi
+
+echo "$changed" | grep -qE '^(Dockerfile|build\.yaml|config\.yaml|backend/|rootfs/|web_ui/dist/)' || {
+    echo "[post-commit] No build-relevant changes; skipping local image build."
+    exit 0
+}
+
+echo "[post-commit] Build-relevant changes detected; building and pushing images..."
+pwsh -NoProfile -File "$repo_root/scripts/build-and-push.ps1"

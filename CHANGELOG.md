@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.13
+
+- Remove systemd-logind monitor scripts at container build time and map DBUS_SESSION_BUS_ADDRESS to system bus socket to prevent WirePlumber crash loop in container.
+
 ## 0.2.12
 
 - Mask `20-logind.lua` in WirePlumber to permanently prevent systemd-logind crash and disconnection loop in container environment.

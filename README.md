@@ -87,3 +87,24 @@ pytest tests/ -v
 ```
 
 The test suite covers Home Assistant Add-on schema compliance, S6 service supervision, PipeWire audio configuration, BlueZ D-Bus controllers, native transport, and Ingress assets.
+
+---
+
+## Local Multi-Arch Builds (faster than GitHub Actions)
+
+One-time setup per clone:
+
+```bash
+docker login ghcr.io          # PAT with write:packages scope
+git config core.hooksPath .githooks
+docker buildx create --name bl-haos-builder --driver docker-container --use
+docker run --privileged --rm tonistiigi/binfmt --install all
+```
+
+After setup, images build and push automatically:
+
+- **On commit**: `.githooks/post-commit` rebuilds only when Dockerfile, `build.yaml`, `config.yaml`, `backend/`, `rootfs/`, or `web_ui/dist/` changed in that commit.
+- **On any file change**: run `pwsh scripts/watch-and-build.ps1` for a continuous watch loop (debounced).
+- **Manually**: run `pwsh scripts/build-and-push.ps1`.
+
+All three commands build `aarch64`, `amd64`, and `armv7` and push `{arch}-bl-haos-bridge:{version}` and `:latest` to GHCR using the version in `config.yaml`.
