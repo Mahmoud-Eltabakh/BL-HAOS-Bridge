@@ -8,6 +8,7 @@ from dbus_fast import Variant
 from dbus_fast.aio import MessageBus
 
 from .constants import (
+    A2DP_SINK_UUID,
     AUDIO_SINK_UUIDS,
     BLUEZ_SERVICE,
     DBUS_PROPERTIES_IFACE,
@@ -182,17 +183,21 @@ class BluetoothDevice:
             introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
             proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
             dev_iface = proxy.get_interface(DEVICE_INTERFACE)
+            connect_error = None
             try:
                 await dev_iface.call_connect()
             except Exception as conn_err:
                 err_str = str(conn_err)
                 if "AlreadyConnected" in err_str or "InProgress" in err_str:
-                    pass
+                    connect_error = None
                 else:
-                    try:
-                        await dev_iface.call_connect_profile(A2DP_SINK_UUID)
-                    except Exception:
-                        raise conn_err
+                    connect_error = conn_err
+            try:
+                await dev_iface.call_connect_profile(A2DP_SINK_UUID)
+            except Exception as profile_err:
+                profile_str = str(profile_err)
+                if "AlreadyConnected" not in profile_str and "InProgress" not in profile_str:
+                    raise connect_error or profile_err
         except Exception as e:
             if self.adapter_path:
                 try:

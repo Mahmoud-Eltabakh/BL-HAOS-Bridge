@@ -86,3 +86,44 @@ async def test_bluetooth_device_actions():
 
     await dev.set_trusted(True)
     assert dev.trusted is True
+
+
+@pytest.mark.asyncio
+async def test_connect_activates_a2dp_profile_when_acl_is_already_connected():
+    class FakeDeviceInterface:
+        def __init__(self):
+            self.profile_calls = []
+
+        async def call_connect(self):
+            raise RuntimeError("org.bluez.Error.AlreadyConnected")
+
+        async def call_connect_profile(self, uuid):
+            self.profile_calls.append(uuid)
+
+    class FakeProxy:
+        def __init__(self, interface):
+            self.interface = interface
+
+        def get_interface(self, _name):
+            return self.interface
+
+    class FakeBus:
+        def __init__(self, interface):
+            self.interface = interface
+
+        async def introspect(self, _service, _path):
+            return object()
+
+        def get_proxy_object(self, _service, _path, _introspection):
+            return FakeProxy(self.interface)
+
+    interface = FakeDeviceInterface()
+    dev = BluetoothDevice(
+        bus=FakeBus(interface),
+        path="/org/bluez/hci0/dev_11_22_33_44_55_66",
+        properties={"Address": "11:22:33:44:55:66"},
+    )
+
+    await dev.connect()
+
+    assert interface.profile_calls == [A2DP_SINK_UUID]

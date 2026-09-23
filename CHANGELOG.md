@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.28
+
+- Explicitly activate the A2DP sink profile when BlueZ reports that the Bluetooth device is already connected, preventing playback failures where the link is restored but PipeWire never receives an audio sink.
+
 ## 0.2.27
 
 - Wait up to 15 seconds for PipeWire to publish a reconnected speaker's A2DP sink before failing playback, allowing WirePlumber profile negotiation to complete on slower Home Assistant OS hardware.
