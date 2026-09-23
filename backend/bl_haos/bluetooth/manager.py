@@ -1,5 +1,6 @@
 """Central Bluetooth Manager for BL-HAOS."""
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -310,7 +311,15 @@ class BluetoothManager:
             # PipeWire. Force a clean link before reconnecting the profile.
             if getattr(dev, "connected", False):
                 await dev.disconnect()
-            await dev.connect()
+                await asyncio.sleep(1.0)
+            for attempt in range(3):
+                try:
+                    await dev.connect()
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(1.0)
             try:
                 await dev.set_trusted(True)
             except Exception as e:

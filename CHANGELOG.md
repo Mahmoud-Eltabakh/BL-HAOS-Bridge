@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.34
+
+- Add a bounded settle-and-retry loop when replacing active playback, avoiding transient BlueZ reconnect failures after resetting a stale A2DP transport.
+
 ## 0.2.33
 
 - Force a clean Bluetooth disconnect before reconnecting an already-connected speaker, clearing stale PipeWire A2DP transports.
