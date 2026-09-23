@@ -26,17 +26,15 @@ jobs:
           python-version: "3.12"
 
       - name: Install bridge test dependencies
-        working-directory: modules/bridge
         run: |
           python3 -m pip install --disable-pip-version-check -r backend/requirements.txt
           python3 -m pip install --disable-pip-version-check pytest pytest-asyncio pytest-cov
 
       - name: Run bridge regression tests
         run: |
-          python -m pytest modules/bridge/tests/ -q
+          python -m pytest tests/ -q
 
       - name: Build frontend
-        working-directory: modules/bridge
         run: |
           npm ci --prefix web_ui --ignore-scripts
           npm run build --prefix web_ui
@@ -46,11 +44,11 @@ jobs:
         run: |
           set -euo pipefail
           for arch in aarch64 amd64 armv7; do
-            grep -Fq "${arch}" modules/bridge/config.yaml
-            grep -Fq "${arch}" modules/bridge/build.yaml
-            grep -Fq "${arch}" modules/bridge/.github/workflows/builder.yaml
+            grep -Fq "${arch}" config.yaml
+            grep -Fq "${arch}" build.yaml
+            grep -Fq "${arch}" .github/workflows/builder.yaml
           done
-          grep -Fq 'image: "ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge"' modules/bridge/config.yaml
+          grep -Fq 'image: "ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge"' config.yaml
 
   build:
     name: Build ${{ matrix.arch }}
@@ -70,7 +68,6 @@ jobs:
           echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
 
       - name: Audit Python and frontend dependencies
-        working-directory: modules/bridge
         run: |
           python3 -m pip install --disable-pip-version-check pip-audit==2.7.3
           python3 -m pip_audit --strict --requirement backend/requirements.txt
@@ -81,7 +78,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
-          scan-ref: modules/bridge
+          scan-ref: .
           vuln-type: os,library
           severity: HIGH,CRITICAL
           ignore-unfixed: false
