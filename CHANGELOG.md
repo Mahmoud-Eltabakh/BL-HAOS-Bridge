@@ -7,6 +7,7 @@
 - Make PipeWire sink discovery inspect both top-level and nested node property dictionaries in `pw-dump` output.
 - Auto-reconnect failures during playback now report which stage failed instead of a generic "Auto-reconnect failed" message: whether Bluetooth itself couldn't reconnect, or it reconnected but no PipeWire audio sink appeared afterward.
 - Increased the post-reconnect settle time before retrying playback (2.0s -> 3.0s) to give PipeWire more time to negotiate the A2DP audio profile after a fresh Bluetooth reconnect.
+- Separate Web UI diagnostics and recovery fetching into independent handlers so operator and native diagnostics load cleanly even when unauthenticated to recovery endpoints.
 
 ## 0.2.24
 

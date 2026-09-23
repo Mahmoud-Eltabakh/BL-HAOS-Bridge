@@ -25,17 +25,29 @@ export const App: React.FC = () => {
 
   const refreshDiagnostics = async () => {
     setOperatorLoading(true);
+    setDiagnosticsError(null);
+    setOperatorError(null);
+
     try {
       setDiagnostics(await apiClient.getNativeDiagnostics());
-      const nextDiagnostics = await apiClient.getDiagnostics();
-      setOperatorDiagnostics(nextDiagnostics);
-      setRecovery(await apiClient.getRecovery());
-      setDiagnosticsError(null);
-      setOperatorError(null);
     } catch (error) {
       setDiagnostics(null);
       setDiagnosticsError(error instanceof Error ? error.message : 'Native diagnostics are unavailable');
-      setOperatorError('Diagnostics are unavailable');
+    }
+
+    try {
+      const nextDiagnostics = await apiClient.getDiagnostics();
+      setOperatorDiagnostics(nextDiagnostics);
+    } catch (error) {
+      setOperatorDiagnostics(null);
+      setOperatorError(error instanceof Error ? error.message : 'Diagnostics are unavailable');
+    }
+
+    try {
+      setRecovery(await apiClient.getRecovery());
+    } catch {
+      // Recovery routes require native auth; keep operator diagnostics available without it.
+      setRecovery(null);
     } finally {
       setOperatorLoading(false);
     }
