@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.24
+
+- The add-on now pushes its native bridge token to Supervisor's Discovery API on startup, so the Home Assistant integration connects automatically with zero manual token entry when discovery succeeds. Manual endpoint/token entry remains available as a fallback.
+
 ## 0.2.23
 
 - Prevent connected Bluetooth audio adapters from auto-sleeping (and dropping the link) by sending a 1-second silent pulse every 4 minutes while idle. Skipped whenever real audio is already playing, so battery use stays minimal.
