@@ -119,7 +119,7 @@ async def lifespan(app: FastAPI):
     # Initialize Multi-room Manager
     multiroom_manager = MultiroomManager(health_registry=health)
     app.state.multiroom_manager = multiroom_manager
-    health.observe_component("pipewire", HealthState.UNKNOWN, source="startup")
+    health.observe_component("pipewire", HealthState.UNKNOWN, required=False, source="startup")
     health.observe_component("snapcast", HealthState.UNKNOWN, required=False, source="startup")
 
     # Wire event broadcaster to WebSocket manager and HA Discovery

@@ -65,6 +65,15 @@ def test_required_precedence_and_optional_snapcast_isolation():
     assert registry.snapshot().status == HealthState.UNAVAILABLE
 
 
+def test_unprobed_optional_component_does_not_degrade_status():
+    registry = HealthRegistry()
+    registry.set_lifecycle(HealthState.HEALTHY)
+    registry.observe_component("bluetooth", HealthState.HEALTHY)
+    registry.observe_component("pipewire", HealthState.UNKNOWN, required=False)
+
+    assert registry.snapshot().status == HealthState.HEALTHY
+
+
 def test_speaker_transition_preserves_safe_failure_reason():
     registry = HealthRegistry()
     registry.observe_speaker("AA-BB-CC-11-22-33", SpeakerState.UNKNOWN)
