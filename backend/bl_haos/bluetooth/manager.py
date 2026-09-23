@@ -306,6 +306,10 @@ class BluetoothManager:
             if not dev:
                 raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
         try:
+            # A connected BlueZ ACL can retain a stale A2DP transport in
+            # PipeWire. Force a clean link before reconnecting the profile.
+            if getattr(dev, "connected", False):
+                await dev.disconnect()
             await dev.connect()
             try:
                 await dev.set_trusted(True)

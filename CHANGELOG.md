@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.33
+
+- Force a clean Bluetooth disconnect before reconnecting an already-connected speaker, clearing stale PipeWire A2DP transports.
+
 ## 0.2.32
 
 - Explicitly reconnect the A2DP profile after pairing so a removed and re-paired speaker is immediately usable.
