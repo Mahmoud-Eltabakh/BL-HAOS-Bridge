@@ -200,8 +200,11 @@ class BluetoothManager:
     def get_device_by_address(self, address: str) -> BluetoothDevice | None:
         target = normalize_address(address)
         for dev in self.devices.values():
-            if normalize_address(dev.address) == target:
-                return dev
+            try:
+                if normalize_address(dev.address) == target:
+                    return dev
+            except ValueError:
+                continue
         return None
 
     async def ensure_device(self, address: str) -> BluetoothDevice | None:
@@ -264,10 +267,13 @@ class BluetoothManager:
             for adapter in self.adapters.values():
                 try:
                     await adapter.connect_device(address)
-                    break
+                    dev = await self.ensure_device(address)
+                    if dev:
+                        break
                 except Exception:
                     continue
-            dev = await self.ensure_device(address)
+            if not dev:
+                dev = await self.ensure_device(address)
 
         if not dev:
             raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
@@ -290,7 +296,8 @@ class BluetoothManager:
                 try:
                     await adapter.connect_device(address)
                     dev = await self.ensure_device(address)
-                    break
+                    if dev:
+                        break
                 except Exception:
                     continue
             if not dev:

@@ -2,6 +2,7 @@
 
 ## 0.2.25
 
+- Harden Bluetooth device lookup and auto-reconnect against malformed or unpopulated cached device addresses, preventing `ValueError: Invalid Bluetooth address` exceptions when iterating over discovered devices.
 - Configure WirePlumber to explicitly use `[ a2dp_sink a2dp_source ]` roles and disable the unused HFP/HSP telephony backend (`bluez5.hfphsp-backend = "none"`). Prevents BlueZ `RegisterProfile() failed: org.bluez.Error.NotPermitted` and SCO socket initialization errors on Home Assistant OS that blocked A2DP audio sink registration.
 - Strengthen device reconnection to explicitly connect the A2DP audio profile (`A2DP_SINK_UUID`) if base ACL connection is already established or returns `AlreadyConnected`/`InProgress`.
 - Make PipeWire sink discovery inspect both top-level and nested node property dictionaries in `pw-dump` output.

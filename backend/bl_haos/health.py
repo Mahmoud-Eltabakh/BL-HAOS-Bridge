@@ -53,7 +53,10 @@ _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 def normalize_address(address: str) -> str:
-    if not isinstance(address, str) or len(address) > 17 or any(ord(char) < 32 for char in address):
+    if not isinstance(address, str):
+        raise ValueError("Invalid Bluetooth address")
+    address = address.strip()
+    if not address or len(address) > 17 or any(ord(char) < 32 for char in address):
         raise ValueError("Invalid Bluetooth address")
     normalized = address.lower().replace("-", ":")
     if not _MAC_PATTERN.fullmatch(normalized):

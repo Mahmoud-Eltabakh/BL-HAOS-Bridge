@@ -184,3 +184,19 @@ def test_bluetooth_manager_accepts_canonical_and_hyphenated_addresses():
     mgr = BluetoothManager()
     assert mgr.get_device_by_address("AA-BB-CC-DD-EE-FF") is None
     assert mgr.get_device_by_address("aa:bb:cc:dd:ee:ff") is None
+
+
+def test_bluetooth_manager_device_lookup_tolerates_invalid_cached_device_addresses():
+    from backend.bl_haos.bluetooth.device import BluetoothDevice
+
+    mgr = BluetoothManager()
+    # Populate cache with devices that have empty or non-MAC addresses (e.g. malformed D-Bus properties or beacons)
+    mgr.devices["/org/bluez/hci0/dev_invalid_1"] = BluetoothDevice(None, "/org/bluez/hci0/dev_invalid_1", {})
+    mgr.devices["/org/bluez/hci0/dev_invalid_2"] = BluetoothDevice(None, "/org/bluez/hci0/dev_invalid_2", {"Address": "invalid-mac"})
+    mgr.devices["/org/bluez/hci0/dev_EC_81_93_53_A9_16"] = BluetoothDevice(
+        None, "/org/bluez/hci0/dev_EC_81_93_53_A9_16", {"Address": "EC:81:93:53:A9:16", "Name": "Logitech BT Adapter"}
+    )
+
+    found = mgr.get_device_by_address("ec:81:93:53:a9:16")
+    assert found is not None
+    assert found.name == "Logitech BT Adapter"

@@ -112,7 +112,10 @@ class AutoReconnectEngine:
                 self._on_device_event(data)
 
     def _on_device_event(self, device: DeviceInfo):
-        addr = normalize_address(device.address)
+        try:
+            addr = normalize_address(device.address)
+        except ValueError:
+            return
         if addr not in self.profiles:
             # Auto-register trusted audio sinks
             if (device.trusted or device.paired or device.connected) and device.is_audio_sink:
