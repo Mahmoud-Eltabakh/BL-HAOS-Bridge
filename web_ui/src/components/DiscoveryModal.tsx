@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { DeviceInfo, apiClient } from '../api/client';
 import { X, RefreshCw, Bluetooth, Signal, Plus, Key, Search, Volume2, Radio, Trash2, Power } from 'lucide-react';
 
@@ -24,15 +24,32 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
   const [audioOnlyFilter, setAudioOnlyFilter] = useState(false);
   const [manualMac, setManualMac] = useState('');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    if (isOpen) {
+      previousFocusRef.current = document.activeElement as HTMLElement;
+      closeButtonRef.current?.focus();
+    }
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && isOpen) {
         onClose();
       }
+      if (e.key === 'Tab' && isOpen) {
+        const dialog = document.getElementById('discovery-dialog');
+        const focusable = dialog ? Array.from(dialog.querySelectorAll<HTMLElement>('button, input, select, [tabindex]:not([tabindex="-1"])')) : [];
+        if (focusable.length && ((e.target === focusable[0] && e.shiftKey) || (e.target === focusable[focusable.length - 1] && !e.shiftKey))) {
+          e.preventDefault();
+          focusable[e.shiftKey ? focusable.length - 1 : 0].focus();
+        }
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      if (isOpen) previousFocusRef.current?.focus();
+    };
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
@@ -115,7 +132,8 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
-      aria-label="Add Bluetooth Speaker"
+      aria-labelledby="discovery-dialog-title"
+      id="discovery-dialog"
     >
       <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]">
         {/* Header */}
@@ -125,11 +143,12 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               <Bluetooth className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Add Bluetooth Speaker</h2>
+              <h2 id="discovery-dialog-title" className="text-lg font-bold text-white">Add Bluetooth Speaker</h2>
               <p className="text-xs text-slate-400">Discover and connect nearby Bluetooth audio devices</p>
             </div>
           </div>
           <button
+            ref={closeButtonRef}
             onClick={onClose}
             className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700 transition"
             aria-label="Close dialog"

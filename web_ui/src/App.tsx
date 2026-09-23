@@ -10,7 +10,7 @@ import { RecoveryPanel } from './components/RecoveryPanel';
 import { AlertCircle, Bluetooth, Plus, Volume2, RefreshCw, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const { adapters, devices, isScanning, wsConnected, refreshData } = useBluetoothEvents();
+  const { adapters, devices, isScanning, wsConnected, error: bluetoothError, refreshData } = useBluetoothEvents();
   const [isDiscoveryOpen, setIsDiscoveryOpen] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null);
   const [diagnostics, setDiagnostics] = useState<NativeDiagnostics | null>(null);
@@ -100,6 +100,7 @@ export const App: React.FC = () => {
       <div className="mt-6">
         <AdapterStatus adapters={adapters} onRefresh={refreshAll} />
       </div>
+      {bluetoothError && <div className="mt-4 rounded-xl border border-rose-800/80 bg-rose-950/50 px-4 py-3 text-sm text-rose-200" role="alert">{bluetoothError} <button className="ml-2 underline" onClick={refreshAll}>Retry</button></div>}
 
       <div data-demo-mode={operatorDiagnostics?.demo_mode ? 'true' : 'false'}>
         <DiagnosticsPanel diagnostics={operatorDiagnostics} loading={operatorLoading} error={operatorError} onExport={() => void apiClient.downloadSupportBundle()} />
@@ -107,7 +108,7 @@ export const App: React.FC = () => {
       <RecoveryPanel
         contract={recovery}
         target={operatorDiagnostics?.last_failure?.speaker}
-        onComplete={(result) => { setOperatorDiagnostics(result.diagnostics); }}
+        onComplete={(result) => { if (result.diagnostics) setOperatorDiagnostics(result.diagnostics); }}
       />
 
       {/* Integration Status Accordion */}

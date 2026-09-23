@@ -6,6 +6,7 @@ export function useBluetoothEvents() {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -18,8 +19,9 @@ export function useBluetoothEvents() {
       setAdapters(adapterList);
       setDevices(deviceList);
       setIsScanning(adapterList.some((a) => a.discovering));
+      setError(null);
     } catch (e) {
-      console.error('Failed to load Bluetooth state', e);
+      setError('Bluetooth state is unavailable. Check the bridge connection and retry.');
     }
   }, []);
 
@@ -104,6 +106,7 @@ export function useBluetoothEvents() {
     devices,
     isScanning,
     wsConnected,
+    error,
     refreshData,
   };
 }

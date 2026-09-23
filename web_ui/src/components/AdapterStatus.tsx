@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AdapterInfo, apiClient } from '../api/client';
 import { Radio, Power } from 'lucide-react';
 
@@ -8,13 +8,23 @@ interface AdapterStatusProps {
 }
 
 export const AdapterStatus: React.FC<AdapterStatusProps> = ({ adapters, onRefresh }) => {
+  const [pending, setPending] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const togglePower = async (name: string, current: boolean) => {
-    await apiClient.setAdapterPower(name, !current);
-    onRefresh();
+    setPending(name);
+    setError(null);
+    try {
+      await apiClient.setAdapterPower(name, !current);
+      onRefresh();
+    } catch {
+      setError(`Could not change ${name} power state. Retry the action.`);
+    } finally {
+      setPending(null);
+    }
   };
 
   return (
-    <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-4 flex flex-wrap items-center gap-4">
+    <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-4 flex flex-wrap items-center gap-4" aria-live="polite">
       <div className="flex items-center space-x-2 text-slate-300 font-semibold text-sm mr-2">
         <Radio className="w-4 h-4 text-blue-400" />
         <span>Bluetooth Adapters:</span>
@@ -29,7 +39,9 @@ export const AdapterStatus: React.FC<AdapterStatusProps> = ({ adapters, onRefres
           <span className="font-semibold text-slate-200">{adapter.interface}</span>
           <span className="text-slate-400 font-mono hidden sm:inline">({adapter.address})</span>
           <button
-            onClick={() => togglePower(adapter.interface, adapter.powered)}
+            onClick={() => void togglePower(adapter.interface, adapter.powered)}
+            disabled={pending !== null}
+            aria-label={`${adapter.powered ? 'Power off' : 'Power on'} ${adapter.interface}`}
             className={`p-1 rounded hover:bg-slate-800 transition ${adapter.powered ? 'text-emerald-400' : 'text-slate-500'}`}
             title="Toggle Adapter Power"
           >
@@ -37,6 +49,7 @@ export const AdapterStatus: React.FC<AdapterStatusProps> = ({ adapters, onRefres
           </button>
         </div>
       ))}
+      {error && <p className="basis-full text-xs text-rose-300">{error}</p>}
     </div>
   );
 };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { DeviceInfo, AdapterInfo, apiClient } from '../api/client';
 import { X, Sliders, Save, Volume2, AlertCircle } from 'lucide-react';
 
@@ -23,8 +23,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [defaultVolume, setDefaultVolume] = useState(70);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    if (isOpen) {
+      previousFocusRef.current = document.activeElement as HTMLElement;
+      closeButtonRef.current?.focus();
+    }
     if (selectedDevice) {
       setAlias(selectedDevice.alias || selectedDevice.name || '');
       setAutoReconnect(selectedDevice.trusted);
@@ -38,9 +44,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       if (e.key === 'Escape' && isOpen) {
         onClose();
       }
+      if (e.key === 'Tab' && isOpen) {
+        const dialog = document.getElementById('settings-dialog');
+        const focusable = dialog ? Array.from(dialog.querySelectorAll<HTMLElement>('button, input, select, [tabindex]:not([tabindex="-1"])')) : [];
+        if (focusable.length && ((e.target === focusable[0] && e.shiftKey) || (e.target === focusable[focusable.length - 1] && !e.shiftKey))) {
+          e.preventDefault();
+          focusable[e.shiftKey ? focusable.length - 1 : 0].focus();
+        }
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      if (isOpen) previousFocusRef.current?.focus();
+    };
   }, [isOpen, onClose]);
 
   if (!isOpen || !selectedDevice) return null;
@@ -70,15 +87,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
-      aria-label="Speaker Settings"
+      aria-labelledby="settings-dialog-title"
+      id="settings-dialog"
     >
       <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
         <div className="p-5 border-b border-slate-700 flex items-center justify-between bg-slate-900/50">
           <div className="flex items-center space-x-3">
             <Sliders className="w-5 h-5 text-blue-400" />
-            <h3 className="font-bold text-white text-base">Speaker Settings</h3>
+            <h3 id="settings-dialog-title" className="font-bold text-white text-base">Speaker Settings</h3>
           </div>
           <button
+            ref={closeButtonRef}
             onClick={onClose}
             className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700 transition"
             aria-label="Close settings"

@@ -89,7 +89,7 @@ export interface RecoveryResult {
   correlation_id: string;
   result: 'succeeded' | 'failed' | 'conflict';
   detail: string;
-  diagnostics: OperatorDiagnostics;
+  diagnostics?: OperatorDiagnostics;
 }
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -101,8 +101,11 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     payload = null;
   }
   if (!res.ok) {
-    const errorDetail = payload && typeof payload === 'object' && payload.detail ? payload.detail : `HTTP ${res.status}`;
-    throw new Error(errorDetail);
+    const message = res.status === 401 ? 'Authentication is required.'
+      : res.status === 404 ? 'The requested Bluetooth resource was not found.'
+        : res.status >= 500 ? 'The bridge is temporarily unavailable.'
+          : 'The request could not be completed.';
+    throw new Error(message);
   }
   return payload as T;
 }
