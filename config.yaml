@@ -1,6 +1,6 @@
 name: "BL-HAOS"
 slug: "bl_haos"
-version: "0.2.30"
+version: "0.2.31"
 description: "High-fidelity Bluetooth audio streaming and multi-room adapter for Home Assistant OS"
 url: "https://github.com/Mahmoud-Eltabakh/BL-HAOS-Bridge"
 image: "ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge"
@@ -13,6 +13,7 @@ ingress: true
 ingress_port: 8099
 panel_icon: "mdi:speaker-bluetooth"
 host_dbus: true
+audio: true
 full_access: true
 udev: true
 stage: "experimental"

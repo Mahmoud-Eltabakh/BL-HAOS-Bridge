@@ -19,6 +19,7 @@ def test_config_yaml_syntax_and_fields():
     assert "ports" not in data
     assert data["discovery"] == ["bl_haos"]
     assert data["host_dbus"] is True, "Host D-Bus permission required"
+    assert data["audio"] is True, "Internal audio access required for PipeWire sinks"
     assert data["full_access"] is True, "Full access required for audio/bluetooth"
     assert data["udev"] is True, "udev required for hardware tracking"
     assert data["image"] == "ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge"

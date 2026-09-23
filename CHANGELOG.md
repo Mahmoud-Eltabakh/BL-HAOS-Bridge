@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.31
+
+- Grant the add-on Home Assistant's internal audio access so PipeWire can create Bluetooth A2DP sinks after BlueZ reconnects.
+
 ## 0.2.30
 
 - Include the PipeWire command-line tools required to discover Bluetooth sinks and apply volume changes inside the add-on container.
