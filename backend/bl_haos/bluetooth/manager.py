@@ -264,6 +264,13 @@ class BluetoothManager:
         """Pair with device and set trusted flag for auto-reconnection."""
         address = normalize_address(address)
         dev = await self.ensure_device(address)
+        if dev and self.bus and not dev.connected:
+            # A cached Device1 proxy can survive BlueZ removing and recreating
+            # the object. Refresh disconnected proxies before pairing again.
+            self.devices.pop(dev.path, None)
+            refreshed = await self.ensure_device(address)
+            if refreshed:
+                dev = refreshed
         if not dev:
             for adapter in self.adapters.values():
                 try:

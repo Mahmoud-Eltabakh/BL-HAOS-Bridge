@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.36
+
+- Refresh disconnected cached BlueZ device proxies before re-pairing, preventing Connect failures after the device object was removed and recreated.
+
 ## 0.2.35
 
 - Handle both compact and spaced BlueZ `InProgress` responses during A2DP reconnects.
