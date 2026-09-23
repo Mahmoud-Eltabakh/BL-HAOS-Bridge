@@ -1,11 +1,12 @@
 from backend.bl_haos.multiroom.manager import MultiroomManager
+import pytest
 
 
 def test_multiroom_speaker_attachment_and_grouping():
     manager = MultiroomManager()
 
     # Attach speaker 1
-    spk1_addr = "11:22:33:44:55:66"
+    spk1_addr = "10:22:33:44:55:66"
     client1 = manager.attach_speaker(spk1_addr, "Living Room Speaker", latency_offset_ms=-15)
     assert client1.speaker_address == spk1_addr.lower()
     assert client1.latency_offset_ms == -15
@@ -37,3 +38,20 @@ def test_multiroom_speaker_attachment_and_grouping():
     assert detached is True
     assert client2.client_id not in manager.clients
     assert client2.client_id not in manager.groups["default"].client_ids
+
+
+def test_multiroom_rejects_invalid_inputs_before_state_mutation():
+    manager = MultiroomManager()
+    with pytest.raises(ValueError, match="Invalid Bluetooth address"):
+        manager.attach_speaker("ff:ff:ff:ff:ff:ff", "Speaker")
+    with pytest.raises(ValueError, match="Invalid latency offset"):
+        manager.attach_speaker("10:22:33:44:55:66", "Speaker", latency_offset_ms=5001)
+    with pytest.raises(ValueError, match="Invalid group name"):
+        manager.create_group("party", "bad\nname")
+    assert manager.clients == {}
+    assert list(manager.groups) == ["default"]
+
+
+def test_multiroom_constructor_bounds_snapcast_endpoint():
+    with pytest.raises(ValueError, match="Invalid Snapcast port"):
+        MultiroomManager(port=70000)

@@ -20,7 +20,7 @@ from .constants import (
 )
 from .device import BluetoothDevice
 from .models import AdapterInfo, DeviceInfo
-from ..health import FailureClass, HealthRegistry, HealthState, SpeakerState, normalize_address
+from ..health import FailureClass, HealthRegistry, HealthState, SpeakerState, normalize_address, validate_adapter_name
 
 logger = logging.getLogger("bl_haos.bluetooth.manager")
 
@@ -198,9 +198,9 @@ class BluetoothManager:
         return devices
 
     def get_device_by_address(self, address: str) -> BluetoothDevice | None:
-        target = address.strip().lower().replace("-", ":")
+        target = normalize_address(address)
         for dev in self.devices.values():
-            if dev.address.strip().lower().replace("-", ":") == target:
+            if normalize_address(dev.address) == target:
                 return dev
         return None
 
@@ -211,7 +211,8 @@ class BluetoothManager:
             return dev
         if not self.bus:
             return None
-        formatted_addr = address.strip().upper().replace(":", "_").replace("-", "_")
+        address = normalize_address(address)
+        formatted_addr = address.upper().replace(":", "_")
         for adapter in self.adapters.values():
             dev_path = f"{adapter.path}/dev_{formatted_addr}"
             try:
@@ -227,6 +228,7 @@ class BluetoothManager:
         return None
 
     def get_adapter_by_name(self, name: str = "hci0") -> BluetoothAdapter | None:
+        name = validate_adapter_name(name)
         for adapter in self.adapters.values():
             if adapter.interface_name == name or adapter.path.endswith(name):
                 return adapter
@@ -235,6 +237,7 @@ class BluetoothManager:
     async def start_scan(self, adapter_name: str | None = None) -> None:
         """Start discovery on specified adapter or all adapters."""
         if adapter_name:
+            adapter_name = validate_adapter_name(adapter_name)
             adapter = self.get_adapter_by_name(adapter_name)
             if adapter:
                 await adapter.start_discovery()
@@ -245,6 +248,7 @@ class BluetoothManager:
     async def stop_scan(self, adapter_name: str | None = None) -> None:
         """Stop discovery on specified adapter or all adapters."""
         if adapter_name:
+            adapter_name = validate_adapter_name(adapter_name)
             adapter = self.get_adapter_by_name(adapter_name)
             if adapter:
                 await adapter.stop_discovery()
@@ -254,6 +258,7 @@ class BluetoothManager:
 
     async def pair_and_trust(self, address: str) -> bool:
         """Pair with device and set trusted flag for auto-reconnection."""
+        address = normalize_address(address)
         dev = await self.ensure_device(address)
         if not dev:
             for adapter in self.adapters.values():
@@ -278,6 +283,7 @@ class BluetoothManager:
 
     async def connect_device(self, address: str) -> bool:
         """Connect to device."""
+        address = normalize_address(address)
         dev = await self.ensure_device(address)
         if not dev:
             for adapter in self.adapters.values():
@@ -331,6 +337,7 @@ class BluetoothManager:
 
     async def disconnect_device(self, address: str) -> bool:
         """Disconnect from device."""
+        address = normalize_address(address)
         dev = await self.ensure_device(address)
         if not dev:
             raise ValueError(f"Device with address {address} not found")
@@ -339,6 +346,7 @@ class BluetoothManager:
 
     async def remove_device(self, address: str) -> bool:
         """Untrust, unpair, disconnect, and completely remove device from adapter cache."""
+        address = normalize_address(address)
         dev = await self.ensure_device(address)
         if not dev:
             return False

@@ -169,3 +169,18 @@ def test_dbus_loss_is_not_reported_as_healthy():
     assert mgr.bus is None
     assert component.state == HealthState.UNAVAILABLE
     assert component.failure.classification == FailureClass.DBUS_DISCONNECTED
+
+
+@pytest.mark.asyncio
+async def test_bluetooth_manager_rejects_invalid_addresses_before_lookup():
+    mgr = BluetoothManager()
+    with pytest.raises(ValueError, match="Invalid Bluetooth address"):
+        mgr.get_device_by_address("ff:ff:ff:ff:ff:ff")
+    with pytest.raises(ValueError, match="Invalid Bluetooth address"):
+        await mgr.ensure_device("AA:BB:CC:DD:EE")
+
+
+def test_bluetooth_manager_accepts_canonical_and_hyphenated_addresses():
+    mgr = BluetoothManager()
+    assert mgr.get_device_by_address("AA-BB-CC-DD-EE-FF") is None
+    assert mgr.get_device_by_address("aa:bb:cc:dd:ee:ff") is None

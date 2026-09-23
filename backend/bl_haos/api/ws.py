@@ -6,6 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from ..health import authorized_bearer, safe_detail
+
 logger = logging.getLogger("bl_haos.api.ws")
 router = APIRouter(tags=["websocket"])
 NATIVE_SPEAKER_UPDATED_EVENT = "speaker_updated"
@@ -46,7 +48,7 @@ class ConnectionManager:
             try:
                 await conn.send_text(raw_text)
             except Exception as e:
-                logger.warning("Failed to send WebSocket message to client: %s", e)
+                logger.warning("Failed to send WebSocket message to client: %s", safe_detail(e))
                 dead_connections.append(conn)
 
         for dead in dead_connections:
@@ -77,7 +79,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def native_websocket_endpoint(websocket: WebSocket):
     """Serve native speaker updates on the private Supervisor network."""
     expected = websocket.app.state.config_store.settings.native_token
-    if websocket.headers.get("authorization") != f"Bearer {expected}":
+    if not authorized_bearer(websocket.headers.get("authorization"), expected):
         await websocket.close(code=1008, reason="Native bridge authentication required")
         return
     await native_ws_manager.connect(websocket)
@@ -87,5 +89,5 @@ async def native_websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         native_ws_manager.disconnect(websocket)
     except Exception as error:
-        logger.debug("Native WebSocket closed: %s", error)
+        logger.debug("Native WebSocket closed: %s", safe_detail(error))
         native_ws_manager.disconnect(websocket)

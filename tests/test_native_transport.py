@@ -1,10 +1,9 @@
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
-
 from backend.bl_haos.bluetooth.models import DeviceInfo
 from backend.bl_haos.main import app
+from fastapi.testclient import TestClient
 
 
 def test_native_transport_uses_the_private_supervisor_network():
@@ -13,7 +12,7 @@ def test_native_transport_uses_the_private_supervisor_network():
 
     assert "/native/identity" in routes
     assert "/native/speakers" in routes
-    assert "compare_digest" not in routes
+    assert "compare_digest" in routes
     assert "BL_HAOS_BRIDGE_TOKEN" not in routes
     assert "/ws/native" in websocket
     assert "speaker_updated" in websocket
@@ -39,10 +38,12 @@ def test_native_snapshot_filters_trusted_sinks(monkeypatch):
     ]
 
     with TestClient(app) as client:
+        token = app.state.config_store.settings.native_token
+        headers = {"Authorization": f"Bearer {token}"}
         monkeypatch.setattr(app.state.bt_manager, "get_devices", lambda audio_only=True: speakers)
-        identity = client.get("/api/native/identity")
+        identity = client.get("/api/native/identity", headers=headers)
         assert identity.json() == {"bridge_id": "bl_haos_native_bridge", "version": 1}
-        snapshot = client.get("/api/native/speakers")
+        snapshot = client.get("/api/native/speakers", headers=headers)
 
     assert snapshot.status_code == 200
     assert list(snapshot.json()["speakers"]) == ["aa:bb:cc:dd:ee:ff"]
@@ -62,8 +63,10 @@ def test_native_snapshot_includes_connected_speaker(monkeypatch):
     ]
 
     with TestClient(app) as client:
+        token = app.state.config_store.settings.native_token
+        headers = {"Authorization": f"Bearer {token}"}
         monkeypatch.setattr(app.state.bt_manager, "get_devices", lambda audio_only=True: speakers)
-        snapshot = client.get("/api/native/speakers")
+        snapshot = client.get("/api/native/speakers", headers=headers)
 
     assert snapshot.status_code == 200
     assert "ec:81:93:53:a9:16" in snapshot.json()["speakers"]
@@ -83,10 +86,13 @@ def test_native_command_returns_bridge_record(monkeypatch):
     execute = AsyncMock()
 
     with TestClient(app) as client:
+        token = app.state.config_store.settings.native_token
+        headers = {"Authorization": f"Bearer {token}"}
         monkeypatch.setattr(app.state.ha_bridge, "execute", execute)
         monkeypatch.setattr(app.state.bt_manager, "get_devices", lambda audio_only=True: [speaker])
         acknowledged = client.post(
             "/api/native/speakers/aa:bb:cc:dd:ee:ff/command",
+            headers=headers,
             json={"operation": "play"},
         )
 

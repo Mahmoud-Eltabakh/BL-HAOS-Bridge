@@ -1,11 +1,12 @@
 """Persistent Configuration Store for BL-HAOS."""
 
-import os
 import json
 import logging
+import os
+import secrets
 from pathlib import Path
-from typing import Dict, Optional, Any
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger("bl_haos.config")
 
@@ -14,24 +15,43 @@ FALLBACK_CONFIG_PATH = "/tmp/bl_haos_config.json"
 
 
 class SpeakerSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     address: str
-    custom_alias: Optional[str] = None
+    custom_alias: str | None = None
     auto_reconnect: bool = True
-    preferred_adapter: Optional[str] = None
-    default_volume: int = 70
-    codec_override: Optional[str] = None
+    preferred_adapter: str | None = None
+    default_volume: int = Field(default=70, ge=0, le=100)
+    codec_override: str | None = None
+
+    @field_validator("custom_alias")
+    @classmethod
+    def valid_alias(cls, value: str | None) -> str | None:
+        if value is not None and (len(value) > 128 or any(ord(char) < 32 for char in value)):
+            raise ValueError("Speaker alias is invalid")
+        return value
+
+    @field_validator("codec_override")
+    @classmethod
+    def valid_codec(cls, value: str | None) -> str | None:
+        if value is not None and value not in {"auto", "sbc", "sbc_xq", "aac", "aptx", "aptx_hd", "ldac"}:
+            raise ValueError("Codec override is invalid")
+        return value
 
 
 class SystemSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     log_level: str = "info"
     default_codec: str = "auto"
     auto_reconnect_enabled: bool = True
     multiroom_sync_enabled: bool = True
-    speakers: Dict[str, SpeakerSettings] = Field(default_factory=dict)
+    native_token: str = Field(default="", exclude=True, repr=False)
+    speakers: dict[str, SpeakerSettings] = Field(default_factory=dict)
 
 
 class ConfigStore:
-    def __init__(self, config_file: Optional[str] = None):
+    def __init__(self, config_file: str | None = None):
         if config_file:
             self.file_path = Path(config_file)
         elif Path("/data").exists() and os.access("/data", os.W_OK):
@@ -48,14 +68,24 @@ class ConfigStore:
             try:
                 data = json.loads(self.file_path.read_text(encoding="utf-8"))
                 self.settings = SystemSettings.model_validate(data)
+                if not self.settings.native_token or any(ord(char) < 32 for char in self.settings.native_token):
+                    self.settings.native_token = self._configured_token()
+                    self.save()
                 logger.info("Loaded configuration from %s", self.file_path)
             except Exception as e:
-                logger.error("Failed to load config from %s: %s. Using defaults.", self.file_path, e)
-                self.settings = SystemSettings()
+                logger.error("Failed to load config from %s: invalid configuration. Using defaults.", self.file_path)
+                self.settings = SystemSettings(native_token=self._configured_token())
         else:
-            self.settings = SystemSettings()
+            self.settings = SystemSettings(native_token=self._configured_token())
             self.save()
         return self.settings
+
+    @staticmethod
+    def _configured_token() -> str:
+        configured = os.environ.get("BLHAOS_NATIVE_TOKEN", "")
+        if configured and not any(ord(char) < 32 for char in configured):
+            return configured
+        return secrets.token_urlsafe(32)
 
     def save(self) -> None:
         """Atomically persist settings to JSON file."""
@@ -63,11 +93,14 @@ class ConfigStore:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = self.file_path.with_suffix(".tmp")
             data = self.settings.model_dump(mode="json")
+            data["native_token"] = self.settings.native_token
             temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            temp_path.chmod(0o600)
             temp_path.replace(self.file_path)
+            self.file_path.chmod(0o600)
             logger.info("Saved configuration to %s", self.file_path)
         except Exception as e:
-            logger.error("Failed to save config to %s: %s", self.file_path, e)
+            logger.error("Failed to save config to %s", self.file_path)
 
     def get_speaker(self, address: str) -> SpeakerSettings:
         addr = address.strip().lower()
@@ -78,11 +111,12 @@ class ConfigStore:
 
     def update_speaker(self, address: str, **kwargs) -> SpeakerSettings:
         speaker = self.get_speaker(address)
-        for k, v in kwargs.items():
-            if hasattr(speaker, k) and v is not None:
-                setattr(speaker, k, v)
+        updates = {key: value for key, value in kwargs.items() if value is not None}
+        self.settings.speakers[speaker.address] = SpeakerSettings.model_validate(
+            speaker.model_dump() | updates
+        )
         self.save()
-        return speaker
+        return self.settings.speakers[speaker.address]
 
     def remove_speaker(self, address: str) -> bool:
         addr = address.strip().lower()

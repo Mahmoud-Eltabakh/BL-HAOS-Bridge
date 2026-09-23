@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from urllib.parse import urlsplit
 
 from ..config import ConfigStore
-from ..health import FailureClass, HealthRegistry, HealthState
+from ..health import FailureClass, HealthRegistry, HealthState, normalize_address, validate_identifier, validate_media_url
 
 logger = logging.getLogger("bl_haos.ha.player")
 
@@ -42,11 +42,16 @@ class MediaPlayerBridge:
         self.health = health_registry
         if config_store:
             for address, speaker in config_store.settings.speakers.items():
-                self.volumes[self._address(address)] = speaker.default_volume / 100
+                try:
+                    normalized = self._address(address)
+                except ValueError:
+                    logger.warning("Ignoring invalid persisted speaker identifier")
+                    continue
+                self.volumes[normalized] = speaker.default_volume / 100
 
     @staticmethod
     def _address(address: str) -> str:
-        return address.strip().lower().replace("-", ":")
+        return normalize_address(address)
 
     def get_state(self, address: str) -> str:
         return self.states.get(self._address(address), "idle")
@@ -119,15 +124,10 @@ class MediaPlayerBridge:
     async def play_url(self, address: str, url: str) -> None:
         """Decode one validated URL and route it to the selected A2DP sink."""
         addr = self._address(address)
-        parsed = urlsplit(url)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
-            or parsed.username
-            or parsed.password
-            or any(ord(character) < 32 for character in url)
-        ):
-            raise MediaPlayerError("Media URL must be a safe HTTP(S) URL")
+        try:
+            url = validate_media_url(url)
+        except ValueError as error:
+            raise MediaPlayerError("Media URL must be a safe HTTP(S) URL") from error
         sink = await self._sink_resolver(addr)
         if not sink:
             if self.health:
@@ -136,9 +136,12 @@ class MediaPlayerBridge:
                     detail="No matching A2DP sink", source="pw-dump"
                 )
             raise MediaPlayerError("Connected PipeWire A2DP sink is unavailable")
+        try:
+            sink = validate_identifier(sink, "PipeWire sink")
+        except ValueError as error:
+            raise MediaPlayerError("Connected PipeWire sink is invalid") from error
         if self.health:
             self.health.observe_component("pipewire", HealthState.HEALTHY, source="pw-dump")
-        self.last_urls[addr] = url
         await self._stop_processes(addr)
         try:
             decoder = await self._process_factory(
@@ -155,6 +158,7 @@ class MediaPlayerBridge:
         except (OSError, asyncio.SubprocessError) as error:
             raise MediaPlayerError("Unable to start media playback") from error
         self.active_processes[addr] = (decoder, player)
+        self.last_urls[addr] = url
         self.states[addr] = "playing"
         if hasattr(decoder.stdout, "read") and hasattr(player.stdin, "write"):
             asyncio.create_task(self._pipe_audio(decoder, player))
@@ -205,6 +209,11 @@ class MediaPlayerBridge:
             return  # already streaming real audio; no nudge needed
         sink = await self._sink_resolver(address)
         if not sink:
+            return
+        try:
+            sink = validate_identifier(sink, "PipeWire sink")
+        except ValueError:
+            logger.debug("Keep-alive pulse skipped for invalid sink")
             return
         try:
             source = await self._process_factory(
@@ -267,6 +276,11 @@ class MediaPlayerBridge:
     async def _apply_volume(self, address: str, volume: float) -> None:
         sink = await self._sink_resolver(address)
         if sink:
+            try:
+                sink = validate_identifier(sink, "PipeWire sink")
+            except ValueError:
+                logger.debug("Volume update skipped for invalid sink")
+                return
             try:
                 process = await self._process_factory("wpctl", "set-volume", sink, str(volume))
                 await process.wait()

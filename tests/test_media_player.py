@@ -26,7 +26,7 @@ class FakeProcess:
 
 
 async def fake_sink(_address):
-    return "bluez_output.11_22_33_44_55_66.1"
+    return "bluez_output.10_22_33_44_55_66.1"
 
 
 async def fake_process(*args, **_kwargs):
@@ -35,7 +35,7 @@ async def fake_process(*args, **_kwargs):
 @pytest.mark.asyncio
 async def test_media_player_state_transitions():
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
-    address = "11:22:33:44:55:66"
+    address = "10:22:33:44:55:66"
 
     assert bridge.get_state(address) == "idle"
     assert bridge.get_volume(address) == 0.70
@@ -54,7 +54,7 @@ async def test_media_player_state_transitions():
 @pytest.mark.asyncio
 async def test_media_player_volume_and_tts():
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
-    address = "11:22:33:44:55:66"
+    address = "10:22:33:44:55:66"
 
     # Set volume
     await bridge.handle_command(address, "VOLUME:0.85")
@@ -76,14 +76,30 @@ async def test_media_player_rejects_unsafe_url_before_subprocess_creation():
 
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
     with pytest.raises(Exception, match="safe HTTP"):
-        await bridge.play_url("11:22:33:44:55:66", "file:///etc/passwd")
+        await bridge.play_url("10:22:33:44:55:66", "file:///etc/passwd")
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_media_player_keeps_valid_url_as_one_process_argument():
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    await bridge.play_url("10:22:33:44:55:66", "https://example.test/audio.mp3?token=signed")
+
+    ffmpeg_args = calls[0][0]
+    assert ffmpeg_args[0] == "ffmpeg"
+    assert ffmpeg_args.count("https://example.test/audio.mp3?token=signed") == 1
 
 
 @pytest.mark.asyncio
 async def test_play_replays_last_url_after_stop():
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
-    address = "11:22:33:44:55:66"
+    address = "10:22:33:44:55:66"
 
     await bridge.handle_command(address, "PLAY_MEDIA:https://example.test/audio.mp3")
     await bridge.handle_command(address, "STOP")
@@ -98,7 +114,7 @@ async def test_play_replays_last_url_after_stop():
 @pytest.mark.asyncio
 async def test_play_without_any_prior_media_still_raises():
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
-    address = "11:22:33:44:55:66"
+    address = "10:22:33:44:55:66"
 
     with pytest.raises(Exception, match="No active playback to resume"):
         await bridge.execute(address, "play")
@@ -113,7 +129,7 @@ async def test_keepalive_pulses_idle_speakers_without_changing_state():
         return FakeProcess(returncode=0)
 
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
-    address = "11:22:33:44:55:66"
+    address = "10:22:33:44:55:66"
     bridge.register_keepalive(address)
 
     assert bridge.get_state(address) == "idle"
@@ -135,7 +151,7 @@ async def test_keepalive_skips_speakers_with_active_playback():
         return FakeProcess(returncode=0 if args[0] == "wpctl" else None)
 
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
-    address = "11:22:33:44:55:66"
+    address = "10:22:33:44:55:66"
     bridge.register_keepalive(address)
 
     await bridge.handle_command(address, "PLAY_MEDIA:https://example.test/audio.mp3")
@@ -148,9 +164,42 @@ async def test_keepalive_skips_speakers_with_active_playback():
 @pytest.mark.asyncio
 async def test_unregister_keepalive_removes_address():
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
-    address = "11:22:33:44:55:66"
+    address = "10:22:33:44:55:66"
     bridge.register_keepalive(address)
     assert address in bridge.keepalive_addresses
 
     bridge.unregister_keepalive(address)
     assert address not in bridge.keepalive_addresses
+
+
+@pytest.mark.asyncio
+async def test_media_player_rejects_unsafe_sink_before_process_creation():
+    calls = []
+
+    async def unsafe_sink(_address):
+        return "sink;pw-play --target attacker"
+
+    async def process_factory(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=unsafe_sink, process_factory=process_factory)
+    with pytest.raises(Exception, match="PipeWire sink is invalid"):
+        await bridge.play_url("10:22:33:44:55:66", "https://example.test/audio.mp3")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_media_player_subprocesses_use_fixed_argv_and_no_shell():
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    await bridge.play_url("10:22:33:44:55:66", "https://example.test/audio.mp3")
+
+    assert calls[0][0][:4] == ("ffmpeg", "-nostdin", "-loglevel", "error")
+    assert calls[1][0][:3] == ("pw-play", "--target", "bluez_output.10_22_33_44_55_66.1")
+    assert all(call[1].get("shell") is not True for call in calls)

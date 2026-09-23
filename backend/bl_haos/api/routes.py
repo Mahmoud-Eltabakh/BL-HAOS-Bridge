@@ -1,16 +1,26 @@
 """REST API Route Handlers for BL-HAOS."""
 
 import asyncio
+import hmac
 import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..bluetooth.models import AdapterInfo, DeviceInfo
 from ..config import SpeakerSettings, SystemSettings
 from ..ha.player import MediaPlayerError
-from ..health import HealthRegistry, HealthState
+from ..health import (
+    HealthRegistry,
+    HealthState,
+    normalize_address,
+    validate_adapter_name,
+    validate_media_type,
+    validate_media_url,
+    validate_pin,
+    safe_detail,
+)
 
 logger = logging.getLogger("bl_haos.api.routes")
 router = APIRouter(prefix="/api", tags=["api"])
@@ -21,7 +31,8 @@ NATIVE_BRIDGE_VERSION = 1
 def require_native_auth(authorization: str | None, request: Request) -> None:
     """Reject native transport requests without the installation credential."""
     expected = request.app.state.config_store.settings.native_token
-    if not expected or authorization != f"Bearer {expected}":
+    supplied = authorization.removeprefix("Bearer ") if isinstance(authorization, str) else ""
+    if not expected or not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Native bridge authentication required")
 
 
@@ -42,8 +53,18 @@ def native_diagnostics(app: Any) -> dict[str, Any]:
 
 
 class PairRequest(BaseModel):
-    address: str
+    address: str = Field(min_length=17, max_length=17)
     pin: str | None = "0000"
+
+    @field_validator("address")
+    @classmethod
+    def valid_address(cls, value: str) -> str:
+        return normalize_address(value)
+
+    @field_validator("pin")
+    @classmethod
+    def valid_pin(cls, value: str | None) -> str | None:
+        return validate_pin(value)
 
 
 class PowerRequest(BaseModel):
@@ -53,13 +74,39 @@ class PowerRequest(BaseModel):
 class ScanRequest(BaseModel):
     adapter_name: str | None = None
 
+    @field_validator("adapter_name")
+    @classmethod
+    def valid_adapter(cls, value: str | None) -> str | None:
+        return validate_adapter_name(value) if value is not None else None
+
 
 class SpeakerUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     custom_alias: str | None = None
     auto_reconnect: bool | None = None
     preferred_adapter: str | None = None
-    default_volume: int | None = None
+    default_volume: int | None = Field(default=None, ge=0, le=100)
     codec_override: str | None = None
+
+    @field_validator("preferred_adapter")
+    @classmethod
+    def valid_preferred_adapter(cls, value: str | None) -> str | None:
+        return validate_adapter_name(value) if value is not None else None
+
+    @field_validator("custom_alias")
+    @classmethod
+    def valid_alias(cls, value: str | None) -> str | None:
+        if value is not None and (len(value) > 128 or any(ord(char) < 32 for char in value)):
+            raise ValueError("Speaker alias is invalid")
+        return value
+
+    @field_validator("codec_override")
+    @classmethod
+    def valid_codec(cls, value: str | None) -> str | None:
+        if value is not None and value not in {"auto", "sbc", "sbc_xq", "aac", "aptx", "aptx_hd", "ldac"}:
+            raise ValueError("Codec override is invalid")
+        return value
 
 
 class NativeCommandRequest(BaseModel):
@@ -68,8 +115,28 @@ class NativeCommandRequest(BaseModel):
     version: Literal[1] = 1
     operation: Literal["play", "pause", "stop", "set_volume", "play_media"]
     volume: float | None = Field(default=None, ge=0, le=1)
-    url: str | None = None
+    url: str | None = Field(default=None, max_length=2048)
     media_type: str | None = Field(default=None, max_length=128)
+
+    @field_validator("url")
+    @classmethod
+    def valid_url(cls, value: str | None) -> str | None:
+        return validate_media_url(value) if value is not None else None
+
+    @field_validator("media_type")
+    @classmethod
+    def valid_media_type(cls, value: str | None) -> str | None:
+        return validate_media_type(value)
+
+    @model_validator(mode="after")
+    def validate_operation_payload(self):
+        if self.operation == "set_volume" and self.volume is None:
+            raise ValueError("Volume is required")
+        if self.operation == "play_media" and self.url is None:
+            raise ValueError("Media URL is required")
+        if self.operation != "play_media" and (self.url is not None or self.media_type is not None):
+            raise ValueError("Media fields are only valid for play_media")
+        return self
 
 
 def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str, Any]:
@@ -143,7 +210,10 @@ async def command_native_speaker(
 ):
     """Apply an authenticated command and return the post-operation speaker record."""
     require_native_auth(authorization, request)
-    normalized = address.strip().lower().replace("-", ":")
+    try:
+        normalized = normalize_address(address)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
     device = next(
         (candidate for candidate in request.app.state.bt_manager.get_devices(audio_only=True)
          if candidate.address.strip().lower().replace("-", ":") == normalized),
@@ -153,10 +223,6 @@ async def command_native_speaker(
         raise HTTPException(status_code=404, detail="Native speaker was not found")
     if not ((device.trusted or device.paired or device.connected) and device.is_audio_sink and device.connected):
         raise HTTPException(status_code=409, detail="Native speaker is unavailable")
-    if payload.operation == "set_volume" and payload.volume is None:
-        raise HTTPException(status_code=422, detail="Volume is required")
-    if payload.operation == "play_media" and not payload.url:
-        raise HTTPException(status_code=422, detail="Media URL is required")
     try:
         await request.app.state.ha_bridge.execute(
             normalized, payload.operation, volume=payload.volume, url=payload.url
@@ -171,9 +237,9 @@ async def command_native_speaker(
                     normalized, payload.operation, volume=payload.volume, url=payload.url
                 )
             except Exception as retry_error:
-                raise HTTPException(status_code=409, detail=f"Auto-reconnect failed: {retry_error}") from retry_error
+                raise HTTPException(status_code=409, detail="Auto-reconnect failed") from retry_error
         else:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise HTTPException(status_code=409, detail="Native playback command failed") from error
     publish = getattr(request.app.state, "publish_native_speaker", None)
     if publish:
         await publish(normalized)
@@ -191,6 +257,10 @@ async def list_adapters(request: Request):
 
 @router.post("/adapters/{adapter_name}/power")
 async def set_adapter_power(adapter_name: str, payload: PowerRequest, request: Request):
+    try:
+        adapter_name = validate_adapter_name(adapter_name)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth adapter") from error
     adapter = request.app.state.bt_manager.get_adapter_by_name(adapter_name)
     if not adapter:
         raise HTTPException(status_code=404, detail=f"Adapter {adapter_name} not found")
@@ -234,43 +304,46 @@ async def pair_device(payload: PairRequest, request: Request):
             await publish(payload.address)
         return {"status": "ok", "paired": success, "address": payload.address}
     except Exception as e:
-        logger.error("Pairing error for %s: %s", payload.address, e)
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error("Pairing error for %s: %s", payload.address, safe_detail(e))
+        raise HTTPException(status_code=400, detail="Pairing failed") from e
 
 
 @router.post("/devices/{address}/connect")
 async def connect_device(address: str, request: Request):
     try:
+        address = normalize_address(address)
         success = await request.app.state.bt_manager.connect_device(address)
         publish = getattr(request.app.state, "publish_native_speaker", None)
         if publish:
             await publish(address)
         return {"status": "ok", "connected": success, "address": address}
     except Exception as e:
-        logger.error("Connection error for %s: %s", address, e)
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error("Connection error for %s: %s", address, safe_detail(e))
+        raise HTTPException(status_code=400, detail="Connection failed") from e
 
 
 @router.post("/devices/{address}/disconnect")
 async def disconnect_device(address: str, request: Request):
     try:
+        address = normalize_address(address)
         success = await request.app.state.bt_manager.disconnect_device(address)
         return {"status": "ok", "connected": False, "address": address}
     except Exception as e:
-        logger.error("Disconnection error for %s: %s", address, e)
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error("Disconnection error for %s: %s", address, safe_detail(e))
+        raise HTTPException(status_code=400, detail="Disconnection failed") from e
 
 
 @router.delete("/devices/{address}")
 async def remove_device(address: str, request: Request):
     try:
+        address = normalize_address(address)
         success = await request.app.state.bt_manager.remove_device(address)
         request.app.state.reconnect_engine.unregister_speaker(address)
         request.app.state.config_store.remove_speaker(address)
         return {"status": "ok", "removed": success, "address": address}
     except Exception as e:
-        logger.error("Remove error for %s: %s", address, e)
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error("Remove error for %s: %s", address, safe_detail(e))
+        raise HTTPException(status_code=400, detail="Device removal failed") from e
 
 
 # ==============================================================================
@@ -284,6 +357,10 @@ async def get_settings(request: Request):
 
 @router.put("/settings/speakers/{address}", response_model=SpeakerSettings)
 async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, request: Request):
+    try:
+        address = normalize_address(address)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
     updated = request.app.state.config_store.update_speaker(
         address=address,
         custom_alias=payload.custom_alias,

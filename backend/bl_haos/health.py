@@ -3,7 +3,9 @@
 import re
 import time
 from enum import Enum
+import json
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -39,21 +41,108 @@ class FailureClass(str, Enum):
 
 
 MAX_DETAIL_LENGTH = 256
+MAX_MEDIA_URL_LENGTH = 2048
+MAX_IDENTIFIER_LENGTH = 64
 _SECRET_PATTERN = re.compile(r"(?i)(token|password|secret|authorization|bearer)\s*[:=]\s*[^\s,;]+")
+_SENSITIVE_QUERY_KEYS = re.compile(r"(?i)(token|password|secret|authorization|bearer|api[_-]?key|key)")
+_MAC_PATTERN = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
+_ADAPTER_PATTERN = re.compile(r"^hci[0-9]{1,2}$")
+_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 def normalize_address(address: str) -> str:
-    return address.strip().lower().replace("-", ":")
+    if not isinstance(address, str) or len(address) > 17 or any(ord(char) < 32 for char in address):
+        raise ValueError("Invalid Bluetooth address")
+    normalized = address.lower().replace("-", ":")
+    if not _MAC_PATTERN.fullmatch(normalized):
+        raise ValueError("Invalid Bluetooth address")
+    first_octet = int(normalized[:2], 16)
+    if first_octet == 0xFF or first_octet & 1:
+        raise ValueError("Invalid Bluetooth address")
+    return normalized
+
+
+def validate_adapter_name(name: str) -> str:
+    if not isinstance(name, str) or not _ADAPTER_PATTERN.fullmatch(name):
+        raise ValueError("Invalid Bluetooth adapter")
+    return name
+
+
+def validate_identifier(value: str, label: str = "Identifier") -> str:
+    if not isinstance(value, str) or not _IDENTIFIER_PATTERN.fullmatch(value):
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def validate_media_url(url: str) -> str:
+    if not isinstance(url, str) or not url or len(url) > MAX_MEDIA_URL_LENGTH:
+        raise ValueError("Media URL must be a safe HTTP(S) URL")
+    if any(ord(character) < 32 or ord(character) == 127 for character in url):
+        raise ValueError("Media URL must be a safe HTTP(S) URL")
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("Media URL must be a safe HTTP(S) URL")
+    try:
+        if parsed.port is not None and not 1 <= parsed.port <= 65535:
+            raise ValueError
+    except ValueError as error:
+        raise ValueError("Media URL must be a safe HTTP(S) URL") from error
+    return url
+
+
+def validate_media_type(media_type: str | None) -> str | None:
+    if media_type is None:
+        return None
+    if len(media_type) > 128 or not re.fullmatch(r"audio/[A-Za-z0-9.+-]+", media_type):
+        raise ValueError("Media type must be an audio media type")
+    return media_type.lower()
+
+
+def validate_pin(pin: str | None) -> str | None:
+    if pin is not None and not re.fullmatch(r"[0-9]{4,8}", pin):
+        raise ValueError("PIN must contain 4 to 8 digits")
+    return pin
 
 
 def safe_detail(detail: Any) -> str | None:
     if detail is None:
         return None
-    text = str(detail).replace("\r", " ").replace("\n", " ")
+    if isinstance(detail, (dict, list, tuple, set)):
+        detail = redact_value(detail)
+        text = json.dumps(detail, sort_keys=True, default=str)
+    else:
+        text = str(detail)
+    text = text.replace("\r", " ").replace("\n", " ")
     text = _SECRET_PATTERN.sub(r"\1=[redacted]", text)
     if "://" in text:
-        text = re.sub(r"[a-z]+://[^\s]+", "[url redacted]", text, flags=re.I)
+        text = re.sub(r"[a-z]+://[^\s]+", _redact_url_match, text, flags=re.I)
     return text[:MAX_DETAIL_LENGTH]
+
+
+def _redact_url_match(match: re.Match[str]) -> str:
+    return "[url redacted]"
+
+
+def redact_value(value: Any) -> Any:
+    """Recursively remove credentials from support-facing values."""
+    if isinstance(value, dict):
+        return {
+            str(key): "[redacted]" if _SENSITIVE_QUERY_KEYS.search(str(key)) else redact_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [redact_value(item) for item in value]
+    if isinstance(value, str) and "://" in value:
+        return re.sub(r"[a-z]+://[^\s]+", _redact_url_match, value, flags=re.I)
+    return value
+
+
+def authorized_bearer(authorization: str | None, expected: str) -> bool:
+    """Compare bearer credentials without exposing the expected token."""
+    supplied = authorization.removeprefix("Bearer ") if isinstance(authorization, str) else ""
+    import hmac
+
+    return bool(expected) and hmac.compare_digest(supplied, expected)
 
 
 class FailureObservation(BaseModel):

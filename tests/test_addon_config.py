@@ -1,5 +1,7 @@
-import yaml
 from pathlib import Path
+
+import yaml
+
 
 def test_config_yaml_syntax_and_fields():
     config_path = Path("config.yaml")
@@ -49,3 +51,15 @@ def test_repository_yaml_and_documentation():
     assert "configuration" in trans_data
     assert "log_level" in trans_data["configuration"]
     assert "bridge_token" not in trans_data["configuration"]
+
+
+def test_dependency_and_release_policy_is_explicit():
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/builder.yaml").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "npm --prefix web_ui audit --audit-level=high" in workflow
+    assert "pip_audit" in workflow
+    assert "severity: HIGH,CRITICAL" in workflow
+    assert "stable" in readme.lower() and "preview" in readme.lower()
+    assert "apt-get install" in dockerfile and "bluez=" in dockerfile

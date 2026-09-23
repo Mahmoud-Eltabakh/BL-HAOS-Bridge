@@ -29,6 +29,24 @@ jobs:
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
 
+      - name: Audit Python and frontend dependencies
+        working-directory: modules/bridge
+        run: |
+          python3 -m pip install --disable-pip-version-check pip-audit==2.7.3
+          python3 -m pip_audit --strict --requirement backend/requirements.txt
+          npm --prefix web_ui ci --ignore-scripts
+          npm --prefix web_ui audit --audit-level=high
+
+      - name: Scan repository dependency inputs
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: modules/bridge
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:

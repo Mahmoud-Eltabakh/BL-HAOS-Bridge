@@ -5,7 +5,7 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from ..health import FailureClass, HealthRegistry, HealthState
+from ..health import FailureClass, HealthRegistry, HealthState, normalize_address, validate_identifier
 
 logger = logging.getLogger("bl_haos.multiroom.manager")
 
@@ -30,6 +30,10 @@ class SpeakerGroup(BaseModel):
 
 class MultiroomManager:
     def __init__(self, host: str = "127.0.0.1", port: int = 1705, health_registry: HealthRegistry | None = None):
+        if not isinstance(host, str) or len(host) > 255 or any(ord(char) < 32 for char in host):
+            raise ValueError("Invalid Snapcast host")
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("Invalid Snapcast port")
         self.host = host
         self.port = port
         self.groups: dict[str, SpeakerGroup] = {
@@ -59,7 +63,11 @@ class MultiroomManager:
 
     def attach_speaker(self, address: str, name: str, latency_offset_ms: int = 0) -> MultiroomClient:
         """Register a connected Bluetooth speaker as a Snapcast client."""
-        addr = address.strip().lower()
+        addr = normalize_address(address)
+        if not isinstance(name, str) or not name.strip() or len(name) > 128 or any(ord(char) < 32 for char in name):
+            raise ValueError("Invalid speaker name")
+        if not isinstance(latency_offset_ms, int) or not -5000 <= latency_offset_ms <= 5000:
+            raise ValueError("Invalid latency offset")
         client_id = f"snapclient_{addr.replace(':', '')}"
 
         client = MultiroomClient(
@@ -81,7 +89,7 @@ class MultiroomManager:
 
     def detach_speaker(self, address: str) -> bool:
         """Detach speaker and stop its snapclient process."""
-        addr = address.strip().lower()
+        addr = normalize_address(address)
         client_id = f"snapclient_{addr.replace(':', '')}"
 
         if client_id in self.clients:
@@ -101,7 +109,9 @@ class MultiroomManager:
 
     def set_latency_offset(self, address: str, offset_ms: int) -> bool:
         """Calibrate acoustic latency offset (+/- ms) for phase-accurate sync."""
-        addr = address.strip().lower()
+        addr = normalize_address(address)
+        if not isinstance(offset_ms, int) or not -5000 <= offset_ms <= 5000:
+            raise ValueError("Invalid latency offset")
         client_id = f"snapclient_{addr.replace(':', '')}"
         if client_id in self.clients:
             self.clients[client_id].latency_offset_ms = offset_ms
@@ -110,11 +120,17 @@ class MultiroomManager:
         return False
 
     def create_group(self, group_id: str, name: str, client_ids: list[str] | None = None) -> SpeakerGroup:
+        group_id = validate_identifier(group_id, "Group identifier")
+        if not isinstance(name, str) or not name.strip() or len(name) > 128 or any(ord(char) < 32 for char in name):
+            raise ValueError("Invalid group name")
+        client_ids = client_ids or []
+        if len(client_ids) > 32 or any(not isinstance(client_id, str) or not client_id.startswith("snapclient_") or len(client_id) > 64 for client_id in client_ids):
+            raise ValueError("Invalid client identifiers")
         group = SpeakerGroup(
             group_id=group_id,
             name=name,
             stream_id="default",
-            client_ids=client_ids or [],
+            client_ids=client_ids,
         )
         self.groups[group_id] = group
         return group

@@ -10,6 +10,7 @@ from backend.bl_haos.health import (
     HealthRegistry,
     HealthState,
     SpeakerState,
+    safe_detail,
 )
 
 
@@ -31,6 +32,20 @@ def test_health_snapshot_is_versioned_bounded_and_redacted():
     assert "super-secret" not in encoded
     assert "https://example.test" not in encoded
     assert len(payload["components"]["pipewire"]["failure"]["detail"]) <= 256
+
+
+def test_nested_diagnostics_redact_credentials_and_url_userinfo():
+    detail = safe_detail({
+        "authorization": "Bearer expected-token",
+        "nested": {"password": "secret-password", "url": "https://user:pass@example.test/audio?token=query-secret"},
+        "items": ["api_key=list-secret"],
+    })
+
+    assert detail is not None
+    assert "expected-token" not in detail
+    assert "secret-password" not in detail
+    assert "query-secret" not in detail
+    assert "user:pass" not in detail
 
 
 def test_required_precedence_and_optional_snapcast_isolation():

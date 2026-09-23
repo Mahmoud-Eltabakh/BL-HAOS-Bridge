@@ -36,6 +36,16 @@
 
 See [DOCS.md](DOCS.md) for complete configuration options and troubleshooting guidance.
 
+## Release and Dependency Security Policy
+
+Stable releases use the exact Debian package versions in `Dockerfile`, the pinned
+Python versions in `backend/requirements.txt`, and the npm lockfile. Preview builds
+use the same pins and may be promoted only after the same high/critical audit gate
+passes. GitHub Actions runs `pip-audit`, `npm audit --audit-level=high`, and a Trivy
+filesystem scan; any high or critical finding fails the build. Vulnerability
+exceptions must be documented with an owner and expiry date in the pull request and
+must not be implemented as a default audit bypass.
+
 ## GHCR Publishing
 
 The add-on manifest pulls architecture-specific images from:

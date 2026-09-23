@@ -1,5 +1,5 @@
-import os
 from pathlib import Path
+
 
 def test_dockerfile_structure():
     dockerfile_path = Path("Dockerfile")
@@ -22,9 +22,14 @@ def test_dockerfile_structure():
     for pkg in expected_pkgs:
         assert pkg in content, f"Dockerfile must install {pkg}"
 
-    assert "uvicorn" in content, "Uvicorn must be installed"
-    assert "wsproto" in content, "Uvicorn must include a pure-Python WebSocket implementation"
+    requirements = Path("backend/requirements.txt").read_text(encoding="utf-8")
+    assert "uvicorn==" in requirements, "Uvicorn must be pinned in backend requirements"
+    assert "wsproto==" in requirements, "Uvicorn must include a pinned pure-Python WebSocket implementation"
     assert '"uvicorn[standard]"' not in content, "Standard extras require native armv7 builds"
+    assert "bluez=" in content, "APT runtime dependencies must be version-pinned"
+    assert "--requirement /backend/requirements.txt" in content
+    requirement_lines = requirements.splitlines()
+    assert requirement_lines and all("==" in line for line in requirement_lines if line.strip())
 
 def test_build_yaml_structure():
     build_path = Path("build.yaml")
