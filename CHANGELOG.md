@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.25
+
+- Auto-reconnect failures during playback now report which stage failed instead of a generic "Auto-reconnect failed" message: whether Bluetooth itself couldn't reconnect, or it reconnected but no PipeWire audio sink appeared afterward. Helps diagnose playback errors reported by Home Assistant without needing add-on logs.
+- Increased the post-reconnect settle time before retrying playback (2.0s -> 3.0s) to give PipeWire more time to negotiate the A2DP audio profile after a fresh Bluetooth reconnect.
+
 ## 0.2.24
 
 - The add-on now pushes its native bridge token to Supervisor's Discovery API on startup, so the Home Assistant integration connects automatically with zero manual token entry when discovery succeeds. Manual endpoint/token entry remains available as a fallback.

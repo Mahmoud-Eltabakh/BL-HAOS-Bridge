@@ -213,6 +213,100 @@ def test_native_rest_requires_authentication_and_blocks_unauthorized_commands():
     execute.assert_awaited_once_with("aa:bb:cc:dd:ee:01", "play", volume=None, url=None)
 
 
+def _register_native_speaker(client, address_no_colons: str):
+    client.portal.call(
+        app.state.bt_manager._on_interfaces_added,
+        f"/org/bluez/hci0/dev_{address_no_colons}",
+        {
+            "org.bluez.Device1": {
+                "Address": address_no_colons.replace("_", ":"),
+                "Name": "Native Speaker",
+                "Adapter": "/org/bluez/hci0",
+                "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                "Trusted": True,
+                "Paired": True,
+                "Connected": True,
+            }
+        },
+    )
+
+
+def test_auto_reconnect_reports_bluez_failure_distinctly(monkeypatch):
+    """When BlueZ itself can't reconnect, the error says so instead of a generic message."""
+    from backend.bl_haos.ha.player import MediaPlayerError
+
+    execute = AsyncMock(side_effect=MediaPlayerError("Connected PipeWire A2DP sink is unavailable"))
+    connect = AsyncMock(return_value=False)
+
+    with TestClient(app) as client:
+        _register_native_speaker(client, "AA_BB_CC_DD_EE_02")
+        app.state.ha_bridge.execute = execute
+        monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
+        token = app.state.config_store.settings.native_token
+
+        response = client.post(
+            "/api/native/speakers/aa:bb:cc:dd:ee:02/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"operation": "play"},
+        )
+
+    assert response.status_code == 409
+    assert "could not re-establish the Bluetooth connection" in response.json()["detail"]
+    connect.assert_awaited_once_with("aa:bb:cc:dd:ee:02")
+    execute.assert_awaited_once()
+
+
+def test_auto_reconnect_reports_sink_still_missing_distinctly(monkeypatch):
+    """When BlueZ reconnects but no sink appears, the error says so instead of a generic message."""
+    from backend.bl_haos.ha.player import MediaPlayerError
+
+    execute = AsyncMock(side_effect=MediaPlayerError("Connected PipeWire A2DP sink is unavailable"))
+    connect = AsyncMock(return_value=True)
+
+    with TestClient(app) as client:
+        _register_native_speaker(client, "AA_BB_CC_DD_EE_03")
+        app.state.ha_bridge.execute = execute
+        monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
+        monkeypatch.setattr("backend.bl_haos.api.routes.asyncio.sleep", AsyncMock())
+        token = app.state.config_store.settings.native_token
+
+        response = client.post(
+            "/api/native/speakers/aa:bb:cc:dd:ee:03/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"operation": "play"},
+        )
+
+    assert response.status_code == 409
+    assert "no audio sink appeared" in response.json()["detail"]
+    connect.assert_awaited_once_with("aa:bb:cc:dd:ee:03")
+    assert execute.await_count == 2
+
+
+def test_auto_reconnect_succeeds_after_bluez_and_sink_recover(monkeypatch):
+    """A successful reconnect + retry returns the normal 200 speaker record."""
+    from backend.bl_haos.ha.player import MediaPlayerError
+
+    execute = AsyncMock(side_effect=[MediaPlayerError("Connected PipeWire A2DP sink is unavailable"), None])
+    connect = AsyncMock(return_value=True)
+
+    with TestClient(app) as client:
+        _register_native_speaker(client, "AA_BB_CC_DD_EE_04")
+        app.state.ha_bridge.execute = execute
+        monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
+        monkeypatch.setattr("backend.bl_haos.api.routes.asyncio.sleep", AsyncMock())
+        token = app.state.config_store.settings.native_token
+
+        response = client.post(
+            "/api/native/speakers/aa:bb:cc:dd:ee:04/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"operation": "play"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["address"] == "aa:bb:cc:dd:ee:04"
+    assert execute.await_count == 2
+
+
 def test_native_snapshot_filters_and_normalizes_audio_sinks(monkeypatch):
     """Native snapshots expose trusted audio sinks with normalized addresses."""
     speakers = [

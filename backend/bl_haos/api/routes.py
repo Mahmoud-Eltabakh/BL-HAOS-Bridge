@@ -305,13 +305,33 @@ async def command_native_speaker(
         if "Connected PipeWire A2DP sink is unavailable" in str(error):
             logger.info("A2DP sink unavailable for %s, attempting auto-reconnect", normalized)
             try:
-                await request.app.state.bt_manager.connect_device(normalized)
-                await asyncio.sleep(2.0)
+                reconnected = await request.app.state.bt_manager.connect_device(normalized)
+            except Exception as connect_error:
+                logger.warning("Auto-reconnect BlueZ step failed for %s: %s", normalized, safe_detail(connect_error))
+                raise HTTPException(
+                    status_code=409,
+                    detail="Auto-reconnect failed: could not re-establish the Bluetooth connection",
+                ) from connect_error
+            if not reconnected:
+                logger.warning("Auto-reconnect: BlueZ reported failure reconnecting %s", normalized)
+                raise HTTPException(
+                    status_code=409,
+                    detail="Auto-reconnect failed: could not re-establish the Bluetooth connection",
+                )
+            await asyncio.sleep(3.0)
+            try:
                 await request.app.state.ha_bridge.execute(
                     normalized, payload.operation, volume=payload.volume, url=payload.url
                 )
             except Exception as retry_error:
-                raise HTTPException(status_code=409, detail="Auto-reconnect failed") from retry_error
+                logger.warning(
+                    "Auto-reconnect: sink still unavailable for %s after reconnect: %s",
+                    normalized, safe_detail(retry_error),
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Auto-reconnect failed: Bluetooth reconnected but no audio sink appeared",
+                ) from retry_error
         else:
             raise HTTPException(status_code=409, detail="Native playback command failed") from error
     publish = getattr(request.app.state, "publish_native_speaker", None)
