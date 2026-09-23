@@ -46,6 +46,13 @@ filesystem scan; any high or critical finding fails the build. Vulnerability
 exceptions must be documented with an owner and expiry date in the pull request and
 must not be implemented as a default audit bypass.
 
+The complete release checklist and scenario matrix are maintained in the
+repository-level [release gate contract](../../tests/integration/RELEASE-GATES.md)
+and [regression matrix](../../tests/integration/REGRESSION-MATRIX.md). They
+define stable and preview support, HAOS and native integration compatibility,
+architecture coverage, redacted evidence, and environment-qualified hardware
+validation.
+
 ## GHCR Publishing
 
 The add-on manifest pulls architecture-specific images from:
