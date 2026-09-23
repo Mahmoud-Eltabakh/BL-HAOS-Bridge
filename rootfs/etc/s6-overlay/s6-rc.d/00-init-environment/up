@@ -15,6 +15,15 @@ elif [ -S /var/run/dbus/system_bus_socket ] && [ ! -e /run/dbus/system_bus_socke
     ln -s /var/run/dbus/system_bus_socket /run/dbus/system_bus_socket
 fi
 
+# Release host PulseAudio's BlueZ transports before PipeWire and WirePlumber start.
+if [ -S /run/audio/pulse.sock ] && command -v pactl >/dev/null 2>&1; then
+    export PULSE_SERVER="unix:/run/audio/pulse.sock"
+    echo "[bl-haos] Disarming host HAOS PulseAudio Bluetooth discovery..."
+    for mod in $(pactl list modules short 2>/dev/null | grep -E 'module-bluez5|module-bluetooth' | awk '{print $1}'); do
+        pactl unload-module "$mod" 2>/dev/null || true
+    done
+fi
+
 echo "[bl-haos] Executing D-Bus and Bluetooth hardware probe..."
 if [ -x /usr/bin/bl-haos-probe ]; then
     /usr/bin/bl-haos-probe || echo "[bl-haos] Warning: bl-haos-probe reported warnings or no physical adapters found."

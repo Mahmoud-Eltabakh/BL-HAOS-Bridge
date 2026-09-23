@@ -19,6 +19,7 @@ def test_dockerfile_structure():
         "snapserver",
         "snapclient",
         "python3",
+        "pulseaudio-utils",
     ]
     for pkg in expected_pkgs:
         assert pkg in content, f"Dockerfile must install {pkg}"

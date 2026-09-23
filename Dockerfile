@@ -24,6 +24,7 @@ RUN apt-get update \
         python3-venv \
         python3-dbus-fast \
         ffmpeg \
+        pulseaudio-utils \
         libfreeaptx0 \
         libldacbt-enc2 \
         curl \

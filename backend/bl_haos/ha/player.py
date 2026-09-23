@@ -5,13 +5,17 @@ import json
 import logging
 import os
 import signal
+import subprocess
 from collections.abc import Awaitable, Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 from ..config import ConfigStore
 from ..health import FailureClass, HealthRegistry, HealthState, normalize_address, validate_identifier, validate_media_url
 
 logger = logging.getLogger("bl_haos.ha.player")
+PULSE_SOCKET = "/run/audio/pulse.sock"
+PULSE_SERVER = f"unix:{PULSE_SOCKET}"
 
 
 class MediaPlayerError(RuntimeError):
@@ -131,17 +135,24 @@ class MediaPlayerBridge:
         sink = await self._sink_resolver(addr)
         if not sink:
             if self.health:
+                failure = FailureClass.SINK_MISSING
+                detail = "No matching PipeWire or host PulseAudio A2DP sink"
+                speaker = self.health.speakers.get(addr)
+                if speaker and speaker.state.value == "connected":
+                    failure = FailureClass.SINK_UNAVAILABLE_TRANSPORT_HELD
+                    detail = "Connected BlueZ device has no PipeWire or host PulseAudio A2DP sink; restart the add-on to disarm host Bluetooth discovery"
                 self.health.observe_component(
-                    "pipewire", HealthState.UNAVAILABLE, failure=FailureClass.SINK_MISSING,
-                    detail="No matching A2DP sink", source="pw-dump"
+                    "pipewire", HealthState.UNAVAILABLE, failure=failure,
+                    detail=detail, source="pw-dump+pactl"
                 )
-            raise MediaPlayerError("Connected PipeWire A2DP sink is unavailable")
+            raise MediaPlayerError("Connected Bluetooth audio sink is unavailable")
         try:
-            sink = validate_identifier(sink, "PipeWire sink")
+            transport, sink_name = self._parse_sink(sink)
         except ValueError as error:
-            raise MediaPlayerError("Connected PipeWire sink is invalid") from error
+            label = "PulseAudio" if sink.startswith("pulse:") else "PipeWire"
+            raise MediaPlayerError(f"Connected {label} sink is invalid") from error
         if self.health:
-            self.health.observe_component("pipewire", HealthState.HEALTHY, source="pw-dump")
+            self.health.observe_component("pipewire", HealthState.HEALTHY, source=transport)
         await self._stop_processes(addr)
         try:
             decoder = await self._process_factory(
@@ -151,11 +162,11 @@ class MediaPlayerBridge:
                 start_new_session=True,
             )
             player = await self._process_factory(
-                "pw-play", "--target", sink, "--raw", "--rate", "48000", "--channels", "2", "-",
+                *self._player_command(transport, sink_name),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
+                start_new_session=True, **self._player_environment(transport),
             )
-        except (OSError, asyncio.SubprocessError) as error:
+        except (OSError, subprocess.SubprocessError) as error:
             raise MediaPlayerError("Unable to start media playback") from error
         self.active_processes[addr] = (decoder, player)
         self.last_urls[addr] = url
@@ -211,7 +222,7 @@ class MediaPlayerBridge:
         if not sink:
             return
         try:
-            sink = validate_identifier(sink, "PipeWire sink")
+            transport, sink_name = self._parse_sink(sink)
         except ValueError:
             logger.debug("Keep-alive pulse skipped for invalid sink")
             return
@@ -224,11 +235,11 @@ class MediaPlayerBridge:
                 start_new_session=True,
             )
             player = await self._process_factory(
-                "pw-play", "--target", sink, "--raw", "--rate", "48000", "--channels", "2", "-",
+                *self._player_command(transport, sink_name),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
+                start_new_session=True, **self._player_environment(transport),
             )
-        except (OSError, asyncio.SubprocessError) as error:
+        except (OSError, subprocess.SubprocessError) as error:
             logger.debug("Keep-alive pulse failed to start for %s: %s", address, error)
             return
         if hasattr(source.stdout, "read") and hasattr(player.stdin, "write"):
@@ -242,6 +253,7 @@ class MediaPlayerBridge:
                     await process.wait()
 
     async def _async_resolve_sink(self, address: str) -> str | None:
+        graph = []
         try:
             process = await self._process_factory("pw-dump", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, _ = await process.communicate()
@@ -252,8 +264,8 @@ class MediaPlayerBridge:
                         failure=FailureClass.PIPEWIRE_UNAVAILABLE,
                         detail="pw-dump probe failed", source="pw-dump"
                     )
-                return None
-            graph = json.loads(stdout)
+            else:
+                graph = json.loads(stdout)
         except Exception:
             if self.health:
                 self.health.observe_component(
@@ -261,7 +273,6 @@ class MediaPlayerBridge:
                     failure=FailureClass.PIPEWIRE_UNAVAILABLE,
                     detail="pw-dump probe unavailable", source="pw-dump"
                 )
-            return None
         address_clean = address.strip().lower()
         address_key = address_clean.replace(":", "_")
         for node in graph:
@@ -271,21 +282,61 @@ class MediaPlayerBridge:
             if media_class == "Audio/Sink" or "sink" in media_class.lower():
                 if address_clean in values or address_key in values:
                     return props.get("node.name") or str(node.get("id"))
+        if os.path.exists(PULSE_SOCKET):
+            try:
+                process = await self._process_factory(
+                    "pactl", "-s", PULSE_SERVER, "list", "sinks", "short",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await process.communicate()
+                expected = f"bluez_sink.{address_key}.a2dp_sink"
+                if not process.returncode:
+                    for line in self._decode_output(stdout).splitlines():
+                        fields = line.split()
+                        if len(fields) > 1 and fields[1].lower() == expected:
+                            return f"pulse:{fields[1]}"
+            except Exception:
+                logger.debug("Host PulseAudio sink probe unavailable", exc_info=True)
         return None
+
+    @staticmethod
+    def _decode_output(output: bytes | str) -> str:
+        return output.decode(errors="replace") if isinstance(output, bytes) else output
+
+    @staticmethod
+    def _parse_sink(sink: str) -> tuple[str, str]:
+        if sink.startswith("pulse:"):
+            return "pulse", validate_identifier(sink.removeprefix("pulse:"), "PulseAudio sink")
+        return "pipewire", validate_identifier(sink, "PipeWire sink")
+
+    @staticmethod
+    def _player_command(transport: str, sink: str) -> tuple[str, ...]:
+        if transport == "pulse":
+            return ("paplay", "--device", sink, "--raw", "--rate", "48000", "--channels", "2", "--format=s16le", "-")
+        return ("pw-play", "--target", sink, "--raw", "--rate", "48000", "--channels", "2", "-")
+
+    @staticmethod
+    def _player_environment(transport: str) -> dict[str, Any]:
+        return {"env": {**os.environ, "PULSE_SERVER": PULSE_SERVER}} if transport == "pulse" else {}
 
     async def _apply_volume(self, address: str, volume: float) -> None:
         sink = await self._sink_resolver(address)
         if sink:
             try:
-                sink = validate_identifier(sink, "PipeWire sink")
+                transport, sink_name = self._parse_sink(sink)
             except ValueError:
                 logger.debug("Volume update skipped for invalid sink")
                 return
             try:
-                process = await self._process_factory("wpctl", "set-volume", sink, str(volume))
+                if transport == "pulse":
+                    process = await self._process_factory(
+                        "pactl", "-s", PULSE_SERVER, "set-sink-volume", sink_name, f"{round(volume * 100)}%"
+                    )
+                else:
+                    process = await self._process_factory("wpctl", "set-volume", sink_name, str(volume))
                 await process.wait()
             except Exception as e:
-                logger.debug("wpctl set-volume notice for %s (%s): %s", address, sink, e)
+                logger.debug("Sink volume update notice for %s (%s): %s", address, sink_name, e)
 
     async def _signal_processes(self, address: str, signal_number: signal.Signals) -> None:
         for process in self.active_processes[address]:

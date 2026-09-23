@@ -36,6 +36,7 @@ class FailureClass(str, Enum):
     STALE_BLUEZ_OBJECT = "stale_bluez_object"
     PIPEWIRE_UNAVAILABLE = "pipewire_unavailable"
     SINK_MISSING = "sink_missing"
+    SINK_UNAVAILABLE_TRANSPORT_HELD = "sink_unavailable_transport_held"
     SNAPCAST_UNAVAILABLE = "snapcast_unavailable"
     RECONNECT_EXHAUSTED = "reconnect_exhausted"
     STARTUP_FAILED = "startup_failed"

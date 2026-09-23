@@ -2,6 +2,13 @@ from pathlib import Path
 
 
 def test_pipewire_s6_services():
+    init_up = Path("rootfs/etc/s6-overlay/s6-rc.d/00-init-environment/up")
+    init_content = init_up.read_text(encoding="utf-8")
+    assert "/run/audio/pulse.sock" in init_content
+    assert "pactl list modules short" in init_content
+    assert "module-bluez5|module-bluetooth" in init_content
+    assert "pactl unload-module" in init_content
+
     pw_type = Path("rootfs/etc/s6-overlay/s6-rc.d/10-pipewire/type")
     pw_run = Path("rootfs/etc/s6-overlay/s6-rc.d/10-pipewire/run")
     pw_dep = Path("rootfs/etc/s6-overlay/s6-rc.d/10-pipewire/dependencies.d/00-init-environment")

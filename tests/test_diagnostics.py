@@ -1,11 +1,13 @@
 import json
+from itertools import count
 
 from backend.bl_haos.diagnostics import DiagnosticsService
 from backend.bl_haos.health import FailureClass, HealthRegistry, HealthState, SpeakerState
 
 
 def populated_service() -> DiagnosticsService:
-    registry = HealthRegistry()
+    observations = count(1)
+    registry = HealthRegistry(clock=lambda: float(next(observations)))
     registry.set_lifecycle(HealthState.HEALTHY)
     registry.observe_component("bluetooth", HealthState.HEALTHY, source="bluez")
     registry.observe_component(
