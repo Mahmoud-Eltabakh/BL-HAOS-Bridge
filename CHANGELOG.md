@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.37
+
+- Enable Supervisor API access so native integration discovery is refreshed automatically after app reinstalls and container address changes.
+
 ## 0.2.36
 
 - Refresh disconnected cached BlueZ device proxies before re-pairing, preventing Connect failures after the device object was removed and recreated.
