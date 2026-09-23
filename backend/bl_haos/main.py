@@ -17,6 +17,9 @@ from .api.ws import router as ws_router
 from .bluetooth.manager import BluetoothManager
 from .bluetooth.reconnect import AutoReconnectEngine
 from .config import ConfigStore
+from .diagnostics import DiagnosticsService
+from .demo import DemoRuntime
+from .recovery import RecoveryService
 from .ha.player import MediaPlayerBridge
 from .multiroom.manager import MultiroomManager
 from .health import FailureClass, HealthRegistry, HealthState, SpeakerState
@@ -30,13 +33,43 @@ async def lifespan(app: FastAPI):
     logger.info("Starting BL-HAOS backend daemon...")
     health = HealthRegistry()
     app.state.health_registry = health
+    diagnostics = DiagnosticsService(health)
+    app.state.diagnostics = diagnostics
+
+    async def _publish_health_telemetry(snapshot):
+        event = diagnostics.record_event(
+            "health_observation",
+            component="health",
+            detail={"status": snapshot.status.value, "lifecycle": snapshot.lifecycle.value},
+            recovery="healthy" if snapshot.status == HealthState.HEALTHY else "pending",
+        )
+        await ws_manager.broadcast("telemetry", event)
+
+    health.add_listener(_publish_health_telemetry)
     await health.publish(ws_manager)
     config_store = ConfigStore()
     app.state.config_store = config_store
 
-    bt_manager = BluetoothManager()
+    if config_store.settings.demo_mode:
+        demo_runtime = DemoRuntime(config_store.settings.demo_scenario, health)
+        app.state.demo_runtime = demo_runtime
+        app.state.bt_manager = demo_runtime
+        app.state.ha_bridge = demo_runtime
+        app.state.native_ws_manager = native_ws_manager
+        async def _publish_demo_speaker(address: str) -> None:
+            return None
+
+        app.state.publish_native_speaker = _publish_demo_speaker
+        app.state.recovery = RecoveryService(health, diagnostics, demo_runtime)
+        await health.publish(ws_manager)
+        yield
+        health.set_lifecycle(HealthState.STOPPED)
+        return
+
+    bt_manager = BluetoothManager(health_registry=health)
     await bt_manager.initialize()
     app.state.bt_manager = bt_manager
+    app.state.recovery = RecoveryService(health, diagnostics, bt_manager)
     health.observe_component(
         "bluetooth",
         HealthState.HEALTHY if bt_manager.bus is not None else HealthState.UNAVAILABLE,

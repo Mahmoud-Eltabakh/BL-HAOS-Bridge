@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 def test_snapserver_config():
     conf_path = Path("rootfs/etc/snapcast/snapserver.conf")
     assert conf_path.exists(), "snapserver.conf must exist"

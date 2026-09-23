@@ -29,6 +29,8 @@ class SpeakerState(str, Enum):
 
 
 class FailureClass(str, Enum):
+    PAIRING_FAILED = "pairing_failed"
+    NATIVE_INTEGRATION_UNAVAILABLE = "native_integration_unavailable"
     DBUS_UNAVAILABLE = "dbus_unavailable"
     DBUS_DISCONNECTED = "dbus_disconnected"
     STALE_BLUEZ_OBJECT = "stale_bluez_object"
@@ -182,11 +184,12 @@ class HealthSnapshot(BaseModel):
 class HealthRegistry:
     """Own observations and publish one canonical snapshot to all consumers."""
 
-    def __init__(self):
+    def __init__(self, clock: Any = time.time):
         self.components: dict[str, ComponentHealth] = {}
         self.speakers: dict[str, SpeakerHealth] = {}
         self.lifecycle = HealthState.STARTING
         self._listeners: list[Any] = []
+        self.clock = clock
 
     def add_listener(self, listener: Any) -> None:
         self._listeners.append(listener)
@@ -204,10 +207,10 @@ class HealthRegistry:
         observation = None
         if failure:
             observation = FailureObservation(
-                classification=FailureClass(failure), detail=safe_detail(detail)
+                classification=FailureClass(failure), detail=safe_detail(detail), observed_at=self.clock()
             )
         self.components[name] = ComponentHealth(
-            name=name, state=state, required=required, failure=observation, source=source
+            name=name, state=state, required=required, failure=observation, source=source, observed_at=self.clock()
         )
         return self.snapshot()
 
@@ -225,7 +228,8 @@ class HealthRegistry:
         observation = None
         if failure:
             observation = FailureObservation(
-                classification=FailureClass(failure), detail=safe_detail(detail), attempt=attempt
+                classification=FailureClass(failure), detail=safe_detail(detail), attempt=attempt,
+                observed_at=self.clock(),
             )
         self.speakers[address] = SpeakerHealth(
             address=address,
@@ -233,6 +237,7 @@ class HealthRegistry:
             failure=observation or (None if state == SpeakerState.CONNECTED else (previous.failure if previous else None)),
             transition=f"{previous.state.value}->{state.value}" if previous else state.value,
             attempt=attempt,
+            observed_at=self.clock(),
         )
         return self.snapshot()
 
@@ -261,6 +266,7 @@ class HealthRegistry:
             lifecycle=self.lifecycle,
             components=self.components.copy(),
             speakers=self.speakers.copy(),
+            updated_at=self.clock(),
         )
 
     async def publish(self, event_bus: Any = None) -> HealthSnapshot:

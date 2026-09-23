@@ -4,7 +4,9 @@ import { SpeakerCard } from './components/SpeakerCard';
 import { DiscoveryModal } from './components/DiscoveryModal';
 import { AdapterStatus } from './components/AdapterStatus';
 import { SettingsModal } from './components/SettingsModal';
-import { apiClient, DeviceInfo, NativeDiagnostics } from './api/client';
+import { apiClient, DeviceInfo, NativeDiagnostics, OperatorDiagnostics, RecoveryContract } from './api/client';
+import { DiagnosticsPanel } from './components/DiagnosticsPanel';
+import { RecoveryPanel } from './components/RecoveryPanel';
 import { AlertCircle, Bluetooth, Plus, Volume2, RefreshCw, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -14,16 +16,28 @@ export const App: React.FC = () => {
   const [diagnostics, setDiagnostics] = useState<NativeDiagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [operatorDiagnostics, setOperatorDiagnostics] = useState<OperatorDiagnostics | null>(null);
+  const [recovery, setRecovery] = useState<RecoveryContract | null>(null);
+  const [operatorLoading, setOperatorLoading] = useState(true);
+  const [operatorError, setOperatorError] = useState<string | null>(null);
 
   const pairedSpeakers = devices.filter((d) => d.paired);
 
   const refreshDiagnostics = async () => {
+    setOperatorLoading(true);
     try {
       setDiagnostics(await apiClient.getNativeDiagnostics());
+      const nextDiagnostics = await apiClient.getDiagnostics();
+      setOperatorDiagnostics(nextDiagnostics);
+      setRecovery(await apiClient.getRecovery());
       setDiagnosticsError(null);
+      setOperatorError(null);
     } catch (error) {
       setDiagnostics(null);
       setDiagnosticsError(error instanceof Error ? error.message : 'Native diagnostics are unavailable');
+      setOperatorError('Diagnostics are unavailable');
+    } finally {
+      setOperatorLoading(false);
     }
   };
 
@@ -86,6 +100,15 @@ export const App: React.FC = () => {
       <div className="mt-6">
         <AdapterStatus adapters={adapters} onRefresh={refreshAll} />
       </div>
+
+      <div data-demo-mode={operatorDiagnostics?.demo_mode ? 'true' : 'false'}>
+        <DiagnosticsPanel diagnostics={operatorDiagnostics} loading={operatorLoading} error={operatorError} onExport={() => void apiClient.downloadSupportBundle()} />
+      </div>
+      <RecoveryPanel
+        contract={recovery}
+        target={operatorDiagnostics?.last_failure?.speaker}
+        onComplete={(result) => { setOperatorDiagnostics(result.diagnostics); }}
+      />
 
       {/* Integration Status Accordion */}
       <section className="mt-4 border border-slate-800 bg-slate-800/30 rounded-xl overflow-hidden transition-all" aria-live="polite">

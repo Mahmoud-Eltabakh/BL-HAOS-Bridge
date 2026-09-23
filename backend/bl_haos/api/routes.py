@@ -6,6 +6,7 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..bluetooth.models import AdapterInfo, DeviceInfo
@@ -139,6 +140,13 @@ class NativeCommandRequest(BaseModel):
         return self
 
 
+class RecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: Literal["refresh_diagnostics", "retry_reconnect", "refresh_device", "recheck_dependency"]
+    target: str | None = Field(default=None, max_length=64)
+
+
 def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str, Any]:
     """Expose only trusted audio-sink metadata for the native integration."""
     address = device.address.strip().lower().replace("-", ":")
@@ -179,6 +187,72 @@ async def get_health(request: Request):
 async def get_native_diagnostics(request: Request):
     """Expose sanitized native bridge readiness for the Ingress dashboard."""
     return native_diagnostics(request.app)
+
+
+def operator_diagnostics(request: Request) -> dict[str, Any]:
+    """Return one bounded projection shared by support and operator clients."""
+    demo_runtime = getattr(request.app.state, "demo_runtime", None)
+    if demo_runtime is not None:
+        return demo_runtime.snapshot()
+    service = getattr(request.app.state, "diagnostics", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Diagnostics unavailable")
+    adapters = [
+        {"name": adapter.interface, "powered": adapter.powered, "discovering": adapter.discovering}
+        for adapter in request.app.state.bt_manager.get_adapters()
+    ]
+    speakers = request.app.state.bt_manager.get_devices(audio_only=True)
+    sinks = {
+        "available": any(device.connected for device in speakers),
+        "count": sum(bool(device.connected) for device in speakers),
+    }
+    return service.snapshot(adapters=adapters, sinks=sinks)
+
+
+@router.get("/diagnostics")
+async def get_diagnostics(request: Request):
+    return operator_diagnostics(request)
+
+
+@router.get("/recovery")
+async def get_recovery(request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    service = getattr(request.app.state, "recovery", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Recovery unavailable")
+    return service.contract(operator_diagnostics(request))
+
+
+@router.post("/recovery/actions")
+async def execute_recovery(payload: RecoveryRequest, request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    service = getattr(request.app.state, "recovery", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Recovery unavailable")
+    try:
+        result = await service.execute(payload.action_id, payload.target)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    refreshed = operator_diagnostics(request)
+    result["diagnostics"] = refreshed
+    return result
+
+
+@router.get("/support/bundle")
+async def get_support_bundle(request: Request):
+    service = getattr(request.app.state, "diagnostics", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Diagnostics unavailable")
+    payload = operator_diagnostics(request)
+    bundle = service.support_bundle(
+        adapters=payload["adapters"],
+        sinks=payload["sink_availability"],
+    )
+    return JSONResponse(
+        content=bundle,
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="bl-haos-support-bundle.json"'},
+    )
 
 
 @router.get("/native/identity")

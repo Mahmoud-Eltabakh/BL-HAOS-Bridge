@@ -47,6 +47,8 @@ class SystemSettings(BaseModel):
     auto_reconnect_enabled: bool = True
     multiroom_sync_enabled: bool = True
     native_token: str = Field(default="", exclude=True, repr=False)
+    demo_mode: bool = False
+    demo_scenario: str = "healthy"
     speakers: dict[str, SpeakerSettings] = Field(default_factory=dict)
 
 
@@ -68,6 +70,8 @@ class ConfigStore:
             try:
                 data = json.loads(self.file_path.read_text(encoding="utf-8"))
                 self.settings = SystemSettings.model_validate(data)
+                self.settings.demo_mode = self._configured_demo_mode()
+                self.settings.demo_scenario = os.environ.get("BLHAOS_DEMO_SCENARIO", self.settings.demo_scenario)
                 if not self.settings.native_token or any(ord(char) < 32 for char in self.settings.native_token):
                     self.settings.native_token = self._configured_token()
                     self.save()
@@ -76,7 +80,11 @@ class ConfigStore:
                 logger.error("Failed to load config from %s: invalid configuration. Using defaults.", self.file_path)
                 self.settings = SystemSettings(native_token=self._configured_token())
         else:
-            self.settings = SystemSettings(native_token=self._configured_token())
+            self.settings = SystemSettings(
+                native_token=self._configured_token(),
+                demo_mode=self._configured_demo_mode(),
+                demo_scenario=self._configured_demo_scenario(),
+            )
             self.save()
         return self.settings
 
@@ -86,6 +94,14 @@ class ConfigStore:
         if configured and not any(ord(char) < 32 for char in configured):
             return configured
         return secrets.token_urlsafe(32)
+
+    @staticmethod
+    def _configured_demo_mode() -> bool:
+        return os.environ.get("BLHAOS_DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _configured_demo_scenario() -> str:
+        return os.environ.get("BLHAOS_DEMO_SCENARIO", "healthy").strip() or "healthy"
 
     def save(self) -> None:
         """Atomically persist settings to JSON file."""

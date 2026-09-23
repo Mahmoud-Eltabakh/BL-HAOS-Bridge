@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 def test_wireplumber_codec_ranking():
     bluez_lua = Path("rootfs/etc/wireplumber/bluetooth.lua.d/50-bluez.lua")
     assert bluez_lua.exists(), "50-bluez.lua must exist"

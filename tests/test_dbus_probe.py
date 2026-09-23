@@ -1,8 +1,7 @@
-import os
-import sys
-from pathlib import Path
 import importlib.machinery
 import importlib.util
+from pathlib import Path
+
 
 def load_probe_module():
     probe_path = Path("rootfs/usr/bin/bl-haos-probe").resolve()
@@ -12,11 +11,9 @@ def load_probe_module():
     loader.exec_module(module)
     return module
 
-import os
-import sys
-from pathlib import Path
 import importlib.machinery
 import importlib.util
+
 
 def load_probe_module():
     probe_path = Path("rootfs/usr/bin/bl-haos-probe").resolve()

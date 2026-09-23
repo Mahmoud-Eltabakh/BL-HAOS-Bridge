@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 def test_pipewire_s6_services():
     pw_type = Path("rootfs/etc/s6-overlay/s6-rc.d/10-pipewire/type")
     pw_run = Path("rootfs/etc/s6-overlay/s6-rc.d/10-pipewire/run")

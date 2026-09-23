@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 def test_backend_s6_service():
     srv_type = Path("rootfs/etc/s6-overlay/s6-rc.d/40-bl-haos-daemon/type")
     srv_run = Path("rootfs/etc/s6-overlay/s6-rc.d/40-bl-haos-daemon/run")

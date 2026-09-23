@@ -54,6 +54,44 @@ export interface NativeDiagnostics {
   connected_trusted_speaker_count: number;
 }
 
+export interface OperatorDiagnostics {
+  contract_version: number;
+  status: string;
+  lifecycle: string;
+  demo_mode?: boolean;
+  demo_scenario?: string;
+  components: Record<string, { state: string; failure_class: string | null }>;
+  last_failure: { classification: string; component: string; speaker?: string } | null;
+  recent_failures: Array<{ classification: string; component: string; speaker?: string }>;
+  event_count: number;
+}
+
+export interface RecoveryGuidance {
+  failure_class: string;
+  diagnosis: string;
+  next_steps: string[];
+  prerequisites: string[];
+  actions: string[];
+  expected_outcome: string;
+  status: string;
+}
+
+export interface RecoveryContract {
+  contract_version: number;
+  guidance: RecoveryGuidance;
+  current_status: string;
+  correlation_id: string | null;
+}
+
+export interface RecoveryResult {
+  action_id: string;
+  target: string | null;
+  correlation_id: string;
+  result: 'succeeded' | 'failed' | 'conflict';
+  detail: string;
+  diagnostics: OperatorDiagnostics;
+}
+
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, options);
   let payload: any;
@@ -79,6 +117,30 @@ export const apiClient = {
       throw new Error('Native diagnostics are unavailable');
     }
     return payload;
+  },
+  async getDiagnostics(): Promise<OperatorDiagnostics> {
+    return requestJson<OperatorDiagnostics>(getApiUrl('/api/diagnostics'));
+  },
+  async getRecovery(): Promise<RecoveryContract> {
+    return requestJson<RecoveryContract>(getApiUrl('/api/recovery'));
+  },
+  async executeRecovery(actionId: string, target?: string): Promise<RecoveryResult> {
+    return requestJson<RecoveryResult>(getApiUrl('/api/recovery/actions'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action_id: actionId, target }),
+    });
+  },
+  async downloadSupportBundle(): Promise<void> {
+    const response = await fetch(getApiUrl('/api/support/bundle'));
+    if (!response.ok) throw new Error('Support export is unavailable');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'bl-haos-support-bundle.json';
+    anchor.click();
+    URL.revokeObjectURL(url);
   },
   async getAdapters(): Promise<AdapterInfo[]> {
     return requestJson<AdapterInfo[]>(getApiUrl('/api/adapters'));

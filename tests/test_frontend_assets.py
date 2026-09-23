@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 def test_ingress_relative_paths():
     vite_conf = Path("web_ui/vite.config.ts")
     assert vite_conf.exists(), "web_ui/vite.config.ts must exist"
@@ -21,6 +22,8 @@ def test_ui_components_exist():
         "web_ui/src/components/SettingsModal.tsx",
         "web_ui/src/api/client.ts",
         "web_ui/src/hooks/useBluetoothEvents.ts",
+        "web_ui/src/components/DiagnosticsPanel.tsx",
+        "web_ui/src/components/RecoveryPanel.tsx",
     ]
     for comp in expected_components:
         p = Path(comp)
@@ -44,3 +47,14 @@ def test_ingress_shows_native_diagnostics_and_relative_api_error_state():
     assert "Native integration" in app
     assert "diagnosticsError" in app
     assert "refreshDiagnostics" in app
+
+
+def test_ingress_contains_guided_recovery_and_demo_contracts():
+    client_ts = Path("web_ui/src/api/client.ts").read_text(encoding="utf-8")
+    app = Path("web_ui/src/App.tsx").read_text(encoding="utf-8")
+    assert "getDiagnostics" in client_ts
+    assert "executeRecovery" in client_ts
+    assert "support/bundle" in client_ts
+    assert "DiagnosticsPanel" in app
+    assert "RecoveryPanel" in app
+    assert "demo_mode" in app

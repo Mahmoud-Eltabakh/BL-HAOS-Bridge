@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 def test_s6_init_service_exists():
     init_type = Path("rootfs/etc/s6-overlay/s6-rc.d/00-init-environment/type")
     init_up = Path("rootfs/etc/s6-overlay/s6-rc.d/00-init-environment/up")
