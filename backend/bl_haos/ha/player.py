@@ -270,6 +270,11 @@ class MediaPlayerBridge:
         finally:
             if not player.stdin.is_closing():
                 player.stdin.close()
+            if decoder.returncode is None:
+                try:
+                    decoder.terminate()
+                except ProcessLookupError:
+                    pass
 
     async def _stop_processes(self, address: str) -> None:
         processes = self.active_processes.pop(address, ())
