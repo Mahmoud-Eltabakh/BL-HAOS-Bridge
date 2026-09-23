@@ -28,7 +28,7 @@ jobs:
       - name: Install bridge test dependencies
         run: |
           python3 -m pip install --disable-pip-version-check -r backend/requirements.txt
-          python3 -m pip install --disable-pip-version-check pytest pytest-asyncio pytest-cov
+          python3 -m pip install --disable-pip-version-check dbus-fast PyYAML pytest pytest-asyncio pytest-cov
 
       - name: Run bridge regression tests
         run: |
