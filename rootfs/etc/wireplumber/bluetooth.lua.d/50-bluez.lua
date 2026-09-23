@@ -3,6 +3,8 @@ bluez_monitor = bluez_monitor or { properties = {}, rules = {} }
 bluez_monitor.properties = bluez_monitor.properties or {}
 bluez_monitor.rules = bluez_monitor.rules or {}
 
+bluez_monitor.properties["bluez5.roles"] = "[ a2dp_sink a2dp_source ]"
+bluez_monitor.properties["bluez5.hfphsp-backend"] = "none"
 bluez_monitor.properties["bluez5.enable-sbc-xq"] = true
 bluez_monitor.properties["bluez5.enable-volume-sync"] = true
 bluez_monitor.properties["bluez5.enable-hw-volume"] = true
@@ -16,7 +18,7 @@ table.insert(bluez_monitor.rules, {
     },
   },
   apply_properties = {
-    ["bluez5.auto-connect"] = "[ a2dp_sink ]",
-    ["bluez5.hw-volume"] = "[ a2dp_sink ]",
+    ["bluez5.auto-connect"] = "[ a2dp_sink a2dp_source ]",
+    ["bluez5.hw-volume"] = "[ a2dp_sink a2dp_source ]",
   },
 })

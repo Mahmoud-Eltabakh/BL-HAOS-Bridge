@@ -182,7 +182,17 @@ class BluetoothDevice:
             introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
             proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
             dev_iface = proxy.get_interface(DEVICE_INTERFACE)
-            await dev_iface.call_connect()
+            try:
+                await dev_iface.call_connect()
+            except Exception as conn_err:
+                err_str = str(conn_err)
+                if "AlreadyConnected" in err_str or "InProgress" in err_str:
+                    pass
+                else:
+                    try:
+                        await dev_iface.call_connect_profile(A2DP_SINK_UUID)
+                    except Exception:
+                        raise conn_err
         except Exception as e:
             if self.adapter_path:
                 try:

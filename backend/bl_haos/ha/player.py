@@ -265,7 +265,7 @@ class MediaPlayerBridge:
         address_clean = address.strip().lower()
         address_key = address_clean.replace(":", "_")
         for node in graph:
-            props = node.get("info", {}).get("props", {})
+            props = {**node.get("props", {}), **node.get("info", {}).get("props", {})}
             values = " ".join(str(value).lower() for value in props.values())
             media_class = props.get("media.class", "")
             if media_class == "Audio/Sink" or "sink" in media_class.lower():
