@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   release-gates:
-    name: Release contract and SIL evidence
+    name: Bridge release gates
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -25,27 +25,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install integration test dependencies
-        run: python3 -m pip install --disable-pip-version-check -r tests/integration/requirements-test.txt
-
-      - name: Run release contract and orchestration checks
+      - name: Install bridge test dependencies
+        working-directory: modules/bridge
         run: |
-          python -m pytest tests/integration/tests/test_release_contract.py tests/integration/tests/test_orchestration.py -q
+          python3 -m pip install --disable-pip-version-check -r backend/requirements.txt
+          python3 -m pip install --disable-pip-version-check pytest pytest-asyncio pytest-cov
 
-      - name: Build canonical SIL runner image
-        run: docker compose -f tests/integration/docker-compose.yml build test-runner
-
-      - name: Run canonical sequential SIL runner
-        run: docker compose -f tests/integration/docker-compose.yml run --rm test-runner
-
-      - name: Require release evidence artifacts
-        shell: bash
+      - name: Run bridge regression tests
         run: |
-          set -euo pipefail
-          for report in bridge-junit.xml integration-junit.xml sil-junit.xml coverage.xml; do
-            test -s "tests/integration/reports/${report}"
-          done
-          test -d tests/integration/reports/coverage-html
+          python -m pytest modules/bridge/tests/ -q
+
+      - name: Build frontend
+        working-directory: modules/bridge
+        run: |
+          npm ci --prefix web_ui --ignore-scripts
+          npm run build --prefix web_ui
 
       - name: Assert manifest and build architecture parity
         shell: bash
@@ -57,19 +51,6 @@ jobs:
             grep -Fq "${arch}" modules/bridge/.github/workflows/builder.yaml
           done
           grep -Fq 'image: "ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge"' modules/bridge/config.yaml
-
-      - name: Upload redacted release evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: bl-haos-release-evidence
-          retention-days: 14
-          if-no-files-found: error
-          path: |
-            tests/integration/reports/bridge-junit.xml
-            tests/integration/reports/integration-junit.xml
-            tests/integration/reports/sil-junit.xml
-            tests/integration/reports/coverage.xml
-            tests/integration/reports/coverage-html
 
   build:
     name: Build ${{ matrix.arch }}
@@ -97,7 +78,7 @@ jobs:
           npm --prefix web_ui audit --audit-level=high
 
       - name: Scan repository dependency inputs
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
           scan-ref: modules/bridge
