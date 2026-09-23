@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.32
+
+- Explicitly reconnect the A2DP profile after pairing so a removed and re-paired speaker is immediately usable.
+
 ## 0.2.31
 
 - Grant the add-on Home Assistant's internal audio access so PipeWire can create Bluetooth A2DP sinks after BlueZ reconnects.

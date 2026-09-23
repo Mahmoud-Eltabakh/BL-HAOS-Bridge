@@ -282,7 +282,10 @@ class BluetoothManager:
             await dev.pair()
         except Exception as e:
             logger.warning("Pair call fallback for %s: %s", address, e)
-            await dev.connect()
+        # Pairing may leave a newly recreated BlueZ object paired but not
+        # connected, so explicitly establish the A2DP link before publishing
+        # it as a trusted speaker.
+        await dev.connect()
 
         await dev.set_trusted(True)
         return True

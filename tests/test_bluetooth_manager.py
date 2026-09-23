@@ -77,6 +77,7 @@ async def test_bluetooth_manager_device_pairing_and_removal():
     dev = mgr.get_device_by_address(dev_addr)
     assert dev.trusted is True
     assert dev.paired is True
+    assert dev.connected is True
 
     connected = await mgr.connect_device(dev_addr)
     assert connected is True
