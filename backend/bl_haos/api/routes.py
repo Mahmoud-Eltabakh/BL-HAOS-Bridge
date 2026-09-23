@@ -388,11 +388,13 @@ async def list_devices(request: Request, audio_only: bool = True):
 @router.post("/devices/pair")
 async def pair_device(payload: PairRequest, request: Request):
     try:
-        if payload.pin:
+        if payload.pin and hasattr(request.app.state.bt_manager, "agent") and request.app.state.bt_manager.agent:
             request.app.state.bt_manager.agent.pin_callback = lambda dev: payload.pin
         success = await request.app.state.bt_manager.pair_and_trust(payload.address)
-        # Register in auto reconnect
-        request.app.state.reconnect_engine.register_speaker(payload.address)
+        # Register in auto reconnect if available
+        reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
+        if reconnect_engine:
+            reconnect_engine.register_speaker(payload.address)
         publish = getattr(request.app.state, "publish_native_speaker", None)
         if publish:
             await publish(payload.address)
@@ -432,7 +434,9 @@ async def remove_device(address: str, request: Request):
     try:
         address = normalize_address(address)
         success = await request.app.state.bt_manager.remove_device(address)
-        request.app.state.reconnect_engine.unregister_speaker(address)
+        reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
+        if reconnect_engine:
+            reconnect_engine.unregister_speaker(address)
         request.app.state.config_store.remove_speaker(address)
         return {"status": "ok", "removed": success, "address": address}
     except Exception as e:
@@ -463,11 +467,12 @@ async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, r
         default_volume=payload.default_volume,
         codec_override=payload.codec_override,
     )
-    if payload.auto_reconnect is not None:
+    reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
+    if reconnect_engine and payload.auto_reconnect is not None:
         if payload.auto_reconnect:
-            request.app.state.reconnect_engine.register_speaker(address, preferred_adapter=payload.preferred_adapter)
+            reconnect_engine.register_speaker(address, preferred_adapter=payload.preferred_adapter)
         else:
-            request.app.state.reconnect_engine.unregister_speaker(address)
+            reconnect_engine.unregister_speaker(address)
     return updated
 
 
@@ -477,16 +482,19 @@ async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, r
 
 @router.get("/multiroom/groups")
 async def list_multiroom_groups(request: Request):
-    return request.app.state.multiroom_manager.get_groups()
+    manager = getattr(request.app.state, "multiroom_manager", None)
+    return manager.get_groups() if manager else []
 
 
 @router.get("/multiroom/clients")
 async def list_multiroom_clients(request: Request):
-    return request.app.state.multiroom_manager.get_clients()
+    manager = getattr(request.app.state, "multiroom_manager", None)
+    return manager.get_clients() if manager else []
 
 
 @router.post("/multiroom/speakers/{address}/latency")
 async def set_speaker_latency(address: str, payload: dict[str, int], request: Request):
     offset = payload.get("latency_offset_ms", 0)
-    success = request.app.state.multiroom_manager.set_latency_offset(address, offset)
+    manager = getattr(request.app.state, "multiroom_manager", None)
+    success = manager.set_latency_offset(address, offset) if manager else True
     return {"status": "ok", "address": address, "latency_offset_ms": offset, "updated": success}

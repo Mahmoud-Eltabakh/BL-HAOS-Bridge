@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.25
+## 0.2.26
 
 - Harden Bluetooth device lookup and auto-reconnect against malformed or unpopulated cached device addresses, preventing `ValueError: Invalid Bluetooth address` exceptions when iterating over discovered devices.
 - Configure WirePlumber to explicitly use `[ a2dp_sink a2dp_source ]` roles and disable the unused HFP/HSP telephony backend (`bluez5.hfphsp-backend = "none"`). Prevents BlueZ `RegisterProfile() failed: org.bluez.Error.NotPermitted` and SCO socket initialization errors on Home Assistant OS that blocked A2DP audio sink registration.
@@ -9,6 +9,10 @@
 - Auto-reconnect failures during playback now report which stage failed instead of a generic "Auto-reconnect failed" message: whether Bluetooth itself couldn't reconnect, or it reconnected but no PipeWire audio sink appeared afterward.
 - Increased the post-reconnect settle time before retrying playback (2.0s -> 3.0s) to give PipeWire more time to negotiate the A2DP audio profile after a fresh Bluetooth reconnect.
 - Separate Web UI diagnostics and recovery fetching into independent handlers so operator and native diagnostics load cleanly even when unauthenticated to recovery endpoints.
+
+## 0.2.25
+
+- Distinguish auto-reconnect error stages during playback to clearly identify whether BlueZ connection or PipeWire audio sink discovery failed.
 
 ## 0.2.24
 

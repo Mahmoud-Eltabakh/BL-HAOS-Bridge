@@ -18,6 +18,31 @@ DEMO_SCENARIOS = {
 }
 
 
+class _DemoAgent:
+    def __init__(self) -> None:
+        self.pin_callback = None
+
+
+class _DemoAdapterWrapper:
+    def __init__(self, adapter_info: AdapterInfo) -> None:
+        self._info = adapter_info
+
+    @property
+    def interface(self) -> str:
+        return self._info.interface
+
+    @property
+    def powered(self) -> bool:
+        return self._info.powered
+
+    @property
+    def discovering(self) -> bool:
+        return self._info.discovering
+
+    async def set_power(self, powered: bool) -> None:
+        self._info.powered = powered
+
+
 class DemoRuntime:
     """Small manager-compatible provider with no host-service initialization."""
 
@@ -28,22 +53,75 @@ class DemoRuntime:
             raise ValueError("Unknown demo scenario")
         self.scenario = scenario
         self.bus = None
+        self.agent = _DemoAgent()
         self.live_initialization_calls: list[str] = []
         self.health = health or HealthRegistry(clock=lambda: self.CLOCK)
         self.diagnostics_service = DiagnosticsService(self.health, clock=lambda: self.CLOCK)
-        self.adapter = AdapterInfo(path="/demo/hci0", interface="hci0", address="00:11:22:33:44:55", name="Demo Adapter")
-        self.device = DeviceInfo(
-            path="/demo/hci0/dev_AA_BB_CC_11_22_33",
-            adapter_path="/demo/hci0",
-            address="aa:bb:cc:11:22:33",
-            name="Demo Speaker",
-            alias="Demo Speaker",
-            paired=True,
-            trusted=True,
-            connected=scenario == "healthy",
-            is_audio_sink=scenario != "sink_missing",
-            device_type="Speaker",
+        self.adapter = AdapterInfo(
+            path="/demo/hci0",
+            interface="hci0",
+            address="00:11:22:33:44:55",
+            name="Demo Adapter",
+            alias="Demo Adapter",
+            powered=True,
+            discovering=False,
         )
+        self.devices: dict[str, DeviceInfo] = {
+            "aa:bb:cc:11:22:33": DeviceInfo(
+                path="/demo/hci0/dev_AA_BB_CC_11_22_33",
+                adapter_path="/demo/hci0",
+                address="aa:bb:cc:11:22:33",
+                name="Demo Speaker",
+                alias="Demo Speaker",
+                paired=True,
+                trusted=True,
+                connected=scenario == "healthy",
+                is_audio_sink=scenario != "sink_missing",
+                device_type="Speaker",
+            ),
+            "fc:58:fa:91:a2:b3": DeviceInfo(
+                path="/demo/hci0/dev_FC_58_FA_91_A2_B3",
+                adapter_path="/demo/hci0",
+                address="fc:58:fa:91:a2:b3",
+                name="Sony WH-1000XM4",
+                alias="Sony WH-1000XM4",
+                paired=False,
+                trusted=False,
+                connected=False,
+                is_audio_sink=True,
+                device_type="Headphones",
+                rssi=-58,
+            ),
+            "08:eb:ed:44:55:66": DeviceInfo(
+                path="/demo/hci0/dev_08_EB_ED_44_55_66",
+                adapter_path="/demo/hci0",
+                address="08:eb:ed:44:55:66",
+                name="JBL Flip 6",
+                alias="JBL Flip 6",
+                paired=False,
+                trusted=False,
+                connected=False,
+                is_audio_sink=True,
+                device_type="Speaker",
+                rssi=-65,
+            ),
+            "e4:58:b8:77:88:99": DeviceInfo(
+                path="/demo/hci0/dev_E4_58_B8_77_88_99",
+                adapter_path="/demo/hci0",
+                address="e4:58:b8:77:88:99",
+                name="Bose SoundLink Revolve",
+                alias="Bose SoundLink Revolve",
+                paired=False,
+                trusted=False,
+                connected=False,
+                is_audio_sink=True,
+                device_type="Speaker",
+                rssi=-72,
+            ),
+        }
+        self.device = self.devices["aa:bb:cc:11:22:33"]
+        self._states: dict[str, str] = {"aa:bb:cc:11:22:33": "idle"}
+        self._volumes: dict[str, float] = {"aa:bb:cc:11:22:33": 0.70}
         self._prepare_health()
 
     def _prepare_health(self) -> None:
@@ -70,14 +148,67 @@ class DemoRuntime:
     def get_adapters(self) -> list[AdapterInfo]:
         return [self.adapter]
 
+    def get_adapter_by_name(self, name: str) -> _DemoAdapterWrapper | None:
+        if name in (self.adapter.interface, self.adapter.name):
+            return _DemoAdapterWrapper(self.adapter)
+        return None
+
+    async def start_scan(self, adapter_name: str | None = None) -> None:
+        self.adapter.discovering = True
+
+    async def stop_scan(self, adapter_name: str | None = None) -> None:
+        self.adapter.discovering = False
+
     def get_devices(self, audio_only: bool = True) -> list[DeviceInfo]:
-        return [self.device] if (not audio_only or self.device.is_audio_sink) else []
+        results = list(self.devices.values())
+        if audio_only:
+            results = [d for d in results if d.is_audio_sink]
+        return results
 
     def get_device_by_address(self, address: str) -> DeviceInfo | None:
-        return self.device if address.lower().replace("-", ":") == self.device.address else None
+        normalized = address.lower().replace("-", ":")
+        return self.devices.get(normalized)
+
+    async def pair_and_trust(self, address: str) -> bool:
+        normalized = address.lower().replace("-", ":")
+        dev = self.devices.get(normalized)
+        if dev:
+            dev.paired = True
+            dev.trusted = True
+            dev.connected = True
+            self._states[normalized] = "idle"
+            self._volumes.setdefault(normalized, 0.70)
+            self.health.observe_speaker(normalized, SpeakerState.CONNECTED)
+            return True
+        return False
 
     async def connect_device(self, address: str) -> bool:
-        return address == self.device.address
+        normalized = address.lower().replace("-", ":")
+        dev = self.devices.get(normalized)
+        if dev:
+            dev.connected = True
+            self.health.observe_speaker(normalized, SpeakerState.CONNECTED)
+            return True
+        return False
+
+    async def disconnect_device(self, address: str) -> bool:
+        normalized = address.lower().replace("-", ":")
+        dev = self.devices.get(normalized)
+        if dev:
+            dev.connected = False
+            self.health.observe_speaker(normalized, SpeakerState.DISCONNECTED)
+            return True
+        return False
+
+    async def remove_device(self, address: str) -> bool:
+        normalized = address.lower().replace("-", ":")
+        dev = self.devices.get(normalized)
+        if dev:
+            dev.paired = False
+            dev.trusted = False
+            dev.connected = False
+            return True
+        return False
 
     async def ensure_device(self, address: str) -> DeviceInfo | None:
         return self.get_device_by_address(address)
@@ -86,12 +217,23 @@ class DemoRuntime:
         return True
 
     def get_state(self, address: str) -> str:
-        return "idle"
+        normalized = address.lower().replace("-", ":")
+        return self._states.get(normalized, "idle")
 
     def get_volume(self, address: str) -> float:
-        return 0.70
+        normalized = address.lower().replace("-", ":")
+        return self._volumes.get(normalized, 0.70)
 
     async def execute(self, address: str, operation: str, **kwargs: Any) -> None:
+        normalized = address.lower().replace("-", ":")
+        if operation == "set_volume":
+            volume = kwargs.get("volume")
+            if volume is not None:
+                self._volumes[normalized] = float(volume)
+        elif operation == "play":
+            self._states[normalized] = "playing"
+        elif operation in ("pause", "stop"):
+            self._states[normalized] = "idle"
         return None
 
     async def start_keepalive(self) -> None:
@@ -105,7 +247,7 @@ class DemoRuntime:
 
     def snapshot(self) -> dict[str, Any]:
         data = self.diagnostics_service.snapshot(
-            adapters=[{"name": self.adapter.interface, "powered": True, "discovering": False}],
+            adapters=[{"name": self.adapter.interface, "powered": self.adapter.powered, "discovering": self.adapter.discovering}],
             sinks={"available": self.device.connected and self.device.is_audio_sink, "count": int(self.device.connected and self.device.is_audio_sink)},
         )
         data["demo_mode"] = True
