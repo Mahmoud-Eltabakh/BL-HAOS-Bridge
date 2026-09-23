@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.29
+
+- Preserve actionable playback failure details in native API responses, including when `media_player.play` is requested without a remembered media URL.
+
 ## 0.2.28
 
 - Explicitly activate the A2DP sink profile when BlueZ reports that the Bluetooth device is already connected, preventing playback failures where the link is restored but PipeWire never receives an audio sink.

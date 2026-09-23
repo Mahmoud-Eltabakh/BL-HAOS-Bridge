@@ -330,7 +330,10 @@ async def command_native_speaker(
                 except MediaPlayerError as retry_error:
                     sink_missing = "Connected PipeWire A2DP sink is unavailable" in str(retry_error)
                     if not sink_missing:
-                        raise HTTPException(status_code=409, detail="Native playback command failed") from retry_error
+                        raise HTTPException(
+                            status_code=409,
+                            detail=safe_detail(retry_error) or "Native playback command failed",
+                        ) from retry_error
                     if attempt == A2DP_SINK_RETRY_ATTEMPTS - 1:
                         logger.warning(
                             "Auto-reconnect: sink still unavailable for %s after reconnect: %s",
@@ -343,7 +346,10 @@ async def command_native_speaker(
                 except Exception as retry_error:
                     raise HTTPException(status_code=409, detail="Native playback command failed") from retry_error
         else:
-            raise HTTPException(status_code=409, detail="Native playback command failed") from error
+            raise HTTPException(
+                status_code=409,
+                detail=safe_detail(error) or "Native playback command failed",
+            ) from error
     publish = getattr(request.app.state, "publish_native_speaker", None)
     if publish:
         await publish(normalized)
