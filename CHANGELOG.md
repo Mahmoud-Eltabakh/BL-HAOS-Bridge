@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.35
+
+- Handle both compact and spaced BlueZ `InProgress` responses during A2DP reconnects.
+
 ## 0.2.34
 
 - Add a bounded settle-and-retry loop when replacing active playback, avoiding transient BlueZ reconnect failures after resetting a stale A2DP transport.

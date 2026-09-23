@@ -188,7 +188,7 @@ class BluetoothDevice:
                 await dev_iface.call_connect()
             except Exception as conn_err:
                 err_str = str(conn_err)
-                if "AlreadyConnected" in err_str or "InProgress" in err_str:
+                if "AlreadyConnected" in err_str or "InProgress" in err_str or "In Progress" in err_str:
                     connect_error = None
                 else:
                     connect_error = conn_err
@@ -196,7 +196,11 @@ class BluetoothDevice:
                 await dev_iface.call_connect_profile(A2DP_SINK_UUID)
             except Exception as profile_err:
                 profile_str = str(profile_err)
-                if "AlreadyConnected" not in profile_str and "InProgress" not in profile_str:
+                if (
+                    "AlreadyConnected" not in profile_str
+                    and "InProgress" not in profile_str
+                    and "In Progress" not in profile_str
+                ):
                     raise connect_error or profile_err
         except Exception as e:
             if self.adapter_path:
