@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.38
+
+- Fix auto-reconnect and sink-wait retry loop in REST/native command handler to recognize generic Bluetooth audio sink exceptions.
+- Add host PulseAudio BlueZ transport disarm hook on container startup and fallback sink resolution.
+
 ## 0.2.37
 
 - Enable Supervisor API access so native integration discovery is refreshed automatically after app reinstalls and container address changes.
