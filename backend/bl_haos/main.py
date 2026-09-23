@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import aiohttp
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -26,6 +28,26 @@ from .health import FailureClass, HealthRegistry, HealthState, SpeakerState
 
 logging.basicConfig(level=logging.INFO, format="[bl-haos] %(asctime)s %(levelname)s [%(name)s]: %(message)s")
 logger = logging.getLogger("bl_haos.main")
+
+
+async def _publish_supervisor_discovery(native_token: str) -> None:
+    """Push the native bridge token to Supervisor so the integration can auto-connect."""
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
+    if not supervisor_token or not native_token:
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "http://supervisor/discovery",
+                headers={"Authorization": f"Bearer {supervisor_token}"},
+                json={"service": "bl_haos", "config": {"token": native_token}},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as response:
+                if response.status >= 400:
+                    logger.warning("Supervisor discovery registration failed: HTTP %s", response.status)
+    except (aiohttp.ClientError, TimeoutError):
+        logger.warning("Supervisor discovery registration failed: connection error")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,6 +71,7 @@ async def lifespan(app: FastAPI):
     await health.publish(ws_manager)
     config_store = ConfigStore()
     app.state.config_store = config_store
+    asyncio.create_task(_publish_supervisor_discovery(config_store.settings.native_token))
 
     if config_store.settings.demo_mode:
         demo_runtime = DemoRuntime(config_store.settings.demo_scenario, health)
