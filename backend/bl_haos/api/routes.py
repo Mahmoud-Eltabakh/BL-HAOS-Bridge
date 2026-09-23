@@ -304,7 +304,12 @@ async def command_native_speaker(
             normalized, payload.operation, volume=payload.volume, url=payload.url
         )
     except MediaPlayerError as error:
-        if "Connected PipeWire A2DP sink is unavailable" in str(error):
+        is_sink_unavailable = (
+            "Connected PipeWire A2DP sink is unavailable" in str(error)
+            or "Connected Bluetooth audio sink is unavailable" in str(error)
+            or "audio sink is unavailable" in str(error).lower()
+        )
+        if is_sink_unavailable:
             logger.info("A2DP sink unavailable for %s, attempting auto-reconnect", normalized)
             try:
                 reconnected = await request.app.state.bt_manager.connect_device(normalized)
@@ -328,7 +333,11 @@ async def command_native_speaker(
                     )
                     break
                 except MediaPlayerError as retry_error:
-                    sink_missing = "Connected PipeWire A2DP sink is unavailable" in str(retry_error)
+                    sink_missing = (
+                        "Connected PipeWire A2DP sink is unavailable" in str(retry_error)
+                        or "Connected Bluetooth audio sink is unavailable" in str(retry_error)
+                        or "audio sink is unavailable" in str(retry_error).lower()
+                    )
                     if not sink_missing:
                         raise HTTPException(
                             status_code=409,
