@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Any
+
 from pydantic import BaseModel, Field
+
+from ..health import FailureClass, HealthRegistry, HealthState
 
 logger = logging.getLogger("bl_haos.multiroom.manager")
 
@@ -22,24 +24,37 @@ class SpeakerGroup(BaseModel):
     group_id: str
     name: str = "All Speakers"
     stream_id: str = "default"
-    client_ids: List[str] = Field(default_factory=list)
+    client_ids: list[str] = Field(default_factory=list)
     muted: bool = False
 
 
 class MultiroomManager:
-    def __init__(self, host: str = "127.0.0.1", port: int = 1705):
+    def __init__(self, host: str = "127.0.0.1", port: int = 1705, health_registry: HealthRegistry | None = None):
         self.host = host
         self.port = port
-        self.groups: Dict[str, SpeakerGroup] = {
+        self.groups: dict[str, SpeakerGroup] = {
             "default": SpeakerGroup(group_id="default", name="Whole Home Audio", stream_id="default")
         }
-        self.clients: Dict[str, MultiroomClient] = {}
-        self.active_processes: Dict[str, asyncio.subprocess.Process] = {}
+        self.clients: dict[str, MultiroomClient] = {}
+        self.active_processes: dict[str, asyncio.subprocess.Process] = {}
+        self.health = health_registry
+        if self.health:
+            self.health.observe_component("snapcast", HealthState.HEALTHY, required=False, source="configured")
 
-    def get_groups(self) -> List[SpeakerGroup]:
+    def observe_readiness(self, ready: bool, detail: str | None = None) -> None:
+        if self.health:
+            self.health.observe_component(
+                "snapcast", HealthState.HEALTHY if ready else HealthState.DEGRADED,
+                required=False,
+                failure=None if ready else FailureClass.SNAPCAST_UNAVAILABLE,
+                detail=detail or (None if ready else "Snapcast FIFO/process boundary unavailable"),
+                source="configured",
+            )
+
+    def get_groups(self) -> list[SpeakerGroup]:
         return list(self.groups.values())
 
-    def get_clients(self) -> List[MultiroomClient]:
+    def get_clients(self) -> list[MultiroomClient]:
         return list(self.clients.values())
 
     def attach_speaker(self, address: str, name: str, latency_offset_ms: int = 0) -> MultiroomClient:
@@ -94,7 +109,7 @@ class MultiroomManager:
             return True
         return False
 
-    def create_group(self, group_id: str, name: str, client_ids: Optional[List[str]] = None) -> SpeakerGroup:
+    def create_group(self, group_id: str, name: str, client_ids: list[str] | None = None) -> SpeakerGroup:
         group = SpeakerGroup(
             group_id=group_id,
             name=name,

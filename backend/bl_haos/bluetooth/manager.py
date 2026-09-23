@@ -1,36 +1,40 @@
 """Central Bluetooth Manager for BL-HAOS."""
 
-import asyncio
 import logging
-from typing import Dict, List, Optional, Callable, Any
-from dbus_fast.aio import MessageBus
-from dbus_fast import BusType, Variant
+from collections.abc import Callable
+from typing import Any
 
+from dbus_fast import BusType
+from dbus_fast.aio import MessageBus
+
+from .adapter import BluetoothAdapter
+from .agent import BlueZAgent
 from .constants import (
+    ADAPTER_INTERFACE,
+    AGENT_MANAGER_INTERFACE,
+    AGENT_PATH,
     BLUEZ_SERVICE,
     DBUS_OM_IFACE,
     DBUS_PROPERTIES_IFACE,
-    ADAPTER_INTERFACE,
     DEVICE_INTERFACE,
-    AGENT_MANAGER_INTERFACE,
-    AGENT_PATH,
 )
-from .adapter import BluetoothAdapter
 from .device import BluetoothDevice
-from .agent import BlueZAgent
 from .models import AdapterInfo, DeviceInfo
+from ..health import FailureClass, HealthRegistry, HealthState, SpeakerState, normalize_address
 
 logger = logging.getLogger("bl_haos.bluetooth.manager")
 
 
 class BluetoothManager:
-    def __init__(self):
-        self.bus: Optional[MessageBus] = None
-        self.agent: Optional[BlueZAgent] = None
-        self.adapters: Dict[str, BluetoothAdapter] = {}
-        self.devices: Dict[str, BluetoothDevice] = {}
-        self._listeners: List[Callable[[str, Any], None]] = []
+    def __init__(self, health_registry: HealthRegistry | None = None):
+        self.bus: MessageBus | None = None
+        self.agent: BlueZAgent | None = None
+        self.adapters: dict[str, BluetoothAdapter] = {}
+        self.devices: dict[str, BluetoothDevice] = {}
+        self._listeners: list[Callable[[str, Any], None]] = []
         self._initialized = False
+        self.health = health_registry
+        self._signal_bus: MessageBus | None = None
 
     def add_event_listener(self, listener: Callable[[str, Any], None]):
         """Subscribe to live Bluetooth state and discovery events."""
@@ -68,16 +72,61 @@ class BluetoothManager:
             await self._subscribe_signals()
             await self._load_managed_objects()
             self._initialized = True
+            if self.health:
+                self.health.observe_component("bluetooth", HealthState.HEALTHY, source="bluez")
 
         except Exception as e:
             logger.warning("System D-Bus connection not available: %s", e)
-            self._initialized = True
+            self.bus = None
+            self._initialized = False
+            if self.health:
+                self.health.observe_component(
+                    "bluetooth",
+                    HealthState.UNAVAILABLE,
+                    failure=FailureClass.DBUS_UNAVAILABLE,
+                    detail=e,
+                    source="bluez",
+                )
 
     async def _subscribe_signals(self):
         if not self.bus:
             return
+        if self._signal_bus is self.bus:
+            return
         # InterfacesAdded / Removed
         self.bus.add_message_handler(self._handle_dbus_message)
+        self._signal_bus = self.bus
+
+    def mark_dbus_disconnected(self, detail: Any = None) -> None:
+        """Invalidate transport readiness and publish a bounded loss observation."""
+        self.bus = None
+        self._initialized = False
+        self.adapters.clear()
+        self.devices.clear()
+        if self.health:
+            self.health.observe_component(
+                "bluetooth",
+                HealthState.UNAVAILABLE,
+                failure=FailureClass.DBUS_DISCONNECTED,
+                detail=detail or "D-Bus transport disconnected",
+                source="bluez",
+            )
+        self._notify("dbus_disconnected", detail)
+
+    async def recover_dbus(self) -> bool:
+        """Perform one bounded D-Bus reinitialization attempt."""
+        if self.bus is not None and self._initialized:
+            return True
+        await self.initialize()
+        if self.bus is None and self.health:
+            self.health.observe_component(
+                "bluetooth",
+                HealthState.UNAVAILABLE,
+                failure=FailureClass.DBUS_UNAVAILABLE,
+                detail="D-Bus reinitialization unavailable",
+                source="bluez",
+            )
+        return self.bus is not None
 
     def _handle_dbus_message(self, msg):
         try:
@@ -94,7 +143,7 @@ class BluetoothManager:
             logger.debug("Non-fatal D-Bus message handler notice: %s", e)
         return False
 
-    def _on_interfaces_added(self, path: str, interfaces: Dict[str, Any]):
+    def _on_interfaces_added(self, path: str, interfaces: dict[str, Any]):
         if ADAPTER_INTERFACE in interfaces:
             adapter = BluetoothAdapter(self.bus, path, interfaces[ADAPTER_INTERFACE])
             self.adapters[path] = adapter
@@ -104,7 +153,7 @@ class BluetoothManager:
             self.devices[path] = device
             self._notify("device_discovered", device.to_info())
 
-    def _on_interfaces_removed(self, path: str, interfaces: List[str]):
+    def _on_interfaces_removed(self, path: str, interfaces: list[str]):
         if ADAPTER_INTERFACE in interfaces and path in self.adapters:
             del self.adapters[path]
             self._notify("adapter_removed", path)
@@ -112,7 +161,7 @@ class BluetoothManager:
             del self.devices[path]
             self._notify("device_removed", path)
 
-    def _on_properties_changed(self, path: str, iface: str, changed: Dict[str, Any]):
+    def _on_properties_changed(self, path: str, iface: str, changed: dict[str, Any]):
         if iface == ADAPTER_INTERFACE and path in self.adapters:
             self.adapters[path].update_properties(changed)
             self._notify("adapter_updated", self.adapters[path].to_info())
@@ -120,7 +169,7 @@ class BluetoothManager:
             if path in self.devices:
                 self.devices[path].update_properties(changed)
                 self._notify("device_updated", self.devices[path].to_info())
-            elif self.bus:
+            else:
                 dev = BluetoothDevice(self.bus, path, changed)
                 self.devices[path] = dev
                 self._notify("device_discovered", dev.to_info())
@@ -139,23 +188,23 @@ class BluetoothManager:
             if DEVICE_INTERFACE in interfaces:
                 self.devices[path] = BluetoothDevice(self.bus, path, interfaces[DEVICE_INTERFACE])
 
-    def get_adapters(self) -> List[AdapterInfo]:
+    def get_adapters(self) -> list[AdapterInfo]:
         return [adapter.to_info() for adapter in self.adapters.values()]
 
-    def get_devices(self, audio_only: bool = True) -> List[DeviceInfo]:
+    def get_devices(self, audio_only: bool = True) -> list[DeviceInfo]:
         devices = [dev.to_info() for dev in self.devices.values()]
         if audio_only:
             return [d for d in devices if d.is_audio_sink]
         return devices
 
-    def get_device_by_address(self, address: str) -> Optional[BluetoothDevice]:
+    def get_device_by_address(self, address: str) -> BluetoothDevice | None:
         target = address.strip().lower().replace("-", ":")
         for dev in self.devices.values():
             if dev.address.strip().lower().replace("-", ":") == target:
                 return dev
         return None
 
-    async def ensure_device(self, address: str) -> Optional[BluetoothDevice]:
+    async def ensure_device(self, address: str) -> BluetoothDevice | None:
         """Look up device in local cache or query BlueZ D-Bus directly by MAC."""
         dev = self.get_device_by_address(address)
         if dev:
@@ -177,13 +226,13 @@ class BluetoothManager:
                 continue
         return None
 
-    def get_adapter_by_name(self, name: str = "hci0") -> Optional[BluetoothAdapter]:
+    def get_adapter_by_name(self, name: str = "hci0") -> BluetoothAdapter | None:
         for adapter in self.adapters.values():
             if adapter.interface_name == name or adapter.path.endswith(name):
                 return adapter
         return None
 
-    async def start_scan(self, adapter_name: Optional[str] = None) -> None:
+    async def start_scan(self, adapter_name: str | None = None) -> None:
         """Start discovery on specified adapter or all adapters."""
         if adapter_name:
             adapter = self.get_adapter_by_name(adapter_name)
@@ -193,7 +242,7 @@ class BluetoothManager:
             for adapter in self.adapters.values():
                 await adapter.start_discovery()
 
-    async def stop_scan(self, adapter_name: Optional[str] = None) -> None:
+    async def stop_scan(self, adapter_name: str | None = None) -> None:
         """Stop discovery on specified adapter or all adapters."""
         if adapter_name:
             adapter = self.get_adapter_by_name(adapter_name)
@@ -255,12 +304,29 @@ class BluetoothManager:
                 del self.devices[dev.path]
             refreshed = await self.ensure_device(address)
             if refreshed:
-                await refreshed.connect()
+                try:
+                    await refreshed.connect()
+                except Exception as refresh_error:
+                    if self.health:
+                        self.health.observe_speaker(
+                            normalize_address(address),
+                            SpeakerState.UNAVAILABLE,
+                            failure=FailureClass.STALE_BLUEZ_OBJECT,
+                            detail=refresh_error,
+                        )
+                    raise refresh_error
                 try:
                     await refreshed.set_trusted(True)
                 except Exception:
                     pass
                 return True
+            if self.health:
+                self.health.observe_speaker(
+                    normalize_address(address),
+                    SpeakerState.UNAVAILABLE,
+                    failure=FailureClass.STALE_BLUEZ_OBJECT,
+                    detail=first_error,
+                )
             raise first_error
 
     async def disconnect_device(self, address: str) -> bool:

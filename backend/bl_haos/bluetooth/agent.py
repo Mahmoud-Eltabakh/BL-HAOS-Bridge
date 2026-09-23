@@ -1,9 +1,10 @@
 """BlueZ D-Bus Agent Implementation (org.bluez.Agent1)."""
 
 import logging
-from typing import Optional, Callable, Dict, Any
-from dbus_fast.service import ServiceInterface, method, dbus_property
-from dbus_fast import Variant
+from collections.abc import Callable
+from typing import Any
+
+from dbus_fast.service import ServiceInterface, method
 
 from .constants import AGENT_INTERFACE
 
@@ -13,15 +14,15 @@ logger = logging.getLogger("bl_haos.bluetooth.agent")
 class BlueZAgent(ServiceInterface):
     def __init__(
         self,
-        pin_callback: Optional[Callable[[str], str]] = None,
-        passkey_callback: Optional[Callable[[str], int]] = None,
-        confirm_callback: Optional[Callable[[str, int], bool]] = None,
+        pin_callback: Callable[[str], str] | None = None,
+        passkey_callback: Callable[[str], int] | None = None,
+        confirm_callback: Callable[[str, int], bool] | None = None,
     ):
         super().__init__(AGENT_INTERFACE)
         self.pin_callback = pin_callback or (lambda dev: "0000")
         self.passkey_callback = passkey_callback or (lambda dev: 0)
         self.confirm_callback = confirm_callback or (lambda dev, key: True)
-        self.active_requests: Dict[str, Any] = {}
+        self.active_requests: dict[str, Any] = {}
 
     def get_pin(self, device: str) -> str:
         """Helper to invoke pin callback directly."""

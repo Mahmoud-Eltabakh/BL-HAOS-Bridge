@@ -1,6 +1,7 @@
 import pytest
-from dbus_fast import Variant
 from backend.bl_haos.bluetooth.adapter import BluetoothAdapter
+from dbus_fast import Variant
+
 
 @pytest.mark.asyncio
 async def test_bluetooth_adapter_properties():

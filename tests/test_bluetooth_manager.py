@@ -1,8 +1,12 @@
 import pytest
+from backend.bl_haos.bluetooth.constants import (
+    A2DP_SINK_UUID,
+    ADAPTER_INTERFACE,
+    DEVICE_INTERFACE,
+)
 from backend.bl_haos.bluetooth.manager import BluetoothManager
-from backend.bl_haos.bluetooth.adapter import BluetoothAdapter
-from backend.bl_haos.bluetooth.device import BluetoothDevice
-from backend.bl_haos.bluetooth.constants import ADAPTER_INTERFACE, DEVICE_INTERFACE, A2DP_SINK_UUID
+from backend.bl_haos.health import FailureClass, HealthRegistry, HealthState, SpeakerState
+
 
 @pytest.mark.asyncio
 async def test_bluetooth_manager_lifecycle():
@@ -115,3 +119,53 @@ async def test_connect_refreshes_device_after_stale_bluez_interface():
     mgr.ensure_device = refresh
 
     assert await mgr.connect_device(address) is True
+
+
+@pytest.mark.asyncio
+async def test_stale_refresh_failure_is_classified_once():
+    health = HealthRegistry()
+    mgr = BluetoothManager(health_registry=health)
+    await mgr.initialize()
+    address = "AA:BB:CC:11:22:33"
+
+    class StaleDevice:
+        path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+        adapter_name = "hci0"
+
+        async def connect(self):
+            raise RuntimeError("stale Device1 proxy")
+
+    stale = StaleDevice()
+    mgr.devices[stale.path] = stale
+    refresh_calls = 0
+    ensure_calls = 0
+
+    async def refresh(_address):
+        nonlocal ensure_calls, refresh_calls
+        ensure_calls += 1
+        if ensure_calls == 1:
+            return stale
+        refresh_calls += 1
+        return None
+
+    mgr.ensure_device = refresh
+
+    with pytest.raises(RuntimeError, match="stale Device1 proxy"):
+        await mgr.connect_device(address)
+
+    assert refresh_calls == 1
+    speaker = health.snapshot().speakers[address.lower()]
+    assert speaker.state == SpeakerState.UNAVAILABLE
+    assert speaker.failure.classification == FailureClass.STALE_BLUEZ_OBJECT
+
+
+def test_dbus_loss_is_not_reported_as_healthy():
+    health = HealthRegistry()
+    mgr = BluetoothManager(health_registry=health)
+    mgr.bus = object()
+    mgr.mark_dbus_disconnected("transport closed")
+
+    component = health.snapshot().components["bluetooth"]
+    assert mgr.bus is None
+    assert component.state == HealthState.UNAVAILABLE
+    assert component.failure.classification == FailureClass.DBUS_DISCONNECTED

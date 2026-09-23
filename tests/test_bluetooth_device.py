@@ -1,7 +1,7 @@
 import pytest
-from dbus_fast import Variant
-from backend.bl_haos.bluetooth.device import BluetoothDevice
 from backend.bl_haos.bluetooth.constants import A2DP_SINK_UUID
+from backend.bl_haos.bluetooth.device import BluetoothDevice
+
 
 @pytest.mark.asyncio
 async def test_bluetooth_device_audio_sink_detection():

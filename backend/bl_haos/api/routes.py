@@ -1,14 +1,16 @@
 """REST API Route Handlers for BL-HAOS."""
 
+import asyncio
 import logging
-from typing import List, Optional, Dict, Any, Literal
-from fastapi import APIRouter, HTTPException, Request
+from typing import Any, Literal
+
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..ha.player import MediaPlayerError
-
 from ..bluetooth.models import AdapterInfo, DeviceInfo
-from ..config import SystemSettings, SpeakerSettings
+from ..config import SpeakerSettings, SystemSettings
+from ..ha.player import MediaPlayerError
+from ..health import HealthRegistry, HealthState
 
 logger = logging.getLogger("bl_haos.api.routes")
 router = APIRouter(prefix="/api", tags=["api"])
@@ -16,22 +18,32 @@ NATIVE_BRIDGE_ID = "bl_haos_native_bridge"
 NATIVE_BRIDGE_VERSION = 1
 
 
+def require_native_auth(authorization: str | None, request: Request) -> None:
+    """Reject native transport requests without the installation credential."""
+    expected = request.app.state.config_store.settings.native_token
+    if not expected or authorization != f"Bearer {expected}":
+        raise HTTPException(status_code=401, detail="Native bridge authentication required")
+
+
 def native_diagnostics(app: Any) -> dict[str, Any]:
     """Return only bounded, non-secret native bridge readiness details."""
     devices = app.state.bt_manager.get_devices(audio_only=True)
     trusted_speakers = [device for device in devices if (device.trusted or device.paired or device.connected) and device.is_audio_sink]
+    health = getattr(app.state, "health_registry", None)
+    snapshot = health.snapshot() if health else None
     return {
         "bridge_version": NATIVE_BRIDGE_VERSION,
         "native_transport_ready": hasattr(app.state, "ha_bridge"),
         "native_client_count": len(getattr(app.state.native_ws_manager, "active_connections", [])),
         "trusted_speaker_count": len(trusted_speakers),
         "connected_trusted_speaker_count": sum(device.connected for device in trusted_speakers),
+        "health_status": snapshot.status.value if snapshot else HealthState.UNKNOWN.value,
     }
 
 
 class PairRequest(BaseModel):
     address: str
-    pin: Optional[str] = "0000"
+    pin: str | None = "0000"
 
 
 class PowerRequest(BaseModel):
@@ -39,15 +51,15 @@ class PowerRequest(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    adapter_name: Optional[str] = None
+    adapter_name: str | None = None
 
 
 class SpeakerUpdateRequest(BaseModel):
-    custom_alias: Optional[str] = None
-    auto_reconnect: Optional[bool] = None
-    preferred_adapter: Optional[str] = None
-    default_volume: Optional[int] = None
-    codec_override: Optional[str] = None
+    custom_alias: str | None = None
+    auto_reconnect: bool | None = None
+    preferred_adapter: str | None = None
+    default_volume: int | None = None
+    codec_override: str | None = None
 
 
 class NativeCommandRequest(BaseModel):
@@ -83,12 +95,16 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
 @router.get("/health")
 async def get_health(request: Request):
     diagnostics = native_diagnostics(request.app)
+    registry: HealthRegistry | None = getattr(request.app.state, "health_registry", None)
+    snapshot = registry.snapshot() if registry else None
     return {
-        "status": "ok",
+        "status": "ok" if not snapshot or snapshot.status == HealthState.HEALTHY else snapshot.status.value,
         "service": "BL-HAOS",
         "dbus_connected": request.app.state.bt_manager.bus is not None,
         "adapters_count": len(request.app.state.bt_manager.get_adapters()),
         "devices_count": len(request.app.state.bt_manager.get_devices(audio_only=False)),
+        "health": snapshot.model_dump(mode="json") if snapshot else None,
+        "diagnostics": diagnostics,
     }
 
 
@@ -99,14 +115,16 @@ async def get_native_diagnostics(request: Request):
 
 
 @router.get("/native/identity")
-async def get_native_identity():
+async def get_native_identity(request: Request, authorization: str | None = Header(default=None)):
     """Return the fixed, versioned native bridge identity."""
+    require_native_auth(authorization, request)
     return {"bridge_id": NATIVE_BRIDGE_ID, "version": NATIVE_BRIDGE_VERSION}
 
 
 @router.get("/native/speakers")
-async def list_native_speakers(request: Request):
+async def list_native_speakers(request: Request, authorization: str | None = Header(default=None)):
     """Return the current trusted Bluetooth audio-sink snapshot."""
+    require_native_auth(authorization, request)
     speakers = {
         record["address"]: record
         for device in request.app.state.bt_manager.get_devices(audio_only=True)
@@ -117,8 +135,14 @@ async def list_native_speakers(request: Request):
 
 
 @router.post("/native/speakers/{address}/command")
-async def command_native_speaker(address: str, payload: NativeCommandRequest, request: Request):
+async def command_native_speaker(
+    address: str,
+    payload: NativeCommandRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
     """Apply an authenticated command and return the post-operation speaker record."""
+    require_native_auth(authorization, request)
     normalized = address.strip().lower().replace("-", ":")
     device = next(
         (candidate for candidate in request.app.state.bt_manager.get_devices(audio_only=True)
@@ -138,7 +162,18 @@ async def command_native_speaker(address: str, payload: NativeCommandRequest, re
             normalized, payload.operation, volume=payload.volume, url=payload.url
         )
     except MediaPlayerError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        if "Connected PipeWire A2DP sink is unavailable" in str(error):
+            logger.info("A2DP sink unavailable for %s, attempting auto-reconnect", normalized)
+            try:
+                await request.app.state.bt_manager.connect_device(normalized)
+                await asyncio.sleep(2.0)
+                await request.app.state.ha_bridge.execute(
+                    normalized, payload.operation, volume=payload.volume, url=payload.url
+                )
+            except Exception as retry_error:
+                raise HTTPException(status_code=409, detail=f"Auto-reconnect failed: {retry_error}") from retry_error
+        else:
+            raise HTTPException(status_code=409, detail=str(error)) from error
     publish = getattr(request.app.state, "publish_native_speaker", None)
     if publish:
         await publish(normalized)
@@ -149,7 +184,7 @@ async def command_native_speaker(address: str, payload: NativeCommandRequest, re
 # Adapter Routes
 # ==============================================================================
 
-@router.get("/adapters", response_model=List[AdapterInfo])
+@router.get("/adapters", response_model=list[AdapterInfo])
 async def list_adapters(request: Request):
     return request.app.state.bt_manager.get_adapters()
 
@@ -164,14 +199,14 @@ async def set_adapter_power(adapter_name: str, payload: PowerRequest, request: R
 
 
 @router.post("/scan/start")
-async def start_scan(request: Request, payload: Optional[ScanRequest] = None):
+async def start_scan(request: Request, payload: ScanRequest | None = None):
     adapter_name = payload.adapter_name if payload else None
     await request.app.state.bt_manager.start_scan(adapter_name)
     return {"status": "ok", "scanning": True, "adapter": adapter_name or "all"}
 
 
 @router.post("/scan/stop")
-async def stop_scan(request: Request, payload: Optional[ScanRequest] = None):
+async def stop_scan(request: Request, payload: ScanRequest | None = None):
     adapter_name = payload.adapter_name if payload else None
     await request.app.state.bt_manager.stop_scan(adapter_name)
     return {"status": "ok", "scanning": False, "adapter": adapter_name or "all"}
@@ -181,7 +216,7 @@ async def stop_scan(request: Request, payload: Optional[ScanRequest] = None):
 # Device Routes
 # ==============================================================================
 
-@router.get("/devices", response_model=List[DeviceInfo])
+@router.get("/devices", response_model=list[DeviceInfo])
 async def list_devices(request: Request, audio_only: bool = True):
     return request.app.state.bt_manager.get_devices(audio_only=audio_only)
 
@@ -280,7 +315,7 @@ async def list_multiroom_clients(request: Request):
 
 
 @router.post("/multiroom/speakers/{address}/latency")
-async def set_speaker_latency(address: str, payload: Dict[str, int], request: Request):
+async def set_speaker_latency(address: str, payload: dict[str, int], request: Request):
     offset = payload.get("latency_offset_ms", 0)
     success = request.app.state.multiroom_manager.set_latency_offset(address, offset)
     return {"status": "ok", "address": address, "latency_offset_ms": offset, "updated": success}

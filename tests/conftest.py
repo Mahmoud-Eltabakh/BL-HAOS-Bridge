@@ -1,5 +1,5 @@
-import sys
 import socket
+import sys
 
 # Windows development compatibility shim for dbus-fast
 if sys.platform == "win32":

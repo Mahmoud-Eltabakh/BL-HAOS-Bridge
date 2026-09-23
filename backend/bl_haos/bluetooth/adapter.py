@@ -1,18 +1,19 @@
 """Bluetooth Adapter Controller wrapping org.bluez.Adapter1."""
 
 import logging
-from typing import Dict, Any, Optional
-from dbus_fast.aio import MessageBus
-from dbus_fast import Variant
+from typing import Any
 
-from .constants import BLUEZ_SERVICE, ADAPTER_INTERFACE, DBUS_PROPERTIES_IFACE
+from dbus_fast import Variant
+from dbus_fast.aio import MessageBus
+
+from .constants import ADAPTER_INTERFACE, BLUEZ_SERVICE, DBUS_PROPERTIES_IFACE
 from .models import AdapterInfo
 
 logger = logging.getLogger("bl_haos.bluetooth.adapter")
 
 
 class BluetoothAdapter:
-    def __init__(self, bus: Optional[MessageBus], path: str, properties: Dict[str, Any]):
+    def __init__(self, bus: MessageBus | None, path: str, properties: dict[str, Any]):
         self.bus = bus
         self.path = path
         self._properties = properties
@@ -56,7 +57,7 @@ class BluetoothAdapter:
     def pairable(self) -> bool:
         return bool(self._get_prop("Pairable", False))
 
-    def update_properties(self, changed: Dict[str, Any]):
+    def update_properties(self, changed: dict[str, Any]):
         """Update cached properties from D-Bus PropertiesChanged signal."""
         for k, v in changed.items():
             self._properties[k] = v.value if isinstance(v, Variant) else v
@@ -121,7 +122,7 @@ class BluetoothAdapter:
                 pass
         self._properties["Discovering"] = False
 
-    async def connect_device(self, address: str, address_type: str = "public") -> Optional[str]:
+    async def connect_device(self, address: str, address_type: str = "public") -> str | None:
         """Connect directly to a device by MAC address, creating the D-Bus object if needed."""
         if not self.bus:
             return None

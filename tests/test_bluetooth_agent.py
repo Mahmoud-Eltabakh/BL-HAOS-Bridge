@@ -1,6 +1,7 @@
 import pytest
 from backend.bl_haos.bluetooth.agent import BlueZAgent
 
+
 def test_bluez_agent_pin_callback():
     custom_pin = "1234"
     agent = BlueZAgent(pin_callback=lambda dev: custom_pin)

@@ -1,7 +1,8 @@
 import pytest
-from fastapi.testclient import TestClient
-from backend.bl_haos.main import app
 from backend.bl_haos.api.ws import ws_manager
+from backend.bl_haos.main import app
+from fastapi.testclient import TestClient
+
 
 def test_websocket_connection_and_heartbeat():
     client = TestClient(app)

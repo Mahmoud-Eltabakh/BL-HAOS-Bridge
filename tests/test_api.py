@@ -1,15 +1,16 @@
-import pytest
-from fastapi.testclient import TestClient
 from backend.bl_haos.main import app
+from fastapi.testclient import TestClient
+
 
 def test_api_health():
     with TestClient(app) as client:
         resp = client.get("/api/health")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "ok"
+        assert data["status"] in {"healthy", "degraded", "unavailable"}
         assert data["service"] == "BL-HAOS"
         assert "adapters_count" in data
+        assert data["health"]["version"] == 1
 
 
 def test_native_diagnostics_are_sanitized(monkeypatch):
@@ -20,6 +21,12 @@ def test_native_diagnostics_are_sanitized(monkeypatch):
     diagnostics = response.json()
     assert diagnostics["bridge_version"] == 1
     assert "credential" not in str(diagnostics).lower()
+
+
+def test_native_transport_requires_credential():
+    with TestClient(app) as client:
+        assert client.get("/api/native/identity").status_code == 401
+        assert client.get("/api/native/speakers").status_code == 401
 
 def test_api_adapters_and_scan():
     with TestClient(app) as client:

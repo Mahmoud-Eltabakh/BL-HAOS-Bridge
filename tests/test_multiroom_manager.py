@@ -1,5 +1,5 @@
-import pytest
 from backend.bl_haos.multiroom.manager import MultiroomManager
+
 
 def test_multiroom_speaker_attachment_and_grouping():
     manager = MultiroomManager()

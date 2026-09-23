@@ -6,10 +6,10 @@ import logging
 import os
 import signal
 from collections.abc import Awaitable, Callable
-from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from ..config import ConfigStore
+from ..health import FailureClass, HealthRegistry, HealthState
 
 logger = logging.getLogger("bl_haos.ha.player")
 
@@ -21,10 +21,11 @@ class MediaPlayerError(RuntimeError):
 class MediaPlayerBridge:
     def __init__(
         self,
-        config_store: Optional[ConfigStore] = None,
-        sink_resolver: Optional[Callable[[str], Awaitable[str | None]]] = None,
-        process_factory: Optional[Callable[..., Awaitable[asyncio.subprocess.Process]]] = None,
-        state_callback: Optional[Callable[[str], Awaitable[None] | None]] = None,
+        config_store: ConfigStore | None = None,
+        sink_resolver: Callable[[str], Awaitable[str | None]] | None = None,
+        process_factory: Callable[..., Awaitable[asyncio.subprocess.Process]] | None = None,
+        state_callback: Callable[[str], Awaitable[None] | None] | None = None,
+        health_registry: HealthRegistry | None = None,
     ):
         self.config_store = config_store
         self.states: dict[str, str] = {}
@@ -34,10 +35,11 @@ class MediaPlayerBridge:
         self.keepalive_addresses: set[str] = set()
         self.keepalive_interval: float = 240.0
         self.keepalive_pulse_duration: float = 1.0
-        self._keepalive_task: Optional[asyncio.Task] = None
+        self._keepalive_task: asyncio.Task | None = None
         self._sink_resolver = sink_resolver or self._async_resolve_sink
         self._process_factory = process_factory or asyncio.create_subprocess_exec
         self._state_callback = state_callback
+        self.health = health_registry
         if config_store:
             for address, speaker in config_store.settings.speakers.items():
                 self.volumes[self._address(address)] = speaker.default_volume / 100
@@ -128,7 +130,14 @@ class MediaPlayerBridge:
             raise MediaPlayerError("Media URL must be a safe HTTP(S) URL")
         sink = await self._sink_resolver(addr)
         if not sink:
+            if self.health:
+                self.health.observe_component(
+                    "pipewire", HealthState.UNAVAILABLE, failure=FailureClass.SINK_MISSING,
+                    detail="No matching A2DP sink", source="pw-dump"
+                )
             raise MediaPlayerError("Connected PipeWire A2DP sink is unavailable")
+        if self.health:
+            self.health.observe_component("pipewire", HealthState.HEALTHY, source="pw-dump")
         self.last_urls[addr] = url
         await self._stop_processes(addr)
         try:
@@ -228,9 +237,21 @@ class MediaPlayerBridge:
             process = await self._process_factory("pw-dump", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, _ = await process.communicate()
             if process.returncode:
+                if self.health:
+                    self.health.observe_component(
+                        "pipewire", HealthState.UNAVAILABLE,
+                        failure=FailureClass.PIPEWIRE_UNAVAILABLE,
+                        detail="pw-dump probe failed", source="pw-dump"
+                    )
                 return None
             graph = json.loads(stdout)
         except Exception:
+            if self.health:
+                self.health.observe_component(
+                    "pipewire", HealthState.UNAVAILABLE,
+                    failure=FailureClass.PIPEWIRE_UNAVAILABLE,
+                    detail="pw-dump probe unavailable", source="pw-dump"
+                )
             return None
         address_clean = address.strip().lower()
         address_key = address_clean.replace(":", "_")

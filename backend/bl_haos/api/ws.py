@@ -2,17 +2,19 @@
 
 import json
 import logging
-from typing import List, Any
+from typing import Any
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger("bl_haos.api.ws")
 router = APIRouter(tags=["websocket"])
 NATIVE_SPEAKER_UPDATED_EVENT = "speaker_updated"
+HEALTH_EVENT = "health"
 
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -35,6 +37,8 @@ class ConnectionManager:
                 data.model_dump(mode="json") if hasattr(data, "model_dump") else str(data)
             )
         }
+        if event_type == HEALTH_EVENT and isinstance(message["data"], dict):
+            message["version"] = message["data"].get("version", 1)
         raw_text = json.dumps(message)
         dead_connections = []
 
@@ -72,6 +76,10 @@ async def websocket_endpoint(websocket: WebSocket):
 @router.websocket("/ws/native")
 async def native_websocket_endpoint(websocket: WebSocket):
     """Serve native speaker updates on the private Supervisor network."""
+    expected = websocket.app.state.config_store.settings.native_token
+    if websocket.headers.get("authorization") != f"Bearer {expected}":
+        await websocket.close(code=1008, reason="Native bridge authentication required")
+        return
     await native_ws_manager.connect(websocket)
     try:
         while True:

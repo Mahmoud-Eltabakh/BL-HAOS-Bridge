@@ -1,16 +1,17 @@
 """Bluetooth Device Controller wrapping org.bluez.Device1."""
 
-import time
 import logging
-from typing import Dict, Any, Optional, List
-from dbus_fast.aio import MessageBus
+import time
+from typing import Any
+
 from dbus_fast import Variant
+from dbus_fast.aio import MessageBus
 
 from .constants import (
-    BLUEZ_SERVICE,
-    DEVICE_INTERFACE,
-    DBUS_PROPERTIES_IFACE,
     AUDIO_SINK_UUIDS,
+    BLUEZ_SERVICE,
+    DBUS_PROPERTIES_IFACE,
+    DEVICE_INTERFACE,
     MAJOR_DEVICE_CLASS_AUDIO_VIDEO,
     MINOR_DEVICE_CLASSES_AUDIO,
 )
@@ -20,7 +21,7 @@ logger = logging.getLogger("bl_haos.bluetooth.device")
 
 
 class BluetoothDevice:
-    def __init__(self, bus: Optional[MessageBus], path: str, properties: Dict[str, Any]):
+    def __init__(self, bus: MessageBus | None, path: str, properties: dict[str, Any]):
         self.bus = bus
         self.path = path
         self._properties = properties
@@ -37,7 +38,7 @@ class BluetoothDevice:
         return self._get_prop("Address", "")
 
     @property
-    def name(self) -> Optional[str]:
+    def name(self) -> str | None:
         return self._get_prop("Name")
 
     @property
@@ -69,15 +70,15 @@ class BluetoothDevice:
         return bool(self._get_prop("Blocked", False))
 
     @property
-    def rssi(self) -> Optional[int]:
+    def rssi(self) -> int | None:
         return self._get_prop("RSSI")
 
     @property
-    def class_of_device(self) -> Optional[int]:
+    def class_of_device(self) -> int | None:
         return self._get_prop("Class")
 
     @property
-    def uuids(self) -> List[str]:
+    def uuids(self) -> list[str]:
         return [str(u).lower() for u in self._get_prop("UUIDs", [])]
 
     @property
@@ -142,7 +143,7 @@ class BluetoothDevice:
 
         return "Speaker" if self.is_audio_sink else "Bluetooth Device"
 
-    def update_properties(self, changed: Dict[str, Any]):
+    def update_properties(self, changed: dict[str, Any]):
         """Update properties and timestamp from PropertiesChanged signal."""
         for k, v in changed.items():
             self._properties[k] = v.value if isinstance(v, Variant) else v

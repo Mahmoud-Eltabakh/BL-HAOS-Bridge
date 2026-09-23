@@ -1,5 +1,5 @@
 """Multi-Room Synchronization Package for BL-HAOS."""
 
-from .manager import MultiroomManager, SpeakerGroup, MultiroomClient
+from .manager import MultiroomClient, MultiroomManager, SpeakerGroup
 
-__all__ = ["MultiroomManager", "SpeakerGroup", "MultiroomClient"]
+__all__ = ["MultiroomClient", "MultiroomManager", "SpeakerGroup"]

@@ -1,9 +1,12 @@
-import time
-import pytest
 import asyncio
+import time
+
+import pytest
 from backend.bl_haos.bluetooth.manager import BluetoothManager
 from backend.bl_haos.bluetooth.models import DeviceInfo
 from backend.bl_haos.bluetooth.reconnect import AutoReconnectEngine, ReconnectState
+from backend.bl_haos.health import HealthRegistry, SpeakerState
+
 
 @pytest.mark.asyncio
 async def test_reconnect_state_machine():
@@ -151,7 +154,49 @@ async def test_reconnect_recovers_stale_device_after_repeated_failures():
     assert ("remove", dev_addr.lower()) in calls
     assert ("pair", dev_addr.lower()) in calls
     assert ("connect", dev_addr.lower()) in calls
-    assert profile.consecutive_failures >= 3
+    assert profile.state == ReconnectState.CONNECTED
+    assert profile.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_successful_stale_recovery_publishes_connected_without_old_failure():
+    manager = BluetoothManager()
+    await manager.initialize()
+    address = "AA:BB:CC:11:22:33"
+    manager._on_interfaces_added("/org/bluez/hci0/dev_AA_BB_CC_11_22_33", {
+        "org.bluez.Device1": {
+            "Address": address,
+            "Name": "Speaker",
+            "Adapter": "/org/bluez/hci0",
+            "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+            "Connected": False,
+        }
+    })
+    health = HealthRegistry()
+    engine = AutoReconnectEngine(manager, health_registry=health, max_failures_before_breaker=5)
+    engine.register_speaker(address)
+    profile = engine.profiles[address.lower()]
+    profile.consecutive_failures = 2
+
+    connect_calls = 0
+
+    async def connect(_address):
+        nonlocal connect_calls
+        connect_calls += 1
+        if connect_calls == 1:
+            raise RuntimeError("stale proxy")
+
+    manager.remove_device = lambda _address: asyncio.sleep(0)
+    manager.pair_and_trust = lambda _address: asyncio.sleep(0)
+    manager.connect_device = connect
+
+    await engine._attempt_reconnect(profile)
+
+    speaker = health.snapshot().speakers[address.lower()]
+    assert profile.state == ReconnectState.CONNECTED
+    assert profile.consecutive_failures == 0
+    assert speaker.state == SpeakerState.CONNECTED
+    assert speaker.failure is None
 
 
 def test_trusted_audio_sink_can_be_registered_at_startup():
