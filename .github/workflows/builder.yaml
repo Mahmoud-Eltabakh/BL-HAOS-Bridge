@@ -78,7 +78,7 @@ jobs:
           npm --prefix web_ui audit --audit-level=high
 
       - name: Scan repository dependency inputs
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: modules/bridge
