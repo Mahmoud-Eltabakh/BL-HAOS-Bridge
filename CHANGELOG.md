@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.27
+
+- Wait up to 15 seconds for PipeWire to publish a reconnected speaker's A2DP sink before failing playback, allowing WirePlumber profile negotiation to complete on slower Home Assistant OS hardware.
+
 ## 0.2.26
 
 - Harden Bluetooth device lookup and auto-reconnect against malformed or unpopulated cached device addresses, preventing `ValueError: Invalid Bluetooth address` exceptions when iterating over discovered devices.

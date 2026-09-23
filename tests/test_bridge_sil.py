@@ -262,12 +262,13 @@ def test_auto_reconnect_reports_sink_still_missing_distinctly(monkeypatch):
 
     execute = AsyncMock(side_effect=MediaPlayerError("Connected PipeWire A2DP sink is unavailable"))
     connect = AsyncMock(return_value=True)
+    sleep = AsyncMock()
 
     with TestClient(app) as client:
         _register_native_speaker(client, "AA_BB_CC_DD_EE_03")
         app.state.ha_bridge.execute = execute
         monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
-        monkeypatch.setattr("backend.bl_haos.api.routes.asyncio.sleep", AsyncMock())
+        monkeypatch.setattr("backend.bl_haos.api.routes.asyncio.sleep", sleep)
         token = app.state.config_store.settings.native_token
 
         response = client.post(
@@ -279,21 +280,27 @@ def test_auto_reconnect_reports_sink_still_missing_distinctly(monkeypatch):
     assert response.status_code == 409
     assert "no audio sink appeared" in response.json()["detail"]
     connect.assert_awaited_once_with("aa:bb:cc:dd:ee:03")
-    assert execute.await_count == 2
+    assert execute.await_count == 16
+    assert sleep.await_count == 15
 
 
-def test_auto_reconnect_succeeds_after_bluez_and_sink_recover(monkeypatch):
-    """A successful reconnect + retry returns the normal 200 speaker record."""
+def test_auto_reconnect_waits_until_sink_recovers(monkeypatch):
+    """A reconnect polls until PipeWire publishes the delayed A2DP sink."""
     from backend.bl_haos.ha.player import MediaPlayerError
 
-    execute = AsyncMock(side_effect=[MediaPlayerError("Connected PipeWire A2DP sink is unavailable"), None])
+    execute = AsyncMock(side_effect=[
+        MediaPlayerError("Connected PipeWire A2DP sink is unavailable"),
+        MediaPlayerError("Connected PipeWire A2DP sink is unavailable"),
+        None,
+    ])
     connect = AsyncMock(return_value=True)
+    sleep = AsyncMock()
 
     with TestClient(app) as client:
         _register_native_speaker(client, "AA_BB_CC_DD_EE_04")
         app.state.ha_bridge.execute = execute
         monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
-        monkeypatch.setattr("backend.bl_haos.api.routes.asyncio.sleep", AsyncMock())
+        monkeypatch.setattr("backend.bl_haos.api.routes.asyncio.sleep", sleep)
         token = app.state.config_store.settings.native_token
 
         response = client.post(
@@ -304,7 +311,8 @@ def test_auto_reconnect_succeeds_after_bluez_and_sink_recover(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["address"] == "aa:bb:cc:dd:ee:04"
-    assert execute.await_count == 2
+    assert execute.await_count == 3
+    assert sleep.await_count == 2
 
 
 def test_native_snapshot_filters_and_normalizes_audio_sinks(monkeypatch):

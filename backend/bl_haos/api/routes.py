@@ -27,6 +27,8 @@ logger = logging.getLogger("bl_haos.api.routes")
 router = APIRouter(prefix="/api", tags=["api"])
 NATIVE_BRIDGE_ID = "bl_haos_native_bridge"
 NATIVE_BRIDGE_VERSION = 1
+A2DP_SINK_RETRY_ATTEMPTS = 15
+A2DP_SINK_RETRY_INTERVAL = 1.0
 
 
 def require_native_auth(authorization: str | None, request: Request) -> None:
@@ -318,20 +320,28 @@ async def command_native_speaker(
                     status_code=409,
                     detail="Auto-reconnect failed: could not re-establish the Bluetooth connection",
                 )
-            await asyncio.sleep(3.0)
-            try:
-                await request.app.state.ha_bridge.execute(
-                    normalized, payload.operation, volume=payload.volume, url=payload.url
-                )
-            except Exception as retry_error:
-                logger.warning(
-                    "Auto-reconnect: sink still unavailable for %s after reconnect: %s",
-                    normalized, safe_detail(retry_error),
-                )
-                raise HTTPException(
-                    status_code=409,
-                    detail="Auto-reconnect failed: Bluetooth reconnected but no audio sink appeared",
-                ) from retry_error
+            for attempt in range(A2DP_SINK_RETRY_ATTEMPTS):
+                await asyncio.sleep(A2DP_SINK_RETRY_INTERVAL)
+                try:
+                    await request.app.state.ha_bridge.execute(
+                        normalized, payload.operation, volume=payload.volume, url=payload.url
+                    )
+                    break
+                except MediaPlayerError as retry_error:
+                    sink_missing = "Connected PipeWire A2DP sink is unavailable" in str(retry_error)
+                    if not sink_missing:
+                        raise HTTPException(status_code=409, detail="Native playback command failed") from retry_error
+                    if attempt == A2DP_SINK_RETRY_ATTEMPTS - 1:
+                        logger.warning(
+                            "Auto-reconnect: sink still unavailable for %s after reconnect: %s",
+                            normalized, safe_detail(retry_error),
+                        )
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Auto-reconnect failed: Bluetooth reconnected but no audio sink appeared",
+                        ) from retry_error
+                except Exception as retry_error:
+                    raise HTTPException(status_code=409, detail="Native playback command failed") from retry_error
         else:
             raise HTTPException(status_code=409, detail="Native playback command failed") from error
     publish = getattr(request.app.state, "publish_native_speaker", None)
