@@ -12,6 +12,7 @@ RUN apt-get update \
         bluez-tools \
         dbus \
         pipewire \
+        pipewire-bin \
         pipewire-audio-client-libraries \
         pipewire-pulse \
         wireplumber \

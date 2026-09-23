@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.30
+
+- Include the PipeWire command-line tools required to discover Bluetooth sinks and apply volume changes inside the add-on container.
+
 ## 0.2.29
 
 - Preserve actionable playback failure details in native API responses, including when `media_player.play` is requested without a remembered media URL.

@@ -13,6 +13,7 @@ def test_dockerfile_structure():
     expected_pkgs = [
         "bluez",
         "pipewire",
+        "pipewire-bin",
         "wireplumber",
         "libspa-0.2-bluetooth",
         "snapserver",
