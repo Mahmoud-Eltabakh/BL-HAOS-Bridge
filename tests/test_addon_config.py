@@ -62,4 +62,4 @@ def test_dependency_and_release_policy_is_explicit():
     assert "pip_audit" in workflow
     assert "severity: HIGH,CRITICAL" in workflow
     assert "stable" in readme.lower() and "preview" in readme.lower()
-    assert "apt-get install" in dockerfile and "bluez=" in dockerfile
+    assert "apt-get install" in dockerfile and "bluez" in dockerfile

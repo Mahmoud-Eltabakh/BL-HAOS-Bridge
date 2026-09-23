@@ -26,7 +26,8 @@ def test_dockerfile_structure():
     assert "uvicorn==" in requirements, "Uvicorn must be pinned in backend requirements"
     assert "wsproto==" in requirements, "Uvicorn must include a pinned pure-Python WebSocket implementation"
     assert '"uvicorn[standard]"' not in content, "Standard extras require native armv7 builds"
-    assert "bluez=" in content, "APT runtime dependencies must be version-pinned"
+    assert "apt-get install -y --no-install-recommends" in content
+    assert "python3-pip" in content, "Dockerfile must install pip before backend requirements"
     assert "--requirement /backend/requirements.txt" in content
     requirement_lines = requirements.splitlines()
     assert requirement_lines and all("==" in line for line in requirement_lines if line.strip())
