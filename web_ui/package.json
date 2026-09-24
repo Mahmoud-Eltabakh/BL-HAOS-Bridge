@@ -9,8 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed",
+    "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "test:e2e:headed": "playwright test --config e2e/playwright.config.ts --headed",
     "test:e2e:install": "playwright install chromium"
   },
   "dependencies": {
