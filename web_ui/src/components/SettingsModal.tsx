@@ -152,6 +152,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               min="0"
               max="100"
               value={defaultVolume}
+              aria-label="Default startup volume"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={defaultVolume}
               onChange={(e) => setDefaultVolume(Number(e.target.value))}
               className="w-full h-2 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-blue-500"
             />

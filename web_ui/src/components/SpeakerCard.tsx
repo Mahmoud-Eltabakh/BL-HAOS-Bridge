@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { DeviceInfo, apiClient } from '../api/client';
 import { Volume2, Bluetooth, Power, Trash2, Settings, AlertCircle } from 'lucide-react';
 
@@ -11,8 +11,33 @@ interface SpeakerCardProps {
 export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClick, onRefresh }) => {
   const [loading, setLoading] = useState(false);
   const [volume, setVolume] = useState(70);
+  const [volumeSaving, setVolumeSaving] = useState(false);
   const [showConfirmRemove, setShowConfirmRemove] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Seed the local volume from the bridge-reported playback volume when the
+  // device record changes, so the slider reflects reality after reconnects.
+  const playbackVolume = (device as DeviceInfo & { playback?: { volume?: number | null } }).playback?.volume;
+  const reportedVolume = device.connected
+    ? Math.round((playbackVolume ?? 0.7) * 100)
+    : null;
+  useEffect(() => {
+    if (reportedVolume !== null) setVolume(reportedVolume);
+  }, [reportedVolume]);
+
+  const commitVolume = async (next: number) => {
+    setVolumeSaving(true);
+    setErrorMsg(null);
+    try {
+      await apiClient.setDeviceVolume(device.address, next);
+      onRefresh();
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Failed to update volume');
+      onRefresh();
+    } finally {
+      setVolumeSaving(false);
+    }
+  };
 
   const handleConnectToggle = async () => {
     setLoading(true);
@@ -100,7 +125,14 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
             min="0"
             max="100"
             value={volume}
+            aria-label="Speaker volume"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={volume}
+            disabled={volumeSaving}
             onChange={(e) => setVolume(Number(e.target.value))}
+            onPointerUp={() => void commitVolume(volume)}
+            onKeyUp={() => void commitVolume(volume)}
             className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
           />
         </div>

@@ -40,6 +40,28 @@ def require_native_auth(authorization: str | None, request: Request) -> None:
         raise HTTPException(status_code=401, detail="Native bridge authentication required")
 
 
+def is_ingress_request(request: Request) -> bool:
+    """Detect requests that arrived through the authenticated Supervisor Ingress proxy.
+
+    The Supervisor nginx ingress proxy injects X-Ingress-Path on every proxied
+    request after the user has authenticated against Home Assistant. The add-on
+    exposes no public ports (config.yaml has no ``ports`` mapping), so only the
+    Supervisor can reach this service and the header cannot be forged remotely.
+    """
+    return bool(request.headers.get("x-ingress-path"))
+
+
+def require_operator_auth(authorization: str | None, request: Request) -> None:
+    """Allow native-bridge credential holders or authenticated Ingress operators."""
+    expected = request.app.state.config_store.settings.native_token
+    supplied = authorization.removeprefix("Bearer ") if isinstance(authorization, str) else ""
+    if expected and hmac.compare_digest(supplied, expected):
+        return
+    if is_ingress_request(request):
+        return
+    raise HTTPException(status_code=401, detail="Operator authentication required")
+
+
 def native_diagnostics(app: Any) -> dict[str, Any]:
     """Return only bounded, non-secret native bridge readiness details."""
     devices = app.state.bt_manager.get_devices(audio_only=True)
@@ -84,6 +106,12 @@ class ScanRequest(BaseModel):
         return validate_adapter_name(value) if value is not None else None
 
 
+class VolumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    volume: int = Field(ge=0, le=100)
+
+
 class SpeakerUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -92,6 +120,7 @@ class SpeakerUpdateRequest(BaseModel):
     preferred_adapter: str | None = None
     default_volume: int | None = Field(default=None, ge=0, le=100)
     codec_override: str | None = None
+    latency_offset_ms: int | None = Field(default=None, ge=-5000, le=5000)
 
     @field_validator("preferred_adapter")
     @classmethod
@@ -226,7 +255,7 @@ async def get_diagnostics(request: Request):
 
 @router.get("/recovery")
 async def get_recovery(request: Request, authorization: str | None = Header(default=None)):
-    require_native_auth(authorization, request)
+    require_operator_auth(authorization, request)
     service = getattr(request.app.state, "recovery", None)
     if service is None:
         raise HTTPException(status_code=503, detail="Recovery unavailable")
@@ -236,7 +265,7 @@ async def get_recovery(request: Request, authorization: str | None = Header(defa
 
 @router.post("/recovery/actions")
 async def execute_recovery(payload: RecoveryRequest, request: Request, authorization: str | None = Header(default=None)):
-    require_native_auth(authorization, request)
+    require_operator_auth(authorization, request)
     service = getattr(request.app.state, "recovery", None)
     if service is None:
         raise HTTPException(status_code=503, detail="Recovery unavailable")
@@ -492,6 +521,30 @@ async def disconnect_device(address: str, request: Request):
         raise HTTPException(status_code=400, detail="Disconnection failed") from e
 
 
+@router.post("/devices/{address}/volume")
+async def set_device_volume(address: str, payload: VolumeRequest, request: Request):
+    """Apply a live volume level (0-100) to one speaker's PipeWire/PulseAudio sink."""
+    try:
+        address = normalize_address(address)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
+    logger.debug("Live volume request for %s: %d%%", address, payload.volume)
+    bridge = getattr(request.app.state, "ha_bridge", None)
+    if bridge is None:
+        raise HTTPException(status_code=503, detail="Media player bridge is unavailable")
+    try:
+        await bridge.execute(address, "set_volume", volume=payload.volume / 100)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid volume request") from error
+    except Exception as e:
+        logger.error("Volume update error for %s: %s", address, safe_detail(e))
+        raise HTTPException(status_code=400, detail="Volume update failed") from e
+    publish = getattr(request.app.state, "publish_native_speaker", None)
+    if publish:
+        await publish(address)
+    return {"status": "ok", "address": address, "volume": payload.volume}
+
+
 @router.delete("/devices/{address}")
 async def remove_device(address: str, request: Request):
     try:
@@ -541,7 +594,12 @@ async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, r
         preferred_adapter=payload.preferred_adapter,
         default_volume=payload.default_volume,
         codec_override=payload.codec_override,
+        latency_offset_ms=payload.latency_offset_ms,
     )
+    if payload.latency_offset_ms is not None:
+        multiroom_manager = getattr(request.app.state, "multiroom_manager", None)
+        if multiroom_manager:
+            multiroom_manager.set_latency_offset(address, payload.latency_offset_ms)
     reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
     if reconnect_engine and payload.auto_reconnect is not None:
         if payload.auto_reconnect:

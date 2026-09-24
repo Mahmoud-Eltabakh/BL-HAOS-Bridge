@@ -259,3 +259,121 @@ def test_native_command_rejects_inconsistent_media_payload_without_execution(mon
 
     assert response.status_code == 422
     execute.assert_not_awaited()
+
+
+def test_recovery_contract_is_readable_through_ingress_without_native_token():
+    """The Ingress dashboard must be able to read recovery guidance (401 regression)."""
+    with TestClient(app) as client:
+        anonymous = client.get("/api/recovery")
+        ingress = client.get("/api/recovery", headers={"X-Ingress-Path": "/ingress/bl_haos"})
+        native_token = app.state.config_store.settings.native_token
+        native = client.get("/api/recovery", headers={"Authorization": f"Bearer {native_token}"})
+
+    assert anonymous.status_code == 401
+    assert ingress.status_code == 200
+    assert ingress.json()["contract_version"] == 1
+    assert native.status_code == 200
+
+
+def test_recovery_execution_is_blocked_without_ingress_or_native_credential(monkeypatch):
+    with TestClient(app) as client:
+        connect = AsyncMock(return_value=True)
+        monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
+        anonymous = client.post(
+            "/api/recovery/actions",
+            json={"action_id": "retry_reconnect", "target": "aa:bb:cc:11:22:33"},
+        )
+        ingress = client.post(
+            "/api/recovery/actions",
+            headers={"X-Ingress-Path": "/ingress/bl_haos"},
+            json={"action_id": "retry_reconnect", "target": "aa:bb:cc:11:22:33"},
+        )
+
+    assert anonymous.status_code == 401
+    assert ingress.status_code == 200
+    assert ingress.json()["result"] == "succeeded"
+    connect.assert_awaited_once_with("aa:bb:cc:11:22:33")
+
+
+def test_native_auth_still_rejects_ingress_header_alone():
+    """The private native transport must never trust the Ingress header."""
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/native/identity",
+            headers={"X-Ingress-Path": "/ingress/bl_haos"},
+        )
+    assert response.status_code == 401
+
+
+def test_live_volume_route_updates_bridge_and_publishes(monkeypatch):
+    with TestClient(app) as client:
+        published = []
+
+        async def publish(address):
+            published.append(address)
+
+        app.state.publish_native_speaker = publish
+        response = client.post("/api/devices/10:22:33:44:55:66/volume", json={"volume": 45})
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok", "address": "10:22:33:44:55:66", "volume": 45}
+        assert app.state.ha_bridge.get_volume("10:22:33:44:55:66") == 0.45
+        assert published == ["10:22:33:44:55:66"]
+
+
+def test_live_volume_route_validates_address_and_level():
+    with TestClient(app) as client:
+        bad_address = client.post("/api/devices/not-a-mac/volume", json={"volume": 50})
+        bad_volume = client.post("/api/devices/10:22:33:44:55:66/volume", json={"volume": 250})
+        out_of_range = client.post("/api/devices/10:22:33:44:55:66/volume", json={"volume": -1})
+
+    assert bad_address.status_code == 422
+    assert bad_volume.status_code == 422
+    assert out_of_range.status_code == 422
+
+
+def test_settings_speaker_update_accepts_latency_offset(monkeypatch):
+    with TestClient(app) as client:
+        updated = client.put(
+            "/api/settings/speakers/10:22:33:44:55:66",
+            json={"latency_offset_ms": -250},
+        )
+        stored = client.get("/api/settings")
+
+    assert updated.status_code == 200
+    assert updated.json()["latency_offset_ms"] == -250
+    assert stored.json()["speakers"]["10:22:33:44:55:66"]["latency_offset_ms"] == -250
+
+
+def test_settings_reject_out_of_bounds_latency_offset():
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/settings/speakers/10:22:33:44:55:66",
+            json={"latency_offset_ms": 99999},
+        )
+    assert response.status_code == 422
+
+
+def test_settings_update_persists_latency_into_multiroom_manager(monkeypatch):
+    with TestClient(app) as client:
+        client.put(
+            "/api/settings/speakers/30:44:55:66:77:88",
+            json={"latency_offset_ms": 120},
+        )
+        app.state.bt_manager._on_interfaces_added("/org/bluez/hci0/dev_30_44_55_66_77_88", {
+            "org.bluez.Device1": {
+                "Address": "30:44:55:66:77:88",
+                "Name": "Persisted Speaker",
+                "Adapter": "/org/bluez/hci0",
+                "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                "Class": 0x240414,
+                "Paired": True,
+                "Trusted": True,
+                "Connected": True,
+            }
+        })
+        app.state.multiroom_manager.attach_speaker("30:44:55:66:77:88", "Persisted Speaker")
+        clients = app.state.multiroom_manager.get_clients()
+        match = [c for c in clients if c.speaker_address == "30:44:55:66:77:88"]
+
+    assert match and match[0].latency_offset_ms == 120

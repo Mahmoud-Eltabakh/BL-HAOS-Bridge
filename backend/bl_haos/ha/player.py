@@ -36,6 +36,10 @@ class MediaPlayerBridge:
         self.volumes: dict[str, float] = {}
         self.active_processes: dict[str, tuple[asyncio.subprocess.Process, asyncio.subprocess.Process]] = {}
         self.last_urls: dict[str, str] = {}
+        # Strong references to fire-and-forget tasks. The event loop only holds
+        # weak references to tasks; without this set, _pipe_audio/_watch_processes
+        # can be garbage-collected mid-stream which silently stops audio output.
+        self._background_tasks: set[asyncio.Task] = set()
         self.keepalive_addresses: set[str] = set()
         self.keepalive_interval: float = 240.0
         self.keepalive_pulse_duration: float = 1.0
@@ -68,6 +72,48 @@ class MediaPlayerBridge:
             result = self._state_callback(address)
             if result is not None:
                 await result
+
+    def _track_task(self, coro: Awaitable[Any], description: str) -> asyncio.Task:
+        """Create a background task with a strong reference and error logging."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _on_done(completed: asyncio.Task) -> None:
+            self._background_tasks.discard(completed)
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is not None:
+                logger.warning("Background playback task '%s' failed: %s", description, error)
+
+        task.add_done_callback(_on_done)
+        return task
+
+    async def _drain_process_output(self, process: asyncio.subprocess.Process, label: str, address: str) -> None:
+        """Continuously drain child stderr so the OS pipe buffer can never fill.
+
+        ffmpeg and pw-play/paplay write diagnostics to stderr; if nobody reads the
+        pipe, the child blocks on write once the buffer is full and audio freezes.
+        """
+        stream = getattr(process, "stderr", None)
+        if stream is None or not hasattr(stream, "readline"):
+            return
+        logged = 0
+        try:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                if logged < 50:
+                    logged += 1
+                    logger.debug(
+                        "%s stderr [%s]: %s",
+                        label,
+                        address,
+                        self._decode_output(line).strip()[:256],
+                    )
+        except Exception:
+            logger.debug("%s stderr drain failed for %s", label, address, exc_info=True)
 
     async def execute(self, address: str, operation: str, *, volume: float | None = None, url: str | None = None) -> None:
         """Execute one validated native operation and publish only confirmed state."""
@@ -195,9 +241,11 @@ class MediaPlayerBridge:
             getattr(decoder, "pid", None),
             getattr(player, "pid", None),
         )
+        self._track_task(self._drain_process_output(decoder, "ffmpeg", addr), f"ffmpeg stderr drain {addr}")
+        self._track_task(self._drain_process_output(player, transport, addr), f"{transport} stderr drain {addr}")
         if hasattr(decoder.stdout, "read") and hasattr(player.stdin, "write"):
-            asyncio.create_task(self._pipe_audio(decoder, player))
-        asyncio.create_task(self._watch_processes(addr, decoder, player))
+            self._track_task(self._pipe_audio(decoder, player), f"pcm pipe {addr}")
+        self._track_task(self._watch_processes(addr, decoder, player), f"playback watch {addr}")
         await self._notify(addr)
 
     async def set_volume(self, address: str, volume: float) -> None:
@@ -266,6 +314,10 @@ class MediaPlayerBridge:
         except (OSError, subprocess.SubprocessError) as error:
             logger.debug("Keep-alive pulse failed to start for %s: %s", address, error)
             return
+        # Drain stderr concurrently as tracked tasks; awaiting them inline would
+        # deadlock the 64KB PCM pipe (ffmpeg stdout fills while we wait for EOF).
+        self._track_task(self._drain_process_output(source, "ffmpeg-keepalive", address), f"keepalive ffmpeg drain {address}")
+        self._track_task(self._drain_process_output(player, f"{transport}-keepalive", address), f"keepalive player drain {address}")
         if hasattr(source.stdout, "read") and hasattr(player.stdin, "write"):
             await self._pipe_audio(source, player)
         for process in (source, player):
@@ -363,11 +415,17 @@ class MediaPlayerBridge:
                 logger.debug("Sink volume update notice for %s (%s): %s", address, sink_name, e)
 
     async def _signal_processes(self, address: str, signal_number: signal.Signals) -> None:
-        for process in self.active_processes[address]:
-            if getattr(process, "pid", None) and os.name != "nt":
-                os.killpg(process.pid, signal_number)
-            else:
-                process.send_signal(signal_number)
+        for process in self.active_processes.get(address, ()):
+            try:
+                # Children are spawned with start_new_session=True, so each
+                # process ID is also its own process-group ID; killpg targets
+                # exactly this decoder/player pair.
+                if getattr(process, "pid", None) and os.name != "nt":
+                    os.killpg(process.pid, signal_number)
+                else:
+                    process.send_signal(signal_number)
+            except (ProcessLookupError, PermissionError, OSError):
+                logger.debug("Playback process for %s already exited before signal", address)
 
     async def _pipe_audio(self, decoder: asyncio.subprocess.Process, player: asyncio.subprocess.Process) -> None:
         """Copy decoded PCM without introducing a shell pipeline."""
@@ -418,3 +476,7 @@ class MediaPlayerBridge:
         for address in tuple(self.active_processes):
             await self._stop_processes(address)
             self.states[address] = "idle"
+        for task in tuple(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)

@@ -70,9 +70,10 @@ async def websocket_endpoint(websocket: WebSocket):
             if text == "ping":
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
+        pass
     except Exception as e:
         logger.error("WebSocket error: %s", e)
+    finally:
         ws_manager.disconnect(websocket)
 
 
@@ -91,7 +92,7 @@ async def native_websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         logger.debug("Native WebSocket client disconnected cleanly")
-        native_ws_manager.disconnect(websocket)
     except Exception as error:
         logger.debug("Native WebSocket closed: %s", safe_detail(error))
+    finally:
         native_ws_manager.disconnect(websocket)

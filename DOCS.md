@@ -90,7 +90,7 @@ The add-on log identifies BlueZ and PipeWire state; the Home Assistant log ident
 
 ## Diagnostics, Guided Recovery, and Demo Mode
 
-The Ingress diagnostics panel shows the bounded health snapshot, failure class, lifecycle events, and a redacted support-bundle export. Guided recovery actions require the existing native bridge credential and are limited to named operations: refresh diagnostics, refresh one normalized speaker record, retry one bounded reconnect, or recheck a named dependency. Shell commands, arbitrary Bluetooth addresses, raw exceptions, credentials, and media URLs are never accepted by the recovery API.
+The Ingress diagnostics panel shows the bounded health snapshot, failure class, lifecycle events, and a redacted support-bundle export. Guided recovery actions are available through the authenticated native transport or the add-on's authenticated Ingress path, and are limited to named operations: refresh diagnostics, refresh one normalized speaker record, retry one bounded reconnect, or recheck a named dependency. Shell commands, arbitrary Bluetooth addresses, raw exceptions, credentials, and media URLs are never accepted by the recovery API.
 
 For offline demonstrations and SIL validation, set `BLHAOS_DEMO_MODE=true` and choose one of `healthy`, `pairing_failure`, `sink_missing`, `reconnect_exhausted`, `native_integration_unavailable`, or `restart_degraded` with `BLHAOS_DEMO_SCENARIO`. Demo mode is off by default and injects fixed adapters, speakers, events, timestamps, and recovery outcomes before live D-Bus, PipeWire, Snapcast, or Home Assistant clients are initialized. Unknown scenarios are rejected.
 

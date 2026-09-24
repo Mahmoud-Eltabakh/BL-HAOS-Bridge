@@ -143,15 +143,21 @@ async def lifespan(app: FastAPI):
     health.observe_component("native_bridge", HealthState.HEALTHY, required=False, source="startup")
 
     # Initialize Multi-room Manager
-    multiroom_manager = MultiroomManager(health_registry=health)
+    multiroom_manager = MultiroomManager(health_registry=health, config_store=config_store)
     app.state.multiroom_manager = multiroom_manager
     health.observe_component("pipewire", HealthState.UNKNOWN, required=False, source="startup")
     health.observe_component("snapcast", HealthState.UNKNOWN, required=False, source="startup")
 
     # Wire event broadcaster to WebSocket manager and HA Discovery
-    def _on_bt_event(event_type: str, data):
+    def _broadcast_bt_event(event_type: str, data):
         logger.debug("Bluetooth event received: %s (data=%s)", event_type, data)
-        asyncio.create_task(ws_manager.broadcast(event_type, data))
+        return ws_manager.broadcast(event_type, data)
+
+    def _on_bt_event(event_type: str, data):
+        tracked = app.state.event_tasks = getattr(app.state, "event_tasks", set())
+        task = asyncio.create_task(_broadcast_bt_event(event_type, data))
+        tracked.add(task)
+        task.add_done_callback(tracked.discard)
         if event_type in ("device_updated", "device_discovered") and hasattr(data, "address"):
             is_audio = getattr(data, "is_audio_sink", False)
             is_conn = getattr(data, "connected", False)

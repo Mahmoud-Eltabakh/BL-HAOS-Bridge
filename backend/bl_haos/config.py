@@ -23,6 +23,7 @@ class SpeakerSettings(BaseModel):
     preferred_adapter: str | None = None
     default_volume: int = Field(default=70, ge=0, le=100)
     codec_override: str | None = None
+    latency_offset_ms: int = Field(default=0, ge=-5000, le=5000)
 
     @field_validator("custom_alias")
     @classmethod
@@ -118,7 +119,12 @@ class ConfigStore:
         except Exception as e:
             logger.error("Failed to save config to %s", self.file_path)
 
-    def get_speaker(self, address: str) -> SpeakerSettings:
+    def get_speaker(self, address: str) -> SpeakerSettings | None:
+        """Look up a speaker without creating or persisting anything."""
+        return self.settings.speakers.get(address.strip().lower())
+
+    def get_or_create_speaker(self, address: str) -> SpeakerSettings:
+        """Create and persist a speaker record only for explicit configuration writes."""
         addr = address.strip().lower()
         if addr not in self.settings.speakers:
             self.settings.speakers[addr] = SpeakerSettings(address=addr)
@@ -126,7 +132,7 @@ class ConfigStore:
         return self.settings.speakers[addr]
 
     def update_speaker(self, address: str, **kwargs) -> SpeakerSettings:
-        speaker = self.get_speaker(address)
+        speaker = self.get_or_create_speaker(address)
         updates = {key: value for key, value in kwargs.items() if value is not None}
         self.settings.speakers[speaker.address] = SpeakerSettings.model_validate(
             speaker.model_dump() | updates

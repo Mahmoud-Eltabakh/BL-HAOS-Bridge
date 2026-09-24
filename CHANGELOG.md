@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.41
+
+- Enable authenticated Ingress recovery and live volume control while preserving the private native transport boundary.
+- Persist per-speaker multi-room latency offsets and prevent playback subprocesses from stalling on undrained diagnostics output.
+
 ## 0.2.40
 
 - Keep add-on and discovered Home Assistant integration log levels synchronized through Supervisor discovery.

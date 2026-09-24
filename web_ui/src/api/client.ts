@@ -189,6 +189,13 @@ export const apiClient = {
       method: 'POST',
     });
   },
+  async setDeviceVolume(address: string, volume: number) {
+    return requestJson(getApiUrl(`/api/devices/${address}/volume`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ volume }),
+    });
+  },
   async removeDevice(address: string) {
     return requestJson(getApiUrl(`/api/devices/${address}`), {
       method: 'DELETE',
