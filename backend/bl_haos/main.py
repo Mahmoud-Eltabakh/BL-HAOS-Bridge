@@ -26,11 +26,14 @@ from .ha.player import MediaPlayerBridge
 from .multiroom.manager import MultiroomManager
 from .health import FailureClass, HealthRegistry, HealthState, SpeakerState
 
-logging.basicConfig(level=logging.INFO, format="[bl-haos] %(asctime)s %(levelname)s [%(name)s]: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="[bl-haos] %(asctime)s %(levelname)s [%(name)s.%(funcName)s]: %(message)s",
+)
 logger = logging.getLogger("bl_haos.main")
 
 
-async def _publish_supervisor_discovery(native_token: str) -> None:
+async def _publish_supervisor_discovery(native_token: str, log_level: str) -> None:
     """Push the native bridge token to Supervisor so the integration can auto-connect."""
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token or not native_token:
@@ -46,7 +49,7 @@ async def _publish_supervisor_discovery(native_token: str) -> None:
             async with session.post(
                 "http://supervisor/discovery",
                 headers={"Authorization": f"Bearer {supervisor_token}"},
-                json={"service": "bl_haos", "config": {"token": native_token}},
+                json={"service": "bl_haos", "config": {"token": native_token, "log_level": log_level}},
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as response:
                 if response.status >= 400:
@@ -89,10 +92,10 @@ async def lifespan(app: FastAPI):
     logger.debug(
         "Configuration loaded: demo_mode=%s, log_level=%s, speakers_count=%d",
         config_store.settings.demo_mode,
-        config_store.settings.log_level,
+        log_level.lower(),
         len(config_store.settings.speakers),
     )
-    asyncio.create_task(_publish_supervisor_discovery(config_store.settings.native_token))
+    asyncio.create_task(_publish_supervisor_discovery(config_store.settings.native_token, log_level.lower()))
 
     if config_store.settings.demo_mode:
         logger.debug("Running in demo mode with scenario '%s'", config_store.settings.demo_scenario)

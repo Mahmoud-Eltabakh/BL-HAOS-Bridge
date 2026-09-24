@@ -7,5 +7,13 @@ export PIPEWIRE_RUNTIME_DIR=/var/run/pipewire
 export XDG_RUNTIME_DIR=/var/run/pipewire
 export PYTHONPATH=/backend:$PYTHONPATH
 
+configured_log_level="$(bashio::config 'log_level')"
+case "${configured_log_level,,}" in
+	trace) export LOG_LEVEL="debug" ;;
+	fatal) export LOG_LEVEL="critical" ;;
+	notice) export LOG_LEVEL="info" ;;
+	*) export LOG_LEVEL="${configured_log_level,,}" ;;
+esac
+
 echo "[bl-haos-daemon] Starting FastAPI backend daemon on port 8099..."
-exec python3 -m uvicorn bl_haos.main:app --host 0.0.0.0 --port 8099 --log-level info
+exec python3 -m uvicorn bl_haos.main:app --host 0.0.0.0 --port 8099 --log-level "${LOG_LEVEL}"

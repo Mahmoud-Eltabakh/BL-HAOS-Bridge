@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..bluetooth.models import AdapterInfo, DeviceInfo
+from ..bluetooth.device import BluetoothOperationInProgress
 from ..config import SpeakerSettings, SystemSettings
 from ..ha.player import MediaPlayerError
 from ..health import (
@@ -450,7 +451,11 @@ async def pair_device(payload: PairRequest, request: Request):
         logger.debug("Pairing completed successfully for %s", payload.address)
         return {"status": "ok", "paired": success, "address": payload.address}
     except Exception as e:
-        logger.error("Pairing error for %s: %s", payload.address, safe_detail(e))
+        detail = safe_detail(e)
+        if isinstance(e, BluetoothOperationInProgress):
+            logger.warning("Pairing busy for %s: %s", payload.address, detail)
+            raise HTTPException(status_code=409, detail="Bluetooth pairing is already in progress") from e
+        logger.error("Pairing error for %s: %s", payload.address, detail)
         raise HTTPException(status_code=400, detail="Pairing failed") from e
 
 
@@ -466,7 +471,11 @@ async def connect_device(address: str, request: Request):
         logger.debug("Connect completed successfully for %s", address)
         return {"status": "ok", "connected": success, "address": address}
     except Exception as e:
-        logger.error("Connection error for %s: %s", address, safe_detail(e))
+        detail = safe_detail(e)
+        if isinstance(e, BluetoothOperationInProgress):
+            logger.warning("Connection busy for %s: %s", address, detail)
+            raise HTTPException(status_code=409, detail="Bluetooth connection is already in progress") from e
+        logger.error("Connection error for %s: %s", address, detail)
         raise HTTPException(status_code=400, detail="Connection failed") from e
 
 

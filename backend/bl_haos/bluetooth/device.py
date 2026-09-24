@@ -21,6 +21,10 @@ from .models import DeviceInfo
 logger = logging.getLogger("bl_haos.bluetooth.device")
 
 
+class BluetoothOperationInProgress(RuntimeError):
+    """Raised when BlueZ is already pairing or connecting this device."""
+
+
 class BluetoothDevice:
     def __init__(self, bus: MessageBus | None, path: str, properties: dict[str, Any]):
         self.bus = bus
@@ -194,23 +198,23 @@ class BluetoothDevice:
                     await dev_iface.call_connect_profile(A2DP_SINK_UUID)
                 except Exception as profile_err:
                     prof_str = str(profile_err)
-                    if (
-                        "AlreadyConnected" not in prof_str
-                        and "InProgress" not in prof_str
-                        and "In Progress" not in prof_str
-                    ):
-                        logger.debug("Non-fatal profile connect notice for %s: %s", self.address, profile_err)
+                    if "InProgress" in prof_str or "In Progress" in prof_str:
+                        raise BluetoothOperationInProgress(
+                            f"Bluetooth connection already in progress for {self.address}"
+                        ) from profile_err
+                    if "AlreadyConnected" not in prof_str:
+                        raise profile_err
             else:
                 connect_error = conn_err
                 try:
                     await dev_iface.call_connect_profile(A2DP_SINK_UUID)
                 except Exception as profile_err:
                     prof_str = str(profile_err)
-                    if (
-                        "AlreadyConnected" not in prof_str
-                        and "InProgress" not in prof_str
-                        and "In Progress" not in prof_str
-                    ):
+                    if "InProgress" in prof_str or "In Progress" in prof_str:
+                        raise BluetoothOperationInProgress(
+                            f"Bluetooth connection already in progress for {self.address}"
+                        ) from profile_err
+                    if "AlreadyConnected" not in prof_str:
                         raise connect_error or profile_err
         self._properties["Connected"] = True
         logger.debug("BlueZ connect succeeded for %s", self.address)
@@ -244,6 +248,10 @@ class BluetoothDevice:
             await dev_iface.call_pair()
         except Exception as e:
             err_str = str(e)
+            if "InProgress" in err_str or "In Progress" in err_str or "br-connection-busy" in err_str:
+                raise BluetoothOperationInProgress(
+                    f"Bluetooth pairing already in progress for {self.address}"
+                ) from e
             if "AlreadyExists" in err_str or "AlreadyConnected" in err_str or "AlreadyPaired" in err_str:
                 pass
             else:

@@ -312,11 +312,8 @@ class BluetoothManager:
             logger.debug("Device %s not found on any adapter for pairing", address)
             raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
 
-        try:
-            logger.debug("Invoking BlueZ pair on %s (%s)", address, dev.path)
-            await dev.pair()
-        except Exception as e:
-            logger.warning("Pair call fallback for %s: %s", address, e)
+        logger.debug("Invoking BlueZ pair on %s (%s)", address, dev.path)
+        await dev.pair()
         # Pairing may leave a newly recreated BlueZ object paired but not
         # connected, so explicitly establish the A2DP link before publishing
         # it as a trusted speaker.
@@ -325,7 +322,7 @@ class BluetoothManager:
 
         logger.debug("Marking device %s as trusted", address)
         await dev.set_trusted(True)
-        logger.debug("Device %s successfully paired, connected, and trusted", address)
+        logger.info("Device %s successfully paired, connected, and trusted", address)
         return True
 
     async def connect_device(self, address: str) -> bool:

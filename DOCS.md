@@ -55,6 +55,29 @@ The integration connects through Home Assistant's private add-on network before 
 | `log_level` | `info` | Logging verbosity (`trace`, `debug`, `info`, `warning`, `error`). |
 | `default_codec` | `auto` | Preferred Bluetooth A2DP audio codec. `auto` prioritizes highest fidelity supported by speaker: LDAC -> aptX HD -> aptX -> AAC -> SBC-XQ -> SBC. |
 
+### Collecting Logs
+
+For an incident, temporarily set the add-on `log_level` to `debug`, restart the add-on, reproduce the issue once, and export its log with the Home Assistant Terminal & SSH add-on:
+
+```sh
+ha addons logs bl_haos > /config/bl-haos-addon.log
+```
+
+The native Home Assistant integration runs in Home Assistant Core and therefore has a separate log. When the integration was discovered through the add-on, its logger level follows this same add-on setting through Supervisor discovery. For a manually configured entry, or to temporarily override the level, enable its logger in `configuration.yaml`, restart Home Assistant Core, reproduce the issue once, and export the core log:
+
+```yaml
+logger:
+  default: warning
+  logs:
+    custom_components.bl_haos: debug
+```
+
+```sh
+ha core logs > /config/bl-haos-integration.log
+```
+
+The add-on log identifies BlueZ and PipeWire state; the Home Assistant log identifies native integration commands and entity state transitions. Remove the temporary debug logger after collecting evidence. Redact access tokens, media URLs, and complete Bluetooth addresses before sharing logs.
+
 ## Native Integration Verification
 
 1. Take a Home Assistant backup before upgrading.

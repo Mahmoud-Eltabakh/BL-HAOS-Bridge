@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.40
+
+- Keep add-on and discovered Home Assistant integration log levels synchronized through Supervisor discovery.
+- Report Bluetooth pairing and connection collisions honestly instead of publishing false connected state.
+
 ## 0.2.39
 
 - Fix Bluetooth connection and pairing collision by disarming active discovery scan and preventing redundant profile connection races on single-antenna Broadcom radios.
