@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.42
+
+- Accept Home Assistant content types (such as "music", "video", "channel", etc.) in media type validation to prevent 422 errors during playback.
+
 ## 0.2.41
 
 - Enable authenticated Ingress recovery and live volume control while preserving the private native transport boundary.

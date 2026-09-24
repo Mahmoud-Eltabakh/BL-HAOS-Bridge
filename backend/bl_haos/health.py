@@ -45,6 +45,7 @@ class FailureClass(str, Enum):
 
 MAX_DETAIL_LENGTH = 256
 MAX_MEDIA_URL_LENGTH = 2048
+MAX_MEDIA_TYPE_LENGTH = 128
 MAX_IDENTIFIER_LENGTH = 64
 _SECRET_PATTERN = re.compile(r"(?i)(token|password|secret|authorization|bearer)\s*[:=]\s*[^\s,;]+")
 _SENSITIVE_QUERY_KEYS = re.compile(r"(?i)(token|password|secret|authorization|bearer|api[_-]?key|key)")
@@ -96,12 +97,26 @@ def validate_media_url(url: str) -> str:
     return url
 
 
+_MEDIA_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*(?:/[A-Za-z0-9!#$&^_.+-]+)?$")
+
+
 def validate_media_type(media_type: str | None) -> str | None:
+    """Accept any bounded, structurally safe media type token.
+
+    Home Assistant sends its own content types ("music", "audio/mpeg",
+    "video/mp4", "channel", ...) rather than strict MIME audio types. The value
+    is informational only — ffmpeg sniffs the actual stream — so rejecting
+    anything that is not ``audio/*`` breaks legitimate playback with a 422.
+    Only unsafe or unbounded values are refused.
+    """
     if media_type is None:
         return None
-    if len(media_type) > 128 or not re.fullmatch(r"audio/[A-Za-z0-9.+-]+", media_type):
-        raise ValueError("Media type must be an audio media type")
-    return media_type.lower()
+    if not isinstance(media_type, str):
+        raise ValueError("Media type must be a media type string")
+    candidate = media_type.strip()
+    if not candidate or len(candidate) > MAX_MEDIA_TYPE_LENGTH or not _MEDIA_TYPE_PATTERN.fullmatch(candidate):
+        raise ValueError("Media type must be a media type string")
+    return candidate.lower()
 
 
 def validate_pin(pin: str | None) -> str | None:

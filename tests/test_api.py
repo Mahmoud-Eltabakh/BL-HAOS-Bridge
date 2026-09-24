@@ -3,6 +3,8 @@ from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
+import pytest
+
 
 def test_api_health():
     with TestClient(app) as client:
@@ -212,6 +214,58 @@ def test_pair_publishes_native_speaker():
 
         assert response.status_code == 200
         assert published == [dev_addr]
+
+
+def test_media_type_accepts_home_assistant_content_types():
+    """HA sends content types like 'music'; they must not 422 a play_media call."""
+    from backend.bl_haos.health import validate_media_type
+
+    for value in ("music", "audio/mpeg", "video/mp4", "channel", "tvshow", "playlist", "episode"):
+        assert validate_media_type(value) == value
+    assert validate_media_type(None) is None
+
+
+def test_media_type_still_rejects_unsafe_values():
+    from backend.bl_haos.health import validate_media_type
+
+    for value in ("", "   ", "a" * 200, "music; rm -rf /", "audio/mpeg\nx", "javascript:alert(1)"):
+        with pytest.raises(ValueError, match="Media type"):
+            validate_media_type(value)
+
+
+def test_native_play_media_accepts_ha_content_type(monkeypatch):
+    """Regression: HA content types must reach the player instead of a 422/500."""
+    with TestClient(app) as client:
+        dev_addr = "10:22:33:44:55:66"
+        app.state.bt_manager._on_interfaces_added(f"/org/bluez/hci0/dev_{dev_addr.replace(':', '_')}", {
+            "org.bluez.Device1": {
+                "Address": dev_addr,
+                "Name": "Test Speaker",
+                "Adapter": "/org/bluez/hci0",
+                "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                "Class": 0x240414,
+                "Paired": True,
+                "Trusted": True,
+                "Connected": True,
+            }
+        })
+        token = app.state.config_store.settings.native_token
+        execute = AsyncMock()
+        monkeypatch.setattr(app.state.ha_bridge, "execute", execute)
+        response = client.post(
+            f"/api/native/speakers/{dev_addr}/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "operation": "play_media",
+                "url": "https://example.test/audio.mp3",
+                "media_type": "music",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        execute.assert_awaited_once_with(
+            dev_addr, "play_media", volume=None, url="https://example.test/audio.mp3"
+        )
 
 
 def test_native_play_media_rejects_unsafe_url_without_side_effects(monkeypatch):
