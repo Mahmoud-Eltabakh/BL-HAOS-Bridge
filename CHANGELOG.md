@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.39
+
+- Fix Bluetooth connection and pairing collision by disarming active discovery scan and preventing redundant profile connection races on single-antenna Broadcom radios.
+
 ## 0.2.38
 
 - Fix auto-reconnect and sink-wait retry loop in REST/native command handler to recognize generic Bluetooth audio sink exceptions.

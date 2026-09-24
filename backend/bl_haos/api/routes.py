@@ -311,8 +311,8 @@ async def command_native_speaker(
     )
     if device is None:
         raise HTTPException(status_code=404, detail="Native speaker was not found")
-    if not ((device.trusted or device.paired or device.connected) and device.is_audio_sink and device.connected):
-        raise HTTPException(status_code=409, detail="Native speaker is unavailable")
+    if not ((device.trusted or device.paired or device.connected) and device.is_audio_sink):
+        raise HTTPException(status_code=409, detail="Native speaker is not trusted or not an audio sink")
     try:
         logger.debug("Executing media player command: %s (volume: %s, url: %s)", payload.operation, payload.volume, payload.url)
         await request.app.state.ha_bridge.execute(

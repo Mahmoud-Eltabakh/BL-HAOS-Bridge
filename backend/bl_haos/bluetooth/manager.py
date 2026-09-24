@@ -283,6 +283,11 @@ class BluetoothManager:
         """Pair with device and set trusted flag for auto-reconnection."""
         address = normalize_address(address)
         logger.debug("Starting pair_and_trust for %s", address)
+        try:
+            await self.stop_scan()
+        except Exception as e:
+            logger.debug("Non-fatal notice stopping scan prior to pair: %s", e)
+        await asyncio.sleep(0.3)
         dev = await self.ensure_device(address)
         if dev and self.bus and not dev.connected:
             # A cached Device1 proxy can survive BlueZ removing and recreating
@@ -327,6 +332,11 @@ class BluetoothManager:
         """Connect to device."""
         address = normalize_address(address)
         logger.debug("Initiating connect_device for %s", address)
+        try:
+            await self.stop_scan()
+        except Exception as e:
+            logger.debug("Non-fatal notice stopping scan prior to connect: %s", e)
+        await asyncio.sleep(0.3)
         dev = await self.ensure_device(address)
         if not dev:
             for adapter in self.adapters.values():

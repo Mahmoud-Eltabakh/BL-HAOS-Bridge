@@ -180,45 +180,38 @@ class BluetoothDevice:
         if not self.bus:
             self._properties["Connected"] = True
             return
+        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+        dev_iface = proxy.get_interface(DEVICE_INTERFACE)
+        connect_error = None
         try:
-            introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
-            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
-            dev_iface = proxy.get_interface(DEVICE_INTERFACE)
-            connect_error = None
-            try:
-                await dev_iface.call_connect()
-            except Exception as conn_err:
-                err_str = str(conn_err)
-                if "AlreadyConnected" in err_str or "InProgress" in err_str or "In Progress" in err_str:
-                    connect_error = None
-                else:
-                    connect_error = conn_err
-            try:
-                await dev_iface.call_connect_profile(A2DP_SINK_UUID)
-            except Exception as profile_err:
-                profile_str = str(profile_err)
-                if (
-                    "AlreadyConnected" not in profile_str
-                    and "InProgress" not in profile_str
-                    and "In Progress" not in profile_str
-                ):
-                    raise connect_error or profile_err
-        except Exception as e:
-            if self.adapter_path:
+            await dev_iface.call_connect()
+        except Exception as conn_err:
+            err_str = str(conn_err)
+            if "AlreadyConnected" in err_str or "InProgress" in err_str or "In Progress" in err_str:
+                connect_error = None
                 try:
-                    logger.debug("Falling back to Adapter1.ConnectDevice for %s", self.address)
-                    intro = await self.bus.introspect(BLUEZ_SERVICE, self.adapter_path)
-                    p = self.bus.get_proxy_object(BLUEZ_SERVICE, self.adapter_path, intro)
-                    adapter_iface = p.get_interface("org.bluez.Adapter1")
-                    props = {
-                        "Address": Variant("s", self.address.strip().upper()),
-                        "AddressType": Variant("s", "public"),
-                    }
-                    await adapter_iface.call_connect_device(props)
-                except Exception:
-                    raise e
+                    await dev_iface.call_connect_profile(A2DP_SINK_UUID)
+                except Exception as profile_err:
+                    prof_str = str(profile_err)
+                    if (
+                        "AlreadyConnected" not in prof_str
+                        and "InProgress" not in prof_str
+                        and "In Progress" not in prof_str
+                    ):
+                        logger.debug("Non-fatal profile connect notice for %s: %s", self.address, profile_err)
             else:
-                raise e
+                connect_error = conn_err
+                try:
+                    await dev_iface.call_connect_profile(A2DP_SINK_UUID)
+                except Exception as profile_err:
+                    prof_str = str(profile_err)
+                    if (
+                        "AlreadyConnected" not in prof_str
+                        and "InProgress" not in prof_str
+                        and "In Progress" not in prof_str
+                    ):
+                        raise connect_error or profile_err
         self._properties["Connected"] = True
         logger.debug("BlueZ connect succeeded for %s", self.address)
 
@@ -244,32 +237,15 @@ class BluetoothDevice:
         if not self.bus:
             self._properties["Paired"] = True
             return
+        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+        dev_iface = proxy.get_interface(DEVICE_INTERFACE)
         try:
-            introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
-            proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
-            dev_iface = proxy.get_interface(DEVICE_INTERFACE)
             await dev_iface.call_pair()
         except Exception as e:
-            if self.adapter_path:
-                try:
-                    logger.debug("Falling back to Adapter1.ConnectDevice during pairing for %s", self.address)
-                    intro = await self.bus.introspect(BLUEZ_SERVICE, self.adapter_path)
-                    p = self.bus.get_proxy_object(BLUEZ_SERVICE, self.adapter_path, intro)
-                    adapter_iface = p.get_interface("org.bluez.Adapter1")
-                    props = {
-                        "Address": Variant("s", self.address.strip().upper()),
-                        "AddressType": Variant("s", "public"),
-                    }
-                    await adapter_iface.call_connect_device(props)
-                except Exception:
-                    pass
-                try:
-                    intro_dev = await self.bus.introspect(BLUEZ_SERVICE, self.path)
-                    proxy_dev = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, intro_dev)
-                    dev_iface = proxy_dev.get_interface(DEVICE_INTERFACE)
-                    await dev_iface.call_pair()
-                except Exception:
-                    pass
+            err_str = str(e)
+            if "AlreadyExists" in err_str or "AlreadyConnected" in err_str or "AlreadyPaired" in err_str:
+                pass
             else:
                 raise e
         self._properties["Paired"] = True
