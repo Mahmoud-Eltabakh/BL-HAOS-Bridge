@@ -47,8 +47,8 @@ exceptions must be documented with an owner and expiry date in the pull request 
 must not be implemented as a default audit bypass.
 
 The complete release checklist and scenario matrix are maintained in the
-repository-level [release gate contract](../../tests/integration/RELEASE-GATES.md)
-and [regression matrix](../../tests/integration/REGRESSION-MATRIX.md). They
+repository-level [release gate contract](../../.planning/RELEASE-GATES.md)
+and [regression matrix](../../.planning/REGRESSION-MATRIX.md). They
 define stable and preview support, HAOS and native integration compatibility,
 architecture coverage, redacted evidence, and environment-qualified hardware
 validation.
