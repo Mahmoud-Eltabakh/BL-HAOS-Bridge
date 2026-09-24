@@ -68,8 +68,15 @@ export function useBluetoothEvents() {
                 copy[index] = dev;
                 return copy;
               }
+              // New device found during a scan: append immediately so the UI
+              // shows it in real time instead of waiting for a full refresh.
               return [...prev, dev];
             });
+            // A discovered device usually means a scan is running; keep the
+            // indicator honest even if the adapter event was missed.
+            if (msg.event === 'device_discovered') {
+              setIsScanning(true);
+            }
           } else if (msg.event === 'device_removed') {
             const removedPath = msg.data as string;
             setDevices((prev) => prev.filter((d) => d.path !== removedPath));
@@ -110,7 +117,16 @@ export function useBluetoothEvents() {
         try {
           const deviceList = await apiClient.getDevices(false);
           if (!unmounted) {
-            setDevices(deviceList);
+            // Merge rather than replace: WebSocket events may have delivered
+            // fresher records between polls; the poll backfills anything the
+            // WS missed (e.g. transient disconnects) without clobbering it.
+            setDevices((prev) => {
+              const byAddress = new Map(prev.map((d) => [d.address, d]));
+              for (const dev of deviceList) {
+                byAddress.set(dev.address, dev);
+              }
+              return [...byAddress.values()];
+            });
           }
         } catch (err) {
           console.debug('Failed to poll devices during scan', err);

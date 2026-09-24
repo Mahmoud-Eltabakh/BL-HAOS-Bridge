@@ -43,6 +43,7 @@ export interface DeviceInfo {
   rssi?: number | null;
   is_audio_sink: boolean;
   device_type: string;
+  last_seen?: number | null;
 }
 
 export interface NativeDiagnostics {

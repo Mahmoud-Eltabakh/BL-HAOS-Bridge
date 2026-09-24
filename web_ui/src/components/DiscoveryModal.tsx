@@ -54,17 +54,26 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
 
   if (!isOpen) return null;
 
-  const filteredDevices = devices.filter((d) => {
-    if (audioOnlyFilter && !d.is_audio_sink) return false;
-    if (!searchQuery.trim()) return true;
+  const filteredDevices = devices
+    .filter((d) => {
+      if (audioOnlyFilter && !d.is_audio_sink) return false;
+      if (!searchQuery.trim()) return true;
 
-    const query = searchQuery.toLowerCase().trim();
-    const macMatch = d.address.toLowerCase().includes(query);
-    const nameMatch = d.name ? d.name.toLowerCase().includes(query) : false;
-    const aliasMatch = d.alias ? d.alias.toLowerCase().includes(query) : false;
+      const query = searchQuery.toLowerCase().trim();
+      const macMatch = d.address.toLowerCase().includes(query);
+      const nameMatch = d.name ? d.name.toLowerCase().includes(query) : false;
+      const aliasMatch = d.alias ? d.alias.toLowerCase().includes(query) : false;
 
-    return macMatch || nameMatch || aliasMatch;
-  });
+      return macMatch || nameMatch || aliasMatch;
+    })
+    // Strongest signal first: newly-found nearby devices surface at the top
+    // while scanning; unknown RSSI sorts last. Newest discovery breaks ties.
+    .sort((a, b) => {
+      const rssiA = a.rssi ?? -999;
+      const rssiB = b.rssi ?? -999;
+      if (rssiA !== rssiB) return rssiB - rssiA;
+      return (b.last_seen ?? 0) - (a.last_seen ?? 0);
+    });
 
   const handlePair = async (address: string) => {
     if (!address.trim()) return;
@@ -125,6 +134,24 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
     }
     onRefresh();
   };
+
+  // Auto-start discovery when the modal opens so new devices stream in
+  // immediately without requiring the user to press Start Scan first.
+  const autoStartRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && !autoStartRef.current) {
+      autoStartRef.current = true;
+      if (!isScanning) {
+        void apiClient.startScan().then(onRefresh).catch(() => {
+          // Surface as a non-blocking status; the user can retry manually.
+          setStatusMessage({ type: 'error', text: 'Could not start scanning. Try the Start Scan button.' });
+        });
+      }
+    }
+    if (!isOpen) {
+      autoStartRef.current = false;
+    }
+  }, [isOpen, isScanning, onRefresh]);
 
   return (
     <div
@@ -277,7 +304,9 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               <p className="text-sm">
                 {searchQuery
                   ? `No Bluetooth devices matching "${searchQuery}"`
-                  : 'No Bluetooth devices detected yet.'}
+                  : isScanning
+                    ? 'Scanning — devices will appear here the moment they are found.'
+                    : 'No Bluetooth devices detected yet.'}
               </p>
               <p className="text-xs text-slate-500 mt-1">
                 Put your speaker in pairing mode or manage MAC addresses directly below.
