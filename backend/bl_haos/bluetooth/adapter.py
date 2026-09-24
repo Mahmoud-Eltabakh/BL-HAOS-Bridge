@@ -79,6 +79,7 @@ class BluetoothAdapter:
 
     async def set_power(self, powered: bool) -> None:
         """Set adapter powered state."""
+        logger.debug("Setting adapter %s (%s) Powered=%s", self.interface_name, self.path, powered)
         if not self.bus:
             self._properties["Powered"] = powered
             return
@@ -90,6 +91,7 @@ class BluetoothAdapter:
 
     async def start_discovery(self) -> None:
         """Start discovery scan on this adapter."""
+        logger.debug("Starting discovery scan on adapter %s (%s)", self.interface_name, self.path)
         if not self.bus:
             self._properties["Discovering"] = True
             return
@@ -107,6 +109,7 @@ class BluetoothAdapter:
 
     async def stop_discovery(self) -> None:
         """Stop discovery scan on this adapter."""
+        logger.debug("Stopping discovery scan on adapter %s (%s)", self.interface_name, self.path)
         if not self.bus:
             self._properties["Discovering"] = False
             return
@@ -124,6 +127,7 @@ class BluetoothAdapter:
 
     async def connect_device(self, address: str, address_type: str = "public") -> str | None:
         """Connect directly to a device by MAC address, creating the D-Bus object if needed."""
+        logger.debug("Connecting device %s via Adapter1 on %s", address, self.interface_name)
         if not self.bus:
             return None
         introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)

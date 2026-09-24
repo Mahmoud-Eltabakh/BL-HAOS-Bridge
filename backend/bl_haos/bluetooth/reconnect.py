@@ -76,6 +76,7 @@ class AutoReconnectEngine:
     def register_speaker(self, address: str, enabled: bool = True, preferred_adapter: str | None = None) -> None:
         """Register a trusted speaker for automatic reconnection tracking."""
         addr = normalize_address(address)
+        logger.debug("AutoReconnect registered speaker %s (enabled=%s, preferred_adapter=%s)", addr, enabled, preferred_adapter)
         if addr not in self.profiles:
             self.profiles[addr] = SpeakerReconnectProfile(
                 address=addr,
@@ -90,6 +91,7 @@ class AutoReconnectEngine:
     def unregister_speaker(self, address: str) -> None:
         """Unregister a speaker from auto-reconnection."""
         addr = normalize_address(address)
+        logger.debug("AutoReconnect unregistering speaker %s", addr)
         task = self._inflight.pop(addr, None)
         if task and not task.done():
             task.cancel()
@@ -252,6 +254,7 @@ class AutoReconnectEngine:
 
         if lock.locked():
             # Another reconnect is in progress on this adapter; postpone slightly
+            logger.debug("Adapter %s is locked by another reconnect operation; deferring %s", adapter_name, addr)
             profile.next_retry_time = time.time() + 1.0
             return
 
@@ -263,6 +266,7 @@ class AutoReconnectEngine:
             try:
                 await self.manager.connect_device(addr)
                 logger.info("Successfully reconnected to speaker %s", addr)
+                logger.debug("Auto-reconnect succeeded for %s, resetting failure counters", addr)
                 profile.state = ReconnectState.CONNECTED
                 if self.health:
                     self.health.observe_speaker(addr, SpeakerState.CONNECTED)
@@ -273,6 +277,7 @@ class AutoReconnectEngine:
                 profile.consecutive_failures += 1
                 profile.backoff_step += 1
                 logger.warning("Failed to reconnect to %s: %s (Failures: %d)", addr, e, profile.consecutive_failures)
+                logger.debug("Auto-reconnect next retry calculation for %s (backoff_step=%d)", addr, profile.backoff_step)
 
                 if profile.consecutive_failures >= 2:
                     try:

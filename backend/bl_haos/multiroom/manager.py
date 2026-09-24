@@ -85,12 +85,14 @@ class MultiroomManager:
             self.groups["default"].client_ids.append(client_id)
 
         logger.info("Attached speaker %s to multi-room group default", addr)
+        logger.debug("Multiroom client %s created (name=%s, latency_offset=%dms)", client_id, name, latency_offset_ms)
         return client
 
     def detach_speaker(self, address: str) -> bool:
         """Detach speaker and stop its snapclient process."""
         addr = normalize_address(address)
         client_id = f"snapclient_{addr.replace(':', '')}"
+        logger.debug("Detaching speaker %s (client_id: %s) from multiroom", addr, client_id)
 
         if client_id in self.clients:
             del self.clients[client_id]
@@ -103,8 +105,8 @@ class MultiroomManager:
             try:
                 self.active_processes[client_id].terminate()
                 del self.active_processes[client_id]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Error terminating snapclient process for %s: %s", client_id, e)
         return True
 
     def set_latency_offset(self, address: str, offset_ms: int) -> bool:

@@ -51,6 +51,7 @@ class BluetoothManager:
     async def initialize(self) -> None:
         """Connect to system D-Bus, register Agent, and discover initial adapters/devices."""
         try:
+            logger.debug("Connecting to system D-Bus...")
             self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
             logger.info("Connected to D-Bus System Bus")
 
@@ -73,6 +74,11 @@ class BluetoothManager:
             await self._subscribe_signals()
             await self._load_managed_objects()
             self._initialized = True
+            logger.debug(
+                "BluetoothManager initialized with %d adapter(s) and %d device(s)",
+                len(self.adapters),
+                len(self.devices),
+            )
             if self.health:
                 self.health.observe_component("bluetooth", HealthState.HEALTHY, source="bluez")
 
@@ -148,31 +154,44 @@ class BluetoothManager:
         if ADAPTER_INTERFACE in interfaces:
             adapter = BluetoothAdapter(self.bus, path, interfaces[ADAPTER_INTERFACE])
             self.adapters[path] = adapter
+            logger.debug("BlueZ adapter added: %s (%s)", adapter.interface_name, path)
             self._notify("adapter_added", adapter.to_info())
         if DEVICE_INTERFACE in interfaces:
             device = BluetoothDevice(self.bus, path, interfaces[DEVICE_INTERFACE])
             self.devices[path] = device
+            logger.debug(
+                "BlueZ device discovered: %s (%s) [audio_sink=%s, connected=%s]",
+                device.address,
+                device.name or "unknown",
+                device.is_audio_sink,
+                device.connected,
+            )
             self._notify("device_discovered", device.to_info())
 
     def _on_interfaces_removed(self, path: str, interfaces: list[str]):
         if ADAPTER_INTERFACE in interfaces and path in self.adapters:
+            logger.debug("BlueZ adapter removed: %s", path)
             del self.adapters[path]
             self._notify("adapter_removed", path)
         if DEVICE_INTERFACE in interfaces and path in self.devices:
+            logger.debug("BlueZ device removed: %s", path)
             del self.devices[path]
             self._notify("device_removed", path)
 
     def _on_properties_changed(self, path: str, iface: str, changed: dict[str, Any]):
         if iface == ADAPTER_INTERFACE and path in self.adapters:
             self.adapters[path].update_properties(changed)
+            logger.debug("BlueZ adapter properties changed on %s: %s", path, list(changed.keys()))
             self._notify("adapter_updated", self.adapters[path].to_info())
         elif iface == DEVICE_INTERFACE:
             if path in self.devices:
                 self.devices[path].update_properties(changed)
+                logger.debug("BlueZ device properties changed on %s: %s", path, list(changed.keys()))
                 self._notify("device_updated", self.devices[path].to_info())
             else:
                 dev = BluetoothDevice(self.bus, path, changed)
                 self.devices[path] = dev
+                logger.debug("BlueZ new device from property change: %s (%s)", dev.address, path)
                 self._notify("device_discovered", dev.to_info())
 
     async def _load_managed_objects(self):
@@ -263,6 +282,7 @@ class BluetoothManager:
     async def pair_and_trust(self, address: str) -> bool:
         """Pair with device and set trusted flag for auto-reconnection."""
         address = normalize_address(address)
+        logger.debug("Starting pair_and_trust for %s", address)
         dev = await self.ensure_device(address)
         if dev and self.bus and not dev.connected:
             # A cached Device1 proxy can survive BlueZ removing and recreating
@@ -284,23 +304,29 @@ class BluetoothManager:
                 dev = await self.ensure_device(address)
 
         if not dev:
+            logger.debug("Device %s not found on any adapter for pairing", address)
             raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
 
         try:
+            logger.debug("Invoking BlueZ pair on %s (%s)", address, dev.path)
             await dev.pair()
         except Exception as e:
             logger.warning("Pair call fallback for %s: %s", address, e)
         # Pairing may leave a newly recreated BlueZ object paired but not
         # connected, so explicitly establish the A2DP link before publishing
         # it as a trusted speaker.
+        logger.debug("Connecting device %s after pairing to establish audio profile", address)
         await dev.connect()
 
+        logger.debug("Marking device %s as trusted", address)
         await dev.set_trusted(True)
+        logger.debug("Device %s successfully paired, connected, and trusted", address)
         return True
 
     async def connect_device(self, address: str) -> bool:
         """Connect to device."""
         address = normalize_address(address)
+        logger.debug("Initiating connect_device for %s", address)
         dev = await self.ensure_device(address)
         if not dev:
             for adapter in self.adapters.values():
@@ -312,15 +338,18 @@ class BluetoothManager:
                 except Exception:
                     continue
             if not dev:
+                logger.debug("Device %s not found on any adapter for connect", address)
                 raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
         try:
             # A connected BlueZ ACL can retain a stale A2DP transport in
             # PipeWire. Force a clean link before reconnecting the profile.
             if getattr(dev, "connected", False):
+                logger.debug("Resetting existing connection for %s before reconnecting", address)
                 await dev.disconnect()
                 await asyncio.sleep(1.0)
             for attempt in range(3):
                 try:
+                    logger.debug("Connect attempt %d for %s", attempt + 1, address)
                     await dev.connect()
                     break
                 except Exception:
@@ -331,8 +360,10 @@ class BluetoothManager:
                 await dev.set_trusted(True)
             except Exception as e:
                 logger.debug("Failed to set trusted flag on connect: %s", e)
+            logger.debug("Device %s connected successfully", address)
             return True
         except Exception as first_error:
+            logger.debug("First connect attempt failed for %s: %s", address, first_error)
             # BlueZ can replace a discovered device object while scanning or
             # reconnecting. Refresh the cached object once before surfacing the
             # transient org.bluez.Device1 error to the API.
@@ -341,6 +372,7 @@ class BluetoothManager:
             refreshed = await self.ensure_device(address)
             if refreshed:
                 try:
+                    logger.debug("Retrying connect on refreshed BlueZ proxy for %s", address)
                     await refreshed.connect()
                 except Exception as refresh_error:
                     if self.health:
@@ -355,6 +387,7 @@ class BluetoothManager:
                     await refreshed.set_trusted(True)
                 except Exception:
                     pass
+                logger.debug("Refreshed proxy connection succeeded for %s", address)
                 return True
             if self.health:
                 self.health.observe_speaker(
@@ -368,10 +401,12 @@ class BluetoothManager:
     async def disconnect_device(self, address: str) -> bool:
         """Disconnect from device."""
         address = normalize_address(address)
+        logger.debug("Disconnecting device %s", address)
         dev = await self.ensure_device(address)
         if not dev:
             raise ValueError(f"Device with address {address} not found")
         await dev.disconnect()
+        logger.debug("Disconnected device %s", address)
         return True
 
     async def remove_device(self, address: str) -> bool:

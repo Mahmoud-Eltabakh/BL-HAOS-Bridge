@@ -174,6 +174,11 @@ async def get_health(request: Request):
     diagnostics = native_diagnostics(request.app)
     registry: HealthRegistry | None = getattr(request.app.state, "health_registry", None)
     snapshot = registry.snapshot() if registry else None
+    logger.debug(
+        "Health check requested (status=%s, dbus_connected=%s)",
+        snapshot.status.value if snapshot else "unknown",
+        request.app.state.bt_manager.bus is not None,
+    )
     return {
         "status": "ok" if not snapshot or snapshot.status == HealthState.HEALTHY else snapshot.status.value,
         "service": "BL-HAOS",
@@ -188,6 +193,7 @@ async def get_health(request: Request):
 @router.get("/diagnostics/native")
 async def get_native_diagnostics(request: Request):
     """Expose sanitized native bridge readiness for the Ingress dashboard."""
+    logger.debug("Native diagnostics requested")
     return native_diagnostics(request.app)
 
 
@@ -213,6 +219,7 @@ def operator_diagnostics(request: Request) -> dict[str, Any]:
 
 @router.get("/diagnostics")
 async def get_diagnostics(request: Request):
+    logger.debug("Operator diagnostics requested")
     return operator_diagnostics(request)
 
 
@@ -222,6 +229,7 @@ async def get_recovery(request: Request, authorization: str | None = Header(defa
     service = getattr(request.app.state, "recovery", None)
     if service is None:
         raise HTTPException(status_code=503, detail="Recovery unavailable")
+    logger.debug("Recovery contract requested")
     return service.contract(operator_diagnostics(request))
 
 
@@ -231,12 +239,14 @@ async def execute_recovery(payload: RecoveryRequest, request: Request, authoriza
     service = getattr(request.app.state, "recovery", None)
     if service is None:
         raise HTTPException(status_code=503, detail="Recovery unavailable")
+    logger.debug("Executing recovery action '%s' on target '%s'", payload.action_id, payload.target)
     try:
         result = await service.execute(payload.action_id, payload.target)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     refreshed = operator_diagnostics(request)
     result["diagnostics"] = refreshed
+    logger.debug("Recovery action '%s' completed with status: %s", payload.action_id, result.get("status"))
     return result
 
 
@@ -245,6 +255,7 @@ async def get_support_bundle(request: Request):
     service = getattr(request.app.state, "diagnostics", None)
     if service is None:
         raise HTTPException(status_code=503, detail="Diagnostics unavailable")
+    logger.debug("Support bundle download requested")
     payload = operator_diagnostics(request)
     bundle = service.support_bundle(
         adapters=payload["adapters"],
@@ -261,6 +272,7 @@ async def get_support_bundle(request: Request):
 async def get_native_identity(request: Request, authorization: str | None = Header(default=None)):
     """Return the fixed, versioned native bridge identity."""
     require_native_auth(authorization, request)
+    logger.debug("Native bridge identity requested")
     return {"bridge_id": NATIVE_BRIDGE_ID, "version": NATIVE_BRIDGE_VERSION}
 
 
@@ -274,6 +286,7 @@ async def list_native_speakers(request: Request, authorization: str | None = Hea
         if device.trusted or device.paired or device.connected
         for record in [native_speaker_record(request, device)]
     }
+    logger.debug("Native speakers requested: returning %d speakers (%s)", len(speakers), list(speakers.keys()))
     return {"speakers": speakers}
 
 
@@ -286,6 +299,7 @@ async def command_native_speaker(
 ):
     """Apply an authenticated command and return the post-operation speaker record."""
     require_native_auth(authorization, request)
+    logger.debug("Received native command %s for address %s", payload.operation, address)
     try:
         normalized = normalize_address(address)
     except ValueError as error:
@@ -300,9 +314,11 @@ async def command_native_speaker(
     if not ((device.trusted or device.paired or device.connected) and device.is_audio_sink and device.connected):
         raise HTTPException(status_code=409, detail="Native speaker is unavailable")
     try:
+        logger.debug("Executing media player command: %s (volume: %s, url: %s)", payload.operation, payload.volume, payload.url)
         await request.app.state.ha_bridge.execute(
             normalized, payload.operation, volume=payload.volume, url=payload.url
         )
+        logger.debug("Successfully executed media player command %s for %s", payload.operation, normalized)
     except MediaPlayerError as error:
         is_sink_unavailable = (
             "Connected PipeWire A2DP sink is unavailable" in str(error)
@@ -371,7 +387,9 @@ async def command_native_speaker(
 
 @router.get("/adapters", response_model=list[AdapterInfo])
 async def list_adapters(request: Request):
-    return request.app.state.bt_manager.get_adapters()
+    adapters = request.app.state.bt_manager.get_adapters()
+    logger.debug("Listing adapters: %d adapters found", len(adapters))
+    return adapters
 
 
 @router.post("/adapters/{adapter_name}/power")
@@ -380,6 +398,7 @@ async def set_adapter_power(adapter_name: str, payload: PowerRequest, request: R
         adapter_name = validate_adapter_name(adapter_name)
     except ValueError as error:
         raise HTTPException(status_code=422, detail="Invalid Bluetooth adapter") from error
+    logger.debug("Setting adapter %s power to %s", adapter_name, payload.powered)
     adapter = request.app.state.bt_manager.get_adapter_by_name(adapter_name)
     if not adapter:
         raise HTTPException(status_code=404, detail=f"Adapter {adapter_name} not found")
@@ -390,6 +409,7 @@ async def set_adapter_power(adapter_name: str, payload: PowerRequest, request: R
 @router.post("/scan/start")
 async def start_scan(request: Request, payload: ScanRequest | None = None):
     adapter_name = payload.adapter_name if payload else None
+    logger.debug("Starting Bluetooth scan on adapter: %s", adapter_name or "all")
     await request.app.state.bt_manager.start_scan(adapter_name)
     return {"status": "ok", "scanning": True, "adapter": adapter_name or "all"}
 
@@ -397,6 +417,7 @@ async def start_scan(request: Request, payload: ScanRequest | None = None):
 @router.post("/scan/stop")
 async def stop_scan(request: Request, payload: ScanRequest | None = None):
     adapter_name = payload.adapter_name if payload else None
+    logger.debug("Stopping Bluetooth scan on adapter: %s", adapter_name or "all")
     await request.app.state.bt_manager.stop_scan(adapter_name)
     return {"status": "ok", "scanning": False, "adapter": adapter_name or "all"}
 
@@ -407,11 +428,14 @@ async def stop_scan(request: Request, payload: ScanRequest | None = None):
 
 @router.get("/devices", response_model=list[DeviceInfo])
 async def list_devices(request: Request, audio_only: bool = True):
-    return request.app.state.bt_manager.get_devices(audio_only=audio_only)
+    devices = request.app.state.bt_manager.get_devices(audio_only=audio_only)
+    logger.debug("Listing devices (audio_only=%s): returning %d devices", audio_only, len(devices))
+    return devices
 
 
 @router.post("/devices/pair")
 async def pair_device(payload: PairRequest, request: Request):
+    logger.debug("Pairing request received for %s", payload.address)
     try:
         if payload.pin and hasattr(request.app.state.bt_manager, "agent") and request.app.state.bt_manager.agent:
             request.app.state.bt_manager.agent.pin_callback = lambda dev: payload.pin
@@ -423,6 +447,7 @@ async def pair_device(payload: PairRequest, request: Request):
         publish = getattr(request.app.state, "publish_native_speaker", None)
         if publish:
             await publish(payload.address)
+        logger.debug("Pairing completed successfully for %s", payload.address)
         return {"status": "ok", "paired": success, "address": payload.address}
     except Exception as e:
         logger.error("Pairing error for %s: %s", payload.address, safe_detail(e))
@@ -433,10 +458,12 @@ async def pair_device(payload: PairRequest, request: Request):
 async def connect_device(address: str, request: Request):
     try:
         address = normalize_address(address)
+        logger.debug("Connect request received for %s", address)
         success = await request.app.state.bt_manager.connect_device(address)
         publish = getattr(request.app.state, "publish_native_speaker", None)
         if publish:
             await publish(address)
+        logger.debug("Connect completed successfully for %s", address)
         return {"status": "ok", "connected": success, "address": address}
     except Exception as e:
         logger.error("Connection error for %s: %s", address, safe_detail(e))
@@ -447,7 +474,9 @@ async def connect_device(address: str, request: Request):
 async def disconnect_device(address: str, request: Request):
     try:
         address = normalize_address(address)
+        logger.debug("Disconnect request received for %s", address)
         success = await request.app.state.bt_manager.disconnect_device(address)
+        logger.debug("Disconnect completed successfully for %s", address)
         return {"status": "ok", "connected": False, "address": address}
     except Exception as e:
         logger.error("Disconnection error for %s: %s", address, safe_detail(e))
@@ -458,11 +487,13 @@ async def disconnect_device(address: str, request: Request):
 async def remove_device(address: str, request: Request):
     try:
         address = normalize_address(address)
+        logger.debug("Remove device request received for %s", address)
         success = await request.app.state.bt_manager.remove_device(address)
         reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
         if reconnect_engine:
             reconnect_engine.unregister_speaker(address)
         request.app.state.config_store.remove_speaker(address)
+        logger.debug("Remove device completed successfully for %s", address)
         return {"status": "ok", "removed": success, "address": address}
     except Exception as e:
         logger.error("Remove error for %s: %s", address, safe_detail(e))
@@ -475,6 +506,7 @@ async def remove_device(address: str, request: Request):
 
 @router.get("/settings", response_model=SystemSettings)
 async def get_settings(request: Request):
+    logger.debug("System settings requested")
     return request.app.state.config_store.settings
 
 
@@ -484,6 +516,15 @@ async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, r
         address = normalize_address(address)
     except ValueError as error:
         raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
+    logger.debug(
+        "Updating speaker settings for %s (alias=%s, auto_reconnect=%s, adapter=%s, volume=%s, codec=%s)",
+        address,
+        payload.custom_alias,
+        payload.auto_reconnect,
+        payload.preferred_adapter,
+        payload.default_volume,
+        payload.codec_override,
+    )
     updated = request.app.state.config_store.update_speaker(
         address=address,
         custom_alias=payload.custom_alias,
@@ -508,18 +549,23 @@ async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, r
 @router.get("/multiroom/groups")
 async def list_multiroom_groups(request: Request):
     manager = getattr(request.app.state, "multiroom_manager", None)
-    return manager.get_groups() if manager else []
+    groups = manager.get_groups() if manager else []
+    logger.debug("Listing multiroom groups: found %d groups", len(groups))
+    return groups
 
 
 @router.get("/multiroom/clients")
 async def list_multiroom_clients(request: Request):
     manager = getattr(request.app.state, "multiroom_manager", None)
-    return manager.get_clients() if manager else []
+    clients = manager.get_clients() if manager else []
+    logger.debug("Listing multiroom clients: found %d clients", len(clients))
+    return clients
 
 
 @router.post("/multiroom/speakers/{address}/latency")
 async def set_speaker_latency(address: str, payload: dict[str, int], request: Request):
     offset = payload.get("latency_offset_ms", 0)
+    logger.debug("Setting latency offset for %s to %d ms", address, offset)
     manager = getattr(request.app.state, "multiroom_manager", None)
     success = manager.set_latency_offset(address, offset) if manager else True
     return {"status": "ok", "address": address, "latency_offset_ms": offset, "updated": success}

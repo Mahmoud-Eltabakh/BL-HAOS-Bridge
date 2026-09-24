@@ -21,18 +21,19 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info("WebSocket client connected. Total clients: %d", len(self.active_connections))
+        logger.debug("WebSocket client connected. Total clients: %d", len(self.active_connections))
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-            logger.info("WebSocket client disconnected. Total clients: %d", len(self.active_connections))
+            logger.debug("WebSocket client disconnected. Total clients: %d", len(self.active_connections))
 
     async def broadcast(self, event_type: str, data: Any):
         """Broadcast JSON message to all connected clients."""
         if not self.active_connections:
             return
 
+        logger.debug("Broadcasting WebSocket event '%s' to %d clients", event_type, len(self.active_connections))
         message = {
             "event": event_type,
             "data": data if isinstance(data, (dict, list, str, int, float, bool)) else (
@@ -80,13 +81,16 @@ async def native_websocket_endpoint(websocket: WebSocket):
     """Serve native speaker updates on the private Supervisor network."""
     expected = websocket.app.state.config_store.settings.native_token
     if not authorized_bearer(websocket.headers.get("authorization"), expected):
+        logger.debug("Native WebSocket connection rejected: authentication required")
         await websocket.close(code=1008, reason="Native bridge authentication required")
         return
     await native_ws_manager.connect(websocket)
+    logger.debug("Native WebSocket client connected successfully")
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
+        logger.debug("Native WebSocket client disconnected cleanly")
         native_ws_manager.disconnect(websocket)
     except Exception as error:
         logger.debug("Native WebSocket closed: %s", safe_detail(error))

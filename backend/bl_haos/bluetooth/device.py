@@ -176,6 +176,7 @@ class BluetoothDevice:
 
     async def connect(self) -> None:
         """Connect to device."""
+        logger.debug("Executing BlueZ connect on device %s (%s)", self.address, self.path)
         if not self.bus:
             self._properties["Connected"] = True
             return
@@ -205,6 +206,7 @@ class BluetoothDevice:
         except Exception as e:
             if self.adapter_path:
                 try:
+                    logger.debug("Falling back to Adapter1.ConnectDevice for %s", self.address)
                     intro = await self.bus.introspect(BLUEZ_SERVICE, self.adapter_path)
                     p = self.bus.get_proxy_object(BLUEZ_SERVICE, self.adapter_path, intro)
                     adapter_iface = p.get_interface("org.bluez.Adapter1")
@@ -218,9 +220,11 @@ class BluetoothDevice:
             else:
                 raise e
         self._properties["Connected"] = True
+        logger.debug("BlueZ connect succeeded for %s", self.address)
 
     async def disconnect(self) -> None:
         """Disconnect from device."""
+        logger.debug("Executing BlueZ disconnect on device %s (%s)", self.address, self.path)
         if not self.bus:
             self._properties["Connected"] = False
             return
@@ -232,9 +236,11 @@ class BluetoothDevice:
         except Exception:
             pass
         self._properties["Connected"] = False
+        logger.debug("BlueZ disconnect completed for %s", self.address)
 
     async def pair(self) -> None:
         """Initiate pairing."""
+        logger.debug("Executing BlueZ pair on device %s (%s)", self.address, self.path)
         if not self.bus:
             self._properties["Paired"] = True
             return
@@ -246,6 +252,7 @@ class BluetoothDevice:
         except Exception as e:
             if self.adapter_path:
                 try:
+                    logger.debug("Falling back to Adapter1.ConnectDevice during pairing for %s", self.address)
                     intro = await self.bus.introspect(BLUEZ_SERVICE, self.adapter_path)
                     p = self.bus.get_proxy_object(BLUEZ_SERVICE, self.adapter_path, intro)
                     adapter_iface = p.get_interface("org.bluez.Adapter1")
@@ -266,9 +273,11 @@ class BluetoothDevice:
             else:
                 raise e
         self._properties["Paired"] = True
+        logger.debug("BlueZ pair succeeded for %s", self.address)
 
     async def set_trusted(self, trusted: bool) -> None:
         """Set trusted flag on device."""
+        logger.debug("Setting Trusted=%s on BlueZ Device %s (%s)", trusted, self.address, self.path)
         if not self.bus:
             self._properties["Trusted"] = trusted
             return

@@ -72,21 +72,33 @@ class MediaPlayerBridge:
     async def execute(self, address: str, operation: str, *, volume: float | None = None, url: str | None = None) -> None:
         """Execute one validated native operation and publish only confirmed state."""
         address = self._address(address)
+        logger.debug(
+            "Executing player operation '%s' for speaker %s (volume=%s, url=%s)",
+            operation,
+            address,
+            volume,
+            url,
+        )
         if operation == "play":
             if address not in self.active_processes:
                 last_url = self.last_urls.get(address)
                 if not last_url:
+                    logger.debug("Playback resume failed for %s: no active or previous URL", address)
                     raise MediaPlayerError("No active playback to resume")
                 await self.play_url(address, last_url)
                 return
+            logger.debug("Resuming playback processes for %s (SIGCONT)", address)
             await self._signal_processes(address, getattr(signal, "SIGCONT", signal.SIGTERM))
             self.states[address] = "playing"
         elif operation == "pause":
             if address not in self.active_processes:
+                logger.debug("Pause operation failed for %s: no active playback process", address)
                 raise MediaPlayerError("No active playback to pause")
+            logger.debug("Pausing playback processes for %s (SIGSTOP)", address)
             await self._signal_processes(address, getattr(signal, "SIGSTOP", signal.SIGTERM))
             self.states[address] = "paused"
         elif operation == "stop":
+            logger.debug("Stopping playback processes for %s", address)
             await self._stop_processes(address)
             self.states[address] = "idle"
         elif operation == "set_volume":
@@ -95,6 +107,7 @@ class MediaPlayerBridge:
             self.volumes[address] = volume
             if self.config_store:
                 self.config_store.update_speaker(address, default_volume=round(volume * 100))
+            logger.debug("Setting volume for %s to %s", address, volume)
             await self._apply_volume(address, volume)
         elif operation == "play_media":
             if not url:
@@ -132,8 +145,10 @@ class MediaPlayerBridge:
             url = validate_media_url(url)
         except ValueError as error:
             raise MediaPlayerError("Media URL must be a safe HTTP(S) URL") from error
+        logger.debug("Resolving audio sink for %s...", addr)
         sink = await self._sink_resolver(addr)
         if not sink:
+            logger.debug("No audio sink found for %s", addr)
             if self.health:
                 failure = FailureClass.SINK_MISSING
                 detail = "No matching PipeWire or host PulseAudio A2DP sink"
@@ -151,10 +166,12 @@ class MediaPlayerBridge:
         except ValueError as error:
             label = "PulseAudio" if sink.startswith("pulse:") else "PipeWire"
             raise MediaPlayerError(f"Connected {label} sink is invalid") from error
+        logger.debug("Resolved sink '%s' via %s transport for speaker %s", sink_name, transport, addr)
         if self.health:
             self.health.observe_component("pipewire", HealthState.HEALTHY, source=transport)
         await self._stop_processes(addr)
         try:
+            logger.debug("Spawning ffmpeg decoder and %s player for %s", transport, addr)
             decoder = await self._process_factory(
                 "ffmpeg", "-nostdin", "-loglevel", "error", "-i", url,
                 "-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1",
@@ -167,10 +184,17 @@ class MediaPlayerBridge:
                 start_new_session=True, **self._player_environment(transport),
             )
         except (OSError, subprocess.SubprocessError) as error:
+            logger.debug("Failed to spawn playback processes for %s: %s", addr, error)
             raise MediaPlayerError("Unable to start media playback") from error
         self.active_processes[addr] = (decoder, player)
         self.last_urls[addr] = url
         self.states[addr] = "playing"
+        logger.debug(
+            "Playback started for %s (decoder PID=%s, player PID=%s)",
+            addr,
+            getattr(decoder, "pid", None),
+            getattr(player, "pid", None),
+        )
         if hasattr(decoder.stdout, "read") and hasattr(player.stdin, "write"):
             asyncio.create_task(self._pipe_audio(decoder, player))
         asyncio.create_task(self._watch_processes(addr, decoder, player))
@@ -378,11 +402,18 @@ class MediaPlayerBridge:
     async def _watch_processes(self, address: str, decoder: asyncio.subprocess.Process, player: asyncio.subprocess.Process) -> None:
         await asyncio.gather(decoder.wait(), player.wait(), return_exceptions=True)
         if self.active_processes.get(address) == (decoder, player):
+            logger.debug(
+                "Playback processes ended for %s (decoder code: %s, player code: %s)",
+                address,
+                decoder.returncode,
+                player.returncode,
+            )
             self.active_processes.pop(address, None)
             self.states[address] = "idle"
             await self._notify(address)
 
     async def async_shutdown(self) -> None:
+        logger.debug("Shutting down MediaPlayerBridge...")
         await self.stop_keepalive()
         for address in tuple(self.active_processes):
             await self._stop_processes(address)

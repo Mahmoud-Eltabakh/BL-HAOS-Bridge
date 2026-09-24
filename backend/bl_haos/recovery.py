@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from .diagnostics import DiagnosticsService
 from .health import HealthRegistry, normalize_address, validate_identifier
+
+logger = logging.getLogger("bl_haos.recovery")
 
 
 GUIDANCE: dict[str, dict[str, Any]] = {
@@ -117,8 +120,10 @@ class RecoveryService:
         normalized = self._target(action_id, target)
         lock_key = normalized or action_id
         if lock_key in self._inflight:
+            logger.debug("Recovery action '%s' for target '%s' conflict: already in flight", action_id, normalized)
             return self._result(action_id, normalized, "conflict", "Recovery is already in progress")
         self._inflight.add(lock_key)
+        logger.debug("Executing recovery action '%s' on target '%s'", action_id, normalized)
         try:
             try:
                 if action_id == "retry_reconnect":
@@ -128,8 +133,10 @@ class RecoveryService:
                 elif action_id == "recheck_dependency":
                     if normalized == "bluetooth" and hasattr(self.manager, "recover_dbus"):
                         await asyncio.wait_for(self.manager.recover_dbus(), timeout=self.ACTION_TIMEOUT)
+                logger.debug("Recovery action '%s' on target '%s' succeeded", action_id, normalized)
                 return self._result(action_id, normalized, "succeeded", "Bounded recovery action completed")
-            except Exception:
+            except Exception as err:
+                logger.debug("Recovery action '%s' on target '%s' failed: %s", action_id, normalized, err)
                 return self._result(action_id, normalized, "failed", "Bounded recovery action did not complete")
         finally:
             self._inflight.discard(lock_key)

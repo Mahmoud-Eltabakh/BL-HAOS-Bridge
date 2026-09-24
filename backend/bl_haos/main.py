@@ -34,7 +34,13 @@ async def _publish_supervisor_discovery(native_token: str) -> None:
     """Push the native bridge token to Supervisor so the integration can auto-connect."""
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
     if not supervisor_token or not native_token:
+        logger.debug(
+            "Supervisor discovery skipped (supervisor_token present: %s, native_token present: %s)",
+            bool(supervisor_token),
+            bool(native_token),
+        )
         return
+    logger.debug("Publishing Supervisor discovery registration for BL-HAOS service")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -45,8 +51,10 @@ async def _publish_supervisor_discovery(native_token: str) -> None:
             ) as response:
                 if response.status >= 400:
                     logger.warning("Supervisor discovery registration failed: HTTP %s", response.status)
-    except (aiohttp.ClientError, TimeoutError):
-        logger.warning("Supervisor discovery registration failed: connection error")
+                else:
+                    logger.debug("Supervisor discovery registration succeeded (HTTP %s)", response.status)
+    except (aiohttp.ClientError, TimeoutError) as err:
+        logger.warning("Supervisor discovery registration failed: %s", err)
 
 
 @asynccontextmanager
@@ -59,6 +67,11 @@ async def lifespan(app: FastAPI):
     app.state.diagnostics = diagnostics
 
     async def _publish_health_telemetry(snapshot):
+        logger.debug(
+            "Health telemetry broadcast: status=%s, lifecycle=%s",
+            snapshot.status.value,
+            snapshot.lifecycle.value,
+        )
         event = diagnostics.record_event(
             "health_observation",
             component="health",
@@ -71,9 +84,18 @@ async def lifespan(app: FastAPI):
     await health.publish(ws_manager)
     config_store = ConfigStore()
     app.state.config_store = config_store
+    log_level = os.environ.get("LOG_LEVEL", config_store.settings.log_level).upper()
+    logging.getLogger("bl_haos").setLevel(getattr(logging, log_level, logging.INFO))
+    logger.debug(
+        "Configuration loaded: demo_mode=%s, log_level=%s, speakers_count=%d",
+        config_store.settings.demo_mode,
+        config_store.settings.log_level,
+        len(config_store.settings.speakers),
+    )
     asyncio.create_task(_publish_supervisor_discovery(config_store.settings.native_token))
 
     if config_store.settings.demo_mode:
+        logger.debug("Running in demo mode with scenario '%s'", config_store.settings.demo_scenario)
         demo_runtime = DemoRuntime(config_store.settings.demo_scenario, health)
         app.state.demo_runtime = demo_runtime
         app.state.bt_manager = demo_runtime
@@ -108,6 +130,7 @@ async def lifespan(app: FastAPI):
             None,
         )
         if device and (device.trusted or device.paired or device.connected) and device.is_audio_sink:
+            logger.debug("Broadcasting native speaker update for %s", address)
             await native_ws_manager.broadcast(NATIVE_SPEAKER_UPDATED_EVENT, native_speaker_record(app, device))
 
     ha_bridge = MediaPlayerBridge(config_store=config_store, state_callback=_publish_native_speaker, health_registry=health)
@@ -124,6 +147,7 @@ async def lifespan(app: FastAPI):
 
     # Wire event broadcaster to WebSocket manager and HA Discovery
     def _on_bt_event(event_type: str, data):
+        logger.debug("Bluetooth event received: %s (data=%s)", event_type, data)
         asyncio.create_task(ws_manager.broadcast(event_type, data))
         if event_type in ("device_updated", "device_discovered") and hasattr(data, "address"):
             is_audio = getattr(data, "is_audio_sink", False)
@@ -163,6 +187,7 @@ async def lifespan(app: FastAPI):
             except ValueError:
                 logger.warning("Ignoring invalid persisted reconnect speaker identifier")
 
+    logger.debug("Starting AutoReconnectEngine and keepalive tasks...")
     await reconnect_engine.start()
     await ha_bridge.start_keepalive()
     health.set_lifecycle(HealthState.HEALTHY)
