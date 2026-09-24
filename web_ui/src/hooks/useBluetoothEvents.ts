@@ -101,6 +101,29 @@ export function useBluetoothEvents() {
     };
   }, [refreshData]);
 
+  useEffect(() => {
+    let unmounted = false;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+    if (isScanning) {
+      pollInterval = setInterval(async () => {
+        try {
+          const deviceList = await apiClient.getDevices(false);
+          if (!unmounted) {
+            setDevices(deviceList);
+          }
+        } catch (err) {
+          console.debug('Failed to poll devices during scan', err);
+        }
+      }, 2000);
+    }
+
+    return () => {
+      unmounted = true;
+      if (pollInterval) clearInterval(pollInterval);
+    };
+  }, [isScanning]);
+
   return {
     adapters,
     devices,

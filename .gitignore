@@ -56,9 +56,9 @@ pnpm-debug.log*
 .pnpm-store/
 .eslintcache
 .parcel-cache
-# Allow web_ui production build distribution
-!web_ui/dist/
-!web_ui/dist/**
+# Frontend build output is produced by the Docker build (multi-stage) and CI;
+# never commit it.
+web_ui/dist/
 
 # OS Artifacts
 .DS_Store

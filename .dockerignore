@@ -1,0 +1,11 @@
+# Keep the Docker context small; the web UI build stage installs its own
+# node_modules from the lockfile.
+web_ui/node_modules
+web_ui/dist
+web_ui/e2e
+web_ui/node_modules/.bin
+**/__pycache__
+**/.pytest_cache
+tests
+.githooks
+.github

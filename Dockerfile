@@ -1,4 +1,14 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm
+
+# Stage 1: build the Ingress web UI from source (dist/ is not committed).
+FROM node:22-bookworm-slim AS web_ui_build
+WORKDIR /build
+COPY web_ui/package.json web_ui/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY web_ui/ ./
+RUN npm run build
+
+# Stage 2: assemble the add-on runtime.
 FROM ${BUILD_FROM}
 
 # Set shell
@@ -34,10 +44,11 @@ RUN apt-get update \
     && sed -i '/libwireplumber-module-logind/d' /usr/share/wireplumber/wireplumber.conf 2>/dev/null || true \
     && rm -f /usr/lib/*/wireplumber-0.4/libwireplumber-module-logind.so 2>/dev/null || true
 
-# Copy root filesystem overlay and application code
+# Copy root filesystem overlay and application code; the web UI comes from the
+# build stage so the image always matches the committed sources.
 COPY rootfs /
 COPY backend /backend
-COPY web_ui/dist /var/www/bl-haos
+COPY --from=web_ui_build /build/dist /var/www/bl-haos
 
 # Install python dependencies for backend
 RUN pip3 install --no-cache-dir --prefer-binary --break-system-packages \

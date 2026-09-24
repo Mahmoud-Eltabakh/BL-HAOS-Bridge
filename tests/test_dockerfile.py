@@ -34,6 +34,16 @@ def test_dockerfile_structure():
     requirement_lines = requirements.splitlines()
     assert requirement_lines and all("==" in line for line in requirement_lines if line.strip())
 
+
+def test_dockerfile_builds_frontend_from_source():
+    """The web UI must be built inside the image; dist/ is never committed."""
+    content = Path("Dockerfile").read_text(encoding="utf-8")
+    assert "FROM node:" in content, "Dockerfile must have a Node build stage for the web UI"
+    assert "npm ci" in content, "Web build stage must install from the lockfile"
+    assert "npm run build" in content, "Web build stage must run the production build"
+    assert "COPY --from=web_ui_build" in content, "Runtime stage must copy the built UI from the build stage"
+    assert "COPY web_ui/dist" not in content, "Do not copy committed dist; it is no longer in git"
+
 def test_build_yaml_structure():
     build_path = Path("build.yaml")
     assert build_path.exists(), "build.yaml must exist"
