@@ -31,6 +31,10 @@ COMMAND_STOP_BUDGET_SECONDS = PlayerSettings.model_fields["command_stop_budget_s
 DURATION_PROBE_TIMEOUT = 10
 # Display metadata is exported to the native integration; keep it bounded.
 TITLE_MAX_LENGTH = 128
+# Home Assistant serves synthesized speech from an opaque cache hash; label it
+# for what it is rather than showing something like "2vE 5bV-rMNr9-jxFRDdHQ".
+TTS_STREAM_MARKER = "/api/tts_proxy/"
+TTS_STREAM_TITLE = "Text to speech"
 # Bound how much audio may be queued ahead of the speaker. The default
 # PulseAudio buffer is large enough that pause/stop kept playing for a while.
 PLAYER_LATENCY_MSEC = PlayerSettings.model_fields["latency_msec"].default
@@ -144,6 +148,8 @@ class MediaPlayerBridge:
             path = urlsplit(url).path
         except ValueError:
             return None
+        if TTS_STREAM_MARKER in path:
+            return TTS_STREAM_TITLE
         name = unquote(path.rsplit("/", 1)[-1]).strip()
         if not name:
             return None

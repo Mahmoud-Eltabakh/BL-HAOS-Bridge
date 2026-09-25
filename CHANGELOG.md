@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.52
+
+- Label Home Assistant text-to-speech announcements as "Text to speech" instead of showing the opaque TTS cache hash (for example "2vE 5bV-rMNr9-jxFRDdHQ") as the media title.
+
 ## 0.2.51
 
 - Name the stream that is playing. The bridge derives a readable title from the media URL immediately (so the card is labelled the moment playback starts) and refines it, plus an artist, from embedded `title`/`artist` tags during the existing background `ffprobe` pass. Both are published in the native `playback` payload and mapped to `media_title`/`media_artist` by the integration.

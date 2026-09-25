@@ -504,7 +504,8 @@ def test_title_from_url_prefers_a_readable_filename():
         == "03.athan fajr Malek Chibat Al-Hamd"
     )
     assert MediaPlayerBridge._title_from_url("http://ha:8123/audio/track.flac") == "track"
-    assert MediaPlayerBridge._title_from_url("http://ha:8123/api/tts_proxy/abc123.mp3") == "abc123"
+    # Synthesized speech lives behind a cache hash; never show that hash.
+    assert MediaPlayerBridge._title_from_url("http://ha:8123/api/tts_proxy/abc_-123.mp3") == "Text to speech"
     assert MediaPlayerBridge._title_from_url("http://ha:8123/") is None
     assert MediaPlayerBridge._title_from_url("") is None
 
