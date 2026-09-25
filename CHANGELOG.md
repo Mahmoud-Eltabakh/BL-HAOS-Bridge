@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.54
+
+- Remove multi-room. The Snapcast integration was scaffolding rather than a feature: the container shipped `snapserver`/`snapclient` and an s6 unit that created `/tmp/snapcast/snapfifo`, but nothing in the bridge ever wrote audio into that FIFO or spawned a `snapclient`, playback already goes straight to the A2DP sink, `multiroom_sync_enabled` was never read, the `/api/multiroom/*` endpoints had no UI caller, and the Home Assistant integration never referenced a group. The add-on is now honestly what it does: a native Bluetooth audio adapter.
+  - Drops the `snapserver`/`snapclient` packages, `rootfs/etc/snapcast/snapserver.conf`, the `30-snapserver` s6 unit, the `/api/multiroom/*` routes, the per-speaker `latency_offset_ms` setting and its `PUT /api/settings/speakers/{address}` field, the unused `multiroom_sync_enabled` option, and the optional `snapcast` health component.
+  - Stored settings survive the upgrade: `ConfigStore.load()` now ignores the keys this release removed instead of failing validation and silently reverting every alias, volume and adapter pin to its defaults.
+  - README, `DOCS.md` and the Ingress subtitle no longer advertise synchronized multi-room playback, and `DOCS.md` explains how to group the per-speaker `media_player` entities (or use the community Snapcast add-on with Music Assistant) if you want it.
+  - Removes the two scaffold tests and the tests that asserted the removed routes; adds coverage for the upgrade path (`tests/test_config_store.py`) and for the removal itself.
+
 ## 0.2.53
 
 - Make the Ingress dashboard readable. The previous theme removed every border and kept its surfaces within roughly 1.08:1 of each other, so cards, input wells and buttons all rendered as one flat grey mass. The palette now has a deliberate ramp (page `#151a23`, card `#242d3b`, well `#0f141c`, raised `#313d4f` — 1.26:1 to 1.33:1 apart), every surface keeps a 1px border, and buttons carry their own surface instead of rendering as floating text. Text tiers moved to audited tokens (`--neu-text` / `--neu-muted` / `--neu-faint`) that clear WCAG AA (4.5:1) on all four surfaces, form placeholders are no longer drawn at 3.8:1, and the focus ring keeps a 12:1 outline against the page.

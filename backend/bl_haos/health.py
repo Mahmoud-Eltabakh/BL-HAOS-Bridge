@@ -37,7 +37,6 @@ class FailureClass(str, Enum):
     PIPEWIRE_UNAVAILABLE = "pipewire_unavailable"
     SINK_MISSING = "sink_missing"
     SINK_UNAVAILABLE_TRANSPORT_HELD = "sink_unavailable_transport_held"
-    SNAPCAST_UNAVAILABLE = "snapcast_unavailable"
     RECONNECT_EXHAUSTED = "reconnect_exhausted"
     STARTUP_FAILED = "startup_failed"
     SHUTDOWN_INCOMPLETE = "shutdown_incomplete"

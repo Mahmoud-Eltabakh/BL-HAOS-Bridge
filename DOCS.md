@@ -1,6 +1,6 @@
 # Home Assistant Add-on: BL-HAOS (Bluetooth Audio Adapter)
 
-BL-HAOS turns your Home Assistant OS device into a Bluetooth audio transmitter and multi-room broadcasting hub. It enables streaming Home Assistant TTS announcements, local music files, web radio, and Music Assistant directly to any paired Bluetooth speakers with low latency, audiophile-grade codecs, and rock-solid background reconnection.
+BL-HAOS turns your Home Assistant OS device into a Bluetooth audio transmitter. It enables streaming Home Assistant TTS announcements, local music files, web radio, and Music Assistant directly to any paired Bluetooth speakers with low latency, audiophile-grade codecs, and rock-solid background reconnection.
 
 ---
 
@@ -41,10 +41,11 @@ The integration connects through Home Assistant's private add-on network before 
 - Use standard Home Assistant Lovelace media cards, automation actions (`media_player.play_media`, `tts.speak`), or Music Assistant to send audio directly to your speaker.
 - Volume adjustments in Home Assistant automatically synchronize with physical speaker hardware buttons via AVRCP.
 
-### Multi-Room Audio Synchronization
-- Group multiple Bluetooth speakers in the BL-HAOS Ingress dashboard.
-- Integrated Snapcast synchronization ensures sample-accurate, acoustic phase-aligned playback across all grouped speakers simultaneously.
-- Fine-tune individual speaker latency offsets (+/- ms) in the settings modal if room distance or Bluetooth buffer differences occur.
+### Multiple Speakers
+- Every connected trusted speaker is an independent `media_player` entity and can stream its own media at its own volume.
+- To play the same source on several speakers, group those entities in Home Assistant (a media player group helper) or drive them from Music Assistant.
+- Bluetooth A2DP is a point-to-point link, so this add-on does not provide sample-accurate synchronized multi-room playback. If you need phase-aligned rooms, run the community Snapcast add-on alongside Music Assistant instead.
+- Speakers sharing one Bluetooth adapter also share that controller's radio bandwidth; several concurrent streams may exceed what a single adapter can carry reliably.
 
 ---
 
@@ -92,7 +93,7 @@ The add-on log identifies BlueZ and PipeWire state; the Home Assistant log ident
 
 The Ingress dashboard keeps the operator workflow focused on adapter state, speaker discovery, connection, and native Home Assistant integration readiness. The standalone Diagnostics and Guided recovery panels are not part of the dashboard, and their operator-only routes are not exposed by the add-on. Runtime health telemetry remains available through the health endpoint for automated validation and support tooling.
 
-For offline demonstrations and SIL validation, set `BLHAOS_DEMO_MODE=true` and choose one of `healthy`, `pairing_failure`, `sink_missing`, `reconnect_exhausted`, `native_integration_unavailable`, or `restart_degraded` with `BLHAOS_DEMO_SCENARIO`. Demo mode is off by default and injects fixed adapters, speakers, events, timestamps, and recovery outcomes before live D-Bus, PipeWire, Snapcast, or Home Assistant clients are initialized. Unknown scenarios are rejected.
+For offline demonstrations and SIL validation, set `BLHAOS_DEMO_MODE=true` and choose one of `healthy`, `pairing_failure`, `sink_missing`, `reconnect_exhausted`, `native_integration_unavailable`, or `restart_degraded` with `BLHAOS_DEMO_SCENARIO`. Demo mode is off by default and injects fixed adapters, speakers, events, timestamps, and recovery outcomes before live D-Bus, PipeWire, or Home Assistant clients are initialized. Unknown scenarios are rejected.
 
 ---
 

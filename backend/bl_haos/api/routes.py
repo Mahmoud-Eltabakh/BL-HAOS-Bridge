@@ -97,7 +97,6 @@ class SpeakerUpdateRequest(BaseModel):
     preferred_adapter: str | None = None
     default_volume: int | None = Field(default=None, ge=0, le=100)
     codec_override: str | None = None
-    latency_offset_ms: int | None = Field(default=None, ge=-5000, le=5000)
 
     @field_validator("preferred_adapter")
     @classmethod
@@ -507,12 +506,7 @@ async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, r
         preferred_adapter=payload.preferred_adapter,
         default_volume=payload.default_volume,
         codec_override=payload.codec_override,
-        latency_offset_ms=payload.latency_offset_ms,
     )
-    if payload.latency_offset_ms is not None:
-        multiroom_manager = getattr(request.app.state, "multiroom_manager", None)
-        if multiroom_manager:
-            multiroom_manager.set_latency_offset(address, payload.latency_offset_ms)
     reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
     if reconnect_engine and payload.auto_reconnect is not None:
         if payload.auto_reconnect:
@@ -520,32 +514,3 @@ async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, r
         else:
             reconnect_engine.unregister_speaker(address)
     return updated
-
-
-# ==============================================================================
-# Multi-room Routes
-# ==============================================================================
-
-@router.get("/multiroom/groups")
-async def list_multiroom_groups(request: Request):
-    manager = getattr(request.app.state, "multiroom_manager", None)
-    groups = manager.get_groups() if manager else []
-    logger.debug("Listing multiroom groups: found %d groups", len(groups))
-    return groups
-
-
-@router.get("/multiroom/clients")
-async def list_multiroom_clients(request: Request):
-    manager = getattr(request.app.state, "multiroom_manager", None)
-    clients = manager.get_clients() if manager else []
-    logger.debug("Listing multiroom clients: found %d clients", len(clients))
-    return clients
-
-
-@router.post("/multiroom/speakers/{address}/latency")
-async def set_speaker_latency(address: str, payload: dict[str, int], request: Request):
-    offset = payload.get("latency_offset_ms", 0)
-    logger.debug("Setting latency offset for %s to %d ms", address, offset)
-    manager = getattr(request.app.state, "multiroom_manager", None)
-    success = manager.set_latency_offset(address, offset) if manager else True
-    return {"status": "ok", "address": address, "latency_offset_ms": offset, "updated": success}

@@ -62,7 +62,7 @@ export const App: React.FC = () => {
                 {wsConnected ? 'Live' : 'Offline'}
               </span>
             </h1>
-            <p className="text-xs neu-text-muted mt-0.5">Home Assistant OS Bluetooth Audio Adapter & Multi-Room Sync</p>
+            <p className="text-xs neu-text-muted mt-0.5">Home Assistant OS Bluetooth Audio Adapter</p>
           </div>
         </div>
 

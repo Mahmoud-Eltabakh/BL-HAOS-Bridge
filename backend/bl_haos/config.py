@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger("bl_haos.config")
 
+_MISSING = object()
+
 DEFAULT_CONFIG_PATH = "/data/bl_haos_config.json"
 FALLBACK_CONFIG_PATH = "/tmp/bl_haos_config.json"
 
@@ -23,7 +25,6 @@ class SpeakerSettings(BaseModel):
     preferred_adapter: str | None = None
     default_volume: int = Field(default=70, ge=0, le=100)
     codec_override: str | None = None
-    latency_offset_ms: int = Field(default=0, ge=-5000, le=5000)
 
     @field_validator("custom_alias")
     @classmethod
@@ -63,12 +64,35 @@ class SystemSettings(BaseModel):
     log_level: str = "info"
     default_codec: str = "auto"
     auto_reconnect_enabled: bool = True
-    multiroom_sync_enabled: bool = True
     native_token: str = Field(default="", exclude=True, repr=False)
     demo_mode: bool = False
     demo_scenario: str = "healthy"
     player: PlayerSettings = Field(default_factory=PlayerSettings)
     speakers: dict[str, SpeakerSettings] = Field(default_factory=dict)
+
+
+# Settings that older releases persisted but this build no longer models. They
+# are dropped before validation so an in-place upgrade keeps the rest of the
+# stored settings instead of failing to load and silently reverting to defaults.
+LEGACY_ROOT_KEYS = ("multiroom_sync_enabled",)
+LEGACY_SPEAKER_KEYS = ("latency_offset_ms",)
+
+
+def _drop_legacy_keys(data: dict) -> dict:
+    """Strip settings that a previous release wrote but this build no longer models."""
+    dropped: list[str] = [key for key in LEGACY_ROOT_KEYS if data.pop(key, _MISSING) is not _MISSING]
+
+    speakers = data.get("speakers")
+    if isinstance(speakers, dict):
+        for address, entry in speakers.items():
+            if isinstance(entry, dict):
+                for key in LEGACY_SPEAKER_KEYS:
+                    if entry.pop(key, _MISSING) is not _MISSING:
+                        dropped.append(f"speakers.{address}.{key}")
+
+    if dropped:
+        logger.info("Ignoring %d setting(s) removed from this release: %s", len(dropped), ", ".join(dropped))
+    return data
 
 
 class ConfigStore:
@@ -88,7 +112,7 @@ class ConfigStore:
         if self.file_path.exists():
             try:
                 data = json.loads(self.file_path.read_text(encoding="utf-8"))
-                self.settings = SystemSettings.model_validate(data)
+                self.settings = SystemSettings.model_validate(_drop_legacy_keys(data))
                 self.settings.demo_mode = self._configured_demo_mode()
                 self.settings.demo_scenario = os.environ.get("BLHAOS_DEMO_SCENARIO", self.settings.demo_scenario)
                 if not self.settings.native_token or any(ord(char) < 32 for char in self.settings.native_token):

@@ -365,48 +365,27 @@ def test_live_volume_route_validates_address_and_level():
     assert out_of_range.status_code == 422
 
 
-def test_settings_speaker_update_accepts_latency_offset(monkeypatch):
+def test_removed_multiroom_routes_are_gone():
+    """Multi-room was never wired to audio; its endpoints must not come back by accident.
+
+    Unmatched GETs are a 404. The POST may answer 405 instead: when a built UI is
+    present the Ingress static mount owns the fallthrough path and rejects verbs
+    other than GET/HEAD. Either way the route must not be reachable.
+    """
     with TestClient(app) as client:
-        updated = client.put(
-            "/api/settings/speakers/10:22:33:44:55:66",
-            json={"latency_offset_ms": -250},
+        assert client.get("/api/multiroom/groups").status_code == 404
+        assert client.get("/api/multiroom/clients").status_code == 404
+        latency_post = client.post(
+            "/api/multiroom/speakers/10:22:33:44:55:66/latency",
+            json={"latency_offset_ms": 120},
         )
-        stored = client.get("/api/settings")
-
-    assert updated.status_code == 200
-    assert updated.json()["latency_offset_ms"] == -250
-    assert stored.json()["speakers"]["10:22:33:44:55:66"]["latency_offset_ms"] == -250
+    assert latency_post.status_code in {404, 405}
 
 
-def test_settings_reject_out_of_bounds_latency_offset():
+def test_settings_reject_removed_latency_offset_field():
     with TestClient(app) as client:
         response = client.put(
             "/api/settings/speakers/10:22:33:44:55:66",
-            json={"latency_offset_ms": 99999},
-        )
-    assert response.status_code == 422
-
-
-def test_settings_update_persists_latency_into_multiroom_manager(monkeypatch):
-    with TestClient(app) as client:
-        client.put(
-            "/api/settings/speakers/30:44:55:66:77:88",
             json={"latency_offset_ms": 120},
         )
-        app.state.bt_manager._on_interfaces_added("/org/bluez/hci0/dev_30_44_55_66_77_88", {
-            "org.bluez.Device1": {
-                "Address": "30:44:55:66:77:88",
-                "Name": "Persisted Speaker",
-                "Adapter": "/org/bluez/hci0",
-                "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
-                "Class": 0x240414,
-                "Paired": True,
-                "Trusted": True,
-                "Connected": True,
-            }
-        })
-        app.state.multiroom_manager.attach_speaker("30:44:55:66:77:88", "Persisted Speaker")
-        clients = app.state.multiroom_manager.get_clients()
-        match = [c for c in clients if c.speaker_address == "30:44:55:66:77:88"]
-
-    assert match and match[0].latency_offset_ms == 120
+    assert response.status_code == 422

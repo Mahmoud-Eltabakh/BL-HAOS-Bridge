@@ -22,7 +22,6 @@ from .config import ConfigStore
 from .diagnostics import DiagnosticsService
 from .demo import DemoRuntime
 from .ha.player import MediaPlayerBridge
-from .multiroom.manager import MultiroomManager
 from .health import FailureClass, HealthRegistry, HealthState, SpeakerState
 
 logging.basicConfig(
@@ -139,11 +138,7 @@ async def lifespan(app: FastAPI):
     app.state.native_ws_manager = native_ws_manager
     health.observe_component("native_bridge", HealthState.HEALTHY, required=False, source="startup")
 
-    # Initialize Multi-room Manager
-    multiroom_manager = MultiroomManager(health_registry=health, config_store=config_store)
-    app.state.multiroom_manager = multiroom_manager
     health.observe_component("pipewire", HealthState.UNKNOWN, required=False, source="startup")
-    health.observe_component("snapcast", HealthState.UNKNOWN, required=False, source="startup")
 
     # Wire event broadcaster to WebSocket manager and HA Discovery
     def _broadcast_bt_event(event_type: str, data):
@@ -168,10 +163,7 @@ async def lifespan(app: FastAPI):
                     ha_bridge.unregister_keepalive(data.address)
                 reconnect_engine.register_speaker(data.address)
             if is_conn and is_audio:
-                multiroom_manager.attach_speaker(data.address, getattr(data, "alias", None) or getattr(data, "name", None) or data.address)
                 ha_bridge.register_keepalive(data.address)
-            elif not is_conn and is_audio:
-                multiroom_manager.detach_speaker(data.address)
 
     bt_manager.add_event_listener(_on_bt_event)
 
@@ -214,7 +206,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="BL-HAOS Bluetooth Audio Adapter",
-    description="High-fidelity Bluetooth Audio Adapter & Multi-room Streaming for Home Assistant OS",
+    description="High-fidelity Bluetooth Audio Adapter for Home Assistant OS",
     version="0.1.0",
     lifespan=lifespan,
     root_path="",

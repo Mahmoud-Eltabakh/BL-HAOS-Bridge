@@ -48,14 +48,14 @@ def test_nested_diagnostics_redact_credentials_and_url_userinfo():
     assert "user:pass" not in detail
 
 
-def test_required_precedence_and_optional_snapcast_isolation():
+def test_required_precedence_and_optional_component_isolation():
     registry = HealthRegistry()
     registry.set_lifecycle(HealthState.HEALTHY)
     registry.observe_component("bluetooth", HealthState.HEALTHY)
     registry.observe_component("pipewire", HealthState.HEALTHY)
     registry.observe_component(
-        "snapcast", HealthState.DEGRADED, required=False,
-        failure=FailureClass.SNAPCAST_UNAVAILABLE,
+        "native_bridge", HealthState.DEGRADED, required=False,
+        failure=FailureClass.NATIVE_INTEGRATION_UNAVAILABLE,
     )
     assert registry.snapshot().status == HealthState.HEALTHY
 

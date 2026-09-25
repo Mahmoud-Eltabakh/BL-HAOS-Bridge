@@ -16,8 +16,6 @@ def test_dockerfile_structure():
         "pipewire-bin",
         "wireplumber",
         "libspa-0.2-bluetooth",
-        "snapserver",
-        "snapclient",
         "python3",
         "pulseaudio-utils",
     ]
@@ -43,6 +41,16 @@ def test_dockerfile_builds_frontend_from_source():
     assert "npm run build" in content, "Web build stage must run the production build"
     assert "COPY --from=web_ui_build" in content, "Runtime stage must copy the built UI from the build stage"
     assert "COPY web_ui/dist" not in content, "Do not copy committed dist; it is no longer in git"
+
+def test_dockerfile_has_no_snapcast_scaffold():
+    """Multi-room was removed: no Snapcast packages, config, or service unit."""
+    content = Path("Dockerfile").read_text(encoding="utf-8")
+    assert "snapserver" not in content, "Snapcast packages must not be installed"
+    assert "snapclient" not in content, "Snapcast packages must not be installed"
+    assert not Path("rootfs/etc/snapcast").exists(), "Snapcast configuration must be gone"
+    assert not Path("rootfs/etc/s6-overlay/s6-rc.d/30-snapserver").exists(), "Snapcast service must be gone"
+    assert not Path("rootfs/etc/s6-overlay/s6-rc.d/user/contents.d/30-snapserver").exists()
+
 
 def test_build_yaml_structure():
     build_path = Path("build.yaml")
