@@ -6,7 +6,6 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..bluetooth.models import AdapterInfo, DeviceInfo
@@ -38,28 +37,6 @@ def require_native_auth(authorization: str | None, request: Request) -> None:
     supplied = authorization.removeprefix("Bearer ") if isinstance(authorization, str) else ""
     if not expected or not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Native bridge authentication required")
-
-
-def is_ingress_request(request: Request) -> bool:
-    """Detect requests that arrived through the authenticated Supervisor Ingress proxy.
-
-    The Supervisor nginx ingress proxy injects X-Ingress-Path on every proxied
-    request after the user has authenticated against Home Assistant. The add-on
-    exposes no public ports (config.yaml has no ``ports`` mapping), so only the
-    Supervisor can reach this service and the header cannot be forged remotely.
-    """
-    return bool(request.headers.get("x-ingress-path"))
-
-
-def require_operator_auth(authorization: str | None, request: Request) -> None:
-    """Allow native-bridge credential holders or authenticated Ingress operators."""
-    expected = request.app.state.config_store.settings.native_token
-    supplied = authorization.removeprefix("Bearer ") if isinstance(authorization, str) else ""
-    if expected and hmac.compare_digest(supplied, expected):
-        return
-    if is_ingress_request(request):
-        return
-    raise HTTPException(status_code=401, detail="Operator authentication required")
 
 
 def native_diagnostics(app: Any) -> dict[str, Any]:
@@ -172,13 +149,6 @@ class NativeCommandRequest(BaseModel):
         return self
 
 
-class RecoveryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    action_id: Literal["refresh_diagnostics", "retry_reconnect", "refresh_device", "recheck_dependency"]
-    target: str | None = Field(default=None, max_length=64)
-
-
 def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str, Any]:
     """Expose only trusted audio-sink metadata for the native integration."""
     address = device.address.strip().lower().replace("-", ":")
@@ -235,77 +205,6 @@ async def get_native_diagnostics(request: Request):
     """Expose sanitized native bridge readiness for the Ingress dashboard."""
     logger.debug("Native diagnostics requested")
     return native_diagnostics(request.app)
-
-
-def operator_diagnostics(request: Request) -> dict[str, Any]:
-    """Return one bounded projection shared by support and operator clients."""
-    demo_runtime = getattr(request.app.state, "demo_runtime", None)
-    if demo_runtime is not None:
-        return demo_runtime.snapshot()
-    service = getattr(request.app.state, "diagnostics", None)
-    if service is None:
-        raise HTTPException(status_code=503, detail="Diagnostics unavailable")
-    adapters = [
-        {"name": adapter.interface, "powered": adapter.powered, "discovering": adapter.discovering}
-        for adapter in request.app.state.bt_manager.get_adapters()
-    ]
-    speakers = request.app.state.bt_manager.get_devices(audio_only=True)
-    sinks = {
-        "available": any(device.connected for device in speakers),
-        "count": sum(bool(device.connected) for device in speakers),
-    }
-    return service.snapshot(adapters=adapters, sinks=sinks)
-
-
-@router.get("/diagnostics")
-async def get_diagnostics(request: Request):
-    logger.debug("Operator diagnostics requested")
-    return operator_diagnostics(request)
-
-
-@router.get("/recovery")
-async def get_recovery(request: Request, authorization: str | None = Header(default=None)):
-    require_operator_auth(authorization, request)
-    service = getattr(request.app.state, "recovery", None)
-    if service is None:
-        raise HTTPException(status_code=503, detail="Recovery unavailable")
-    logger.debug("Recovery contract requested")
-    return service.contract(operator_diagnostics(request))
-
-
-@router.post("/recovery/actions")
-async def execute_recovery(payload: RecoveryRequest, request: Request, authorization: str | None = Header(default=None)):
-    require_operator_auth(authorization, request)
-    service = getattr(request.app.state, "recovery", None)
-    if service is None:
-        raise HTTPException(status_code=503, detail="Recovery unavailable")
-    logger.debug("Executing recovery action '%s' on target '%s'", payload.action_id, payload.target)
-    try:
-        result = await service.execute(payload.action_id, payload.target)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    refreshed = operator_diagnostics(request)
-    result["diagnostics"] = refreshed
-    logger.debug("Recovery action '%s' completed with status: %s", payload.action_id, result.get("status"))
-    return result
-
-
-@router.get("/support/bundle")
-async def get_support_bundle(request: Request):
-    service = getattr(request.app.state, "diagnostics", None)
-    if service is None:
-        raise HTTPException(status_code=503, detail="Diagnostics unavailable")
-    logger.debug("Support bundle download requested")
-    payload = operator_diagnostics(request)
-    bundle = service.support_bundle(
-        adapters=payload["adapters"],
-        sinks=payload["sink_availability"],
-    )
-    return JSONResponse(
-        content=bundle,
-        media_type="application/json",
-        headers={"Content-Disposition": 'attachment; filename="bl-haos-support-bundle.json"'},
-    )
 
 
 @router.get("/native/identity")

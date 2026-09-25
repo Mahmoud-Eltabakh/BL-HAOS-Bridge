@@ -24,16 +24,16 @@ export const AdapterStatus: React.FC<AdapterStatusProps> = ({ adapters, onRefres
   };
 
   return (
-    <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl p-4 flex flex-wrap items-center gap-4" aria-live="polite">
-      <div className="flex items-center space-x-2 text-slate-300 font-semibold text-sm mr-2">
-        <Radio className="w-4 h-4 text-blue-400" />
-        <span>Bluetooth Adapters:</span>
+    <div className="neu-surface rounded-lg px-3 py-2.5 flex flex-wrap items-center gap-2.5" aria-live="polite">
+      <div className="flex items-center space-x-2 text-slate-300 font-semibold text-xs mr-1">
+        <Radio className="w-3.5 h-3.5 text-blue-400" />
+        <span>Adapters</span>
       </div>
 
       {adapters.map((adapter) => (
         <div
           key={adapter.interface}
-          className="bg-slate-900/90 border border-slate-700 rounded-lg px-3 py-1.5 flex items-center space-x-3 text-xs"
+          className="neu-inset rounded-md px-2.5 py-1 flex items-center space-x-2.5 text-[11px]"
         >
           <span className={`w-2 h-2 rounded-full ${adapter.powered ? 'bg-emerald-400' : 'bg-rose-500'}`} />
           <span className="font-semibold text-slate-200">{adapter.interface}</span>
@@ -42,7 +42,7 @@ export const AdapterStatus: React.FC<AdapterStatusProps> = ({ adapters, onRefres
             onClick={() => void togglePower(adapter.interface, adapter.powered)}
             disabled={pending !== null}
             aria-label={`${adapter.powered ? 'Power off' : 'Power on'} ${adapter.interface}`}
-            className={`p-1 rounded hover:bg-slate-800 transition ${adapter.powered ? 'text-emerald-400' : 'text-slate-500'}`}
+            className={`neu-button p-1 rounded ${adapter.powered ? 'text-emerald-400' : 'text-slate-500'}`}
             title="Toggle Adapter Power"
           >
             <Power className="w-3.5 h-3.5" />

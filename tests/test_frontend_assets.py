@@ -23,8 +23,6 @@ def test_ui_components_exist():
         "web_ui/src/components/SettingsModal.tsx",
         "web_ui/src/api/client.ts",
         "web_ui/src/hooks/useBluetoothEvents.ts",
-        "web_ui/src/components/DiagnosticsPanel.tsx",
-        "web_ui/src/components/RecoveryPanel.tsx",
     ]
     for comp in expected_components:
         p = Path(comp)
@@ -78,9 +76,9 @@ def test_modal_hooks_are_declared_before_early_returns():
 
     client_ts = Path("web_ui/src/api/client.ts").read_text(encoding="utf-8")
     app = Path("web_ui/src/App.tsx").read_text(encoding="utf-8")
-    assert "getDiagnostics" in client_ts
-    assert "executeRecovery" in client_ts
-    assert "support/bundle" in client_ts
-    assert "DiagnosticsPanel" in app
-    assert "RecoveryPanel" in app
-    assert "demo_mode" in app
+    assert "getDiagnostics" not in client_ts
+    assert "executeRecovery" not in client_ts
+    assert "support/bundle" not in client_ts
+    assert "DiagnosticsPanel" not in app
+    assert "RecoveryPanel" not in app
+    assert "demo_mode" not in app

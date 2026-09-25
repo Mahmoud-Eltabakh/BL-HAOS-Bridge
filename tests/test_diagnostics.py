@@ -46,34 +46,6 @@ def test_diagnostics_projection_is_versioned_and_uses_canonical_health():
     assert payload["timestamp"] == 1000.0
 
 
-def test_support_bundle_redacts_sensitive_values_and_is_deterministic():
-    service = populated_service()
-    service.record_event(
-        "playback_failure",
-        component="pipewire",
-        detail={
-            "authorization": "Bearer native-secret",
-            "url": "https://user:pass@example.test/media?token=secret",
-            "dbus_payload": {"Address": "AA:BB:CC:11:22:33"},
-            "output": "x" * 1000,
-        },
-        failure_class=FailureClass.PIPEWIRE_UNAVAILABLE,
-    )
-
-    first = service.support_bundle()
-    second = service.support_bundle()
-    encoded = json.dumps(first, sort_keys=True)
-
-    assert first == second
-    assert "native-secret" not in encoded
-    assert "user:pass" not in encoded
-    assert "token=secret" not in encoded
-    assert "dbus_payload" not in encoded
-    assert len(encoded.encode()) <= service.MAX_BUNDLE_BYTES
-    assert first["diagnostics"]["recent_failures"]
-    assert first["versions"] == {"diagnostics": 1, "events": 1, "health": 1}
-
-
 def test_event_history_is_bounded_and_correlation_is_stable():
     service = populated_service()
     first = service.record_event("startup", component="bridge")

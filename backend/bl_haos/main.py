@@ -21,7 +21,6 @@ from .bluetooth.reconnect import AutoReconnectEngine
 from .config import ConfigStore
 from .diagnostics import DiagnosticsService
 from .demo import DemoRuntime
-from .recovery import RecoveryService
 from .ha.player import MediaPlayerBridge
 from .multiroom.manager import MultiroomManager
 from .health import FailureClass, HealthRegistry, HealthState, SpeakerState
@@ -108,7 +107,6 @@ async def lifespan(app: FastAPI):
             return None
 
         app.state.publish_native_speaker = _publish_demo_speaker
-        app.state.recovery = RecoveryService(health, diagnostics, demo_runtime)
         await health.publish(ws_manager)
         yield
         health.set_lifecycle(HealthState.STOPPED)
@@ -117,7 +115,6 @@ async def lifespan(app: FastAPI):
     bt_manager = BluetoothManager(health_registry=health)
     await bt_manager.initialize()
     app.state.bt_manager = bt_manager
-    app.state.recovery = RecoveryService(health, diagnostics, bt_manager)
     health.observe_component(
         "bluetooth",
         HealthState.HEALTHY if bt_manager.bus is not None else HealthState.UNAVAILABLE,

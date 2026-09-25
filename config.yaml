@@ -1,6 +1,6 @@
 name: "BL-HAOS"
 slug: "bl_haos"
-version: "0.2.49"
+version: "0.2.50"
 description: "High-fidelity Bluetooth audio streaming and multi-room adapter for Home Assistant OS"
 url: "https://github.com/Mahmoud-Eltabakh/BL-HAOS-Bridge"
 image: "ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge"

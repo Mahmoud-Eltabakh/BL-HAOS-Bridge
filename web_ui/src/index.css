@@ -4,6 +4,14 @@
 
 :root {
   color-scheme: dark;
+  --neu-surface: #202631;
+  --neu-surface-raised: #252c38;
+  --neu-surface-deep: #1a2029;
+  --neu-text: #e2e8f0;
+  --neu-muted: #94a3b8;
+  --neu-highlight: rgba(255, 255, 255, 0.055);
+  --neu-shadow-dark: rgba(8, 12, 18, 0.72);
+  --neu-shadow-soft: rgba(54, 65, 82, 0.72);
 }
 
 body {
@@ -11,6 +19,58 @@ body {
   display: flex;
   min-width: 320px;
   min-height: 100vh;
+  background: var(--neu-surface);
+  color: var(--neu-text);
+}
+
+@layer components {
+  .neu-page {
+    background: var(--neu-surface);
+    color: var(--neu-text);
+  }
+
+  .neu-surface {
+    background: var(--neu-surface-raised);
+    border: 0;
+    box-shadow: 8px 8px 18px var(--neu-shadow-dark), -8px -8px 18px var(--neu-shadow-soft);
+  }
+
+  .neu-surface-subtle {
+    background: var(--neu-surface);
+    border: 0;
+    box-shadow: 5px 5px 12px var(--neu-shadow-dark), -5px -5px 12px var(--neu-shadow-soft);
+  }
+
+  .neu-inset {
+    background: var(--neu-surface-deep);
+    border: 0;
+    box-shadow: inset 4px 4px 9px var(--neu-shadow-dark), inset -4px -4px 9px var(--neu-shadow-soft);
+  }
+
+  .neu-button {
+    border: 0;
+    box-shadow: 4px 4px 9px var(--neu-shadow-dark), -4px -4px 9px var(--neu-shadow-soft);
+    transition: box-shadow 150ms ease, transform 150ms ease, color 150ms ease;
+  }
+
+  .neu-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .neu-button:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: inset 3px 3px 7px var(--neu-shadow-dark), inset -3px -3px 7px var(--neu-shadow-soft);
+  }
+
+  .neu-control {
+    border: 0;
+    box-shadow: inset 4px 4px 9px var(--neu-shadow-dark), inset -4px -4px 9px var(--neu-shadow-soft);
+  }
+
+  .neu-range {
+    accent-color: #60a5fa;
+    box-shadow: inset 3px 3px 7px var(--neu-shadow-dark), inset -3px -3px 7px var(--neu-shadow-soft);
+  }
 }
 
 :focus-visible {

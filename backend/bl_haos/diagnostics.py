@@ -1,4 +1,4 @@
-"""Bounded operator diagnostics, support export, and correlated runtime events."""
+"""Bounded health observations and correlated runtime events."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ class DiagnosticsService:
     MAX_EVENTS = 50
     MAX_EVENT_AGE = 24 * 60 * 60
     MAX_EVENT_BYTES = 4096
-    MAX_BUNDLE_BYTES = 64 * 1024
     MAX_COLLECTION_ITEMS = 100
 
     _OMITTED_KEYS = {"dbus_payload", "raw_dbus", "raw_output", "media", "media_url", "output"}
@@ -155,28 +154,3 @@ class DiagnosticsService:
             "event_count": len(self.events()),
         }
 
-    def support_bundle(self, *, adapters: Any = None, sinks: Any = None) -> dict[str, Any]:
-        bundle = {
-            "schema": "bl-haos.support-bundle",
-            "versions": {"diagnostics": self.CONTRACT_VERSION, "events": self.EVENT_VERSION, "health": 1},
-            "diagnostics": self.snapshot(adapters=adapters, sinks=sinks),
-            "lifecycle": self.health.snapshot().lifecycle.value,
-            "events": self.events(),
-        }
-        encoded = json.dumps(self._bounded(bundle), sort_keys=True, separators=(",", ":"))
-        if len(encoded.encode()) > self.MAX_BUNDLE_BYTES:
-            bundle["events"] = []
-            encoded = json.dumps(self._bounded(bundle), sort_keys=True, separators=(",", ":"))
-        if len(encoded.encode()) > self.MAX_BUNDLE_BYTES:
-            bundle["diagnostics"]["recent_failures"] = []
-            bundle["diagnostics"]["speakers"] = []
-            bundle["diagnostics"]["adapters"] = []
-            encoded = json.dumps(self._bounded(bundle), sort_keys=True, separators=(",", ":"))
-        if len(encoded.encode()) > self.MAX_BUNDLE_BYTES:
-            bundle["diagnostics"] = {
-                "contract_version": self.CONTRACT_VERSION,
-                "status": bundle["diagnostics"]["status"],
-                "lifecycle": bundle["diagnostics"]["lifecycle"],
-                "event_count": 0,
-            }
-        return self._bounded(bundle)

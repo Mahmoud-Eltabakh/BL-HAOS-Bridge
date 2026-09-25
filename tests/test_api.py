@@ -27,59 +27,10 @@ def test_native_diagnostics_are_sanitized(monkeypatch):
     assert "credential" not in str(diagnostics).lower()
 
 
-def test_operator_diagnostics_and_support_bundle_are_bounded():
-    with TestClient(app) as client:
-        diagnostics = client.get("/api/diagnostics")
-        bundle = client.get("/api/support/bundle")
-
-    assert diagnostics.status_code == 200
-    data = diagnostics.json()
-    assert data["contract_version"] == 1
-    assert data["lifecycle"] in {"healthy", "degraded", "stopping", "stopped"}
-    assert "last_failure" in data
-    assert bundle.status_code == 200
-    assert bundle.headers["content-type"].startswith("application/json")
-    assert "attachment" in bundle.headers["content-disposition"]
-    assert bundle.json()["schema"] == "bl-haos.support-bundle"
-
-
 def test_native_transport_requires_credential():
     with TestClient(app) as client:
         assert client.get("/api/native/identity").status_code == 401
         assert client.get("/api/native/speakers").status_code == 401
-
-
-def test_recovery_contract_requires_native_auth_and_accepts_only_bounded_actions(monkeypatch):
-    with TestClient(app) as client:
-        assert client.get("/api/recovery").status_code == 401
-        token = app.state.config_store.settings.native_token
-        headers = {"Authorization": f"Bearer {token}"}
-        contract = client.get("/api/recovery", headers=headers)
-        assert contract.status_code == 200
-        assert contract.json()["contract_version"] == 1
-        invalid = client.post(
-            "/api/recovery/actions",
-            headers=headers,
-            json={"action_id": "shell", "target": "aa:bb:cc:11:22:33"},
-        )
-        assert invalid.status_code == 422
-        malformed = client.post(
-            "/api/recovery/actions",
-            headers=headers,
-            json={"action_id": "retry_reconnect", "target": "not-a-device"},
-        )
-        assert malformed.status_code == 422
-
-        connect = AsyncMock(return_value=True)
-        monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
-        result = client.post(
-            "/api/recovery/actions",
-            headers=headers,
-            json={"action_id": "retry_reconnect", "target": "AA-BB-CC-11-22-33"},
-        )
-        assert result.status_code == 200
-        assert result.json()["target"] == "aa:bb:cc:11:22:33"
-        connect.assert_awaited_once_with("aa:bb:cc:11:22:33")
 
 
 def test_native_auth_failures_are_generic_and_never_reflect_the_expected_token():
@@ -375,40 +326,6 @@ def test_native_command_rejects_inconsistent_media_payload_without_execution(mon
 
     assert response.status_code == 422
     execute.assert_not_awaited()
-
-
-def test_recovery_contract_is_readable_through_ingress_without_native_token():
-    """The Ingress dashboard must be able to read recovery guidance (401 regression)."""
-    with TestClient(app) as client:
-        anonymous = client.get("/api/recovery")
-        ingress = client.get("/api/recovery", headers={"X-Ingress-Path": "/ingress/bl_haos"})
-        native_token = app.state.config_store.settings.native_token
-        native = client.get("/api/recovery", headers={"Authorization": f"Bearer {native_token}"})
-
-    assert anonymous.status_code == 401
-    assert ingress.status_code == 200
-    assert ingress.json()["contract_version"] == 1
-    assert native.status_code == 200
-
-
-def test_recovery_execution_is_blocked_without_ingress_or_native_credential(monkeypatch):
-    with TestClient(app) as client:
-        connect = AsyncMock(return_value=True)
-        monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
-        anonymous = client.post(
-            "/api/recovery/actions",
-            json={"action_id": "retry_reconnect", "target": "aa:bb:cc:11:22:33"},
-        )
-        ingress = client.post(
-            "/api/recovery/actions",
-            headers={"X-Ingress-Path": "/ingress/bl_haos"},
-            json={"action_id": "retry_reconnect", "target": "aa:bb:cc:11:22:33"},
-        )
-
-    assert anonymous.status_code == 401
-    assert ingress.status_code == 200
-    assert ingress.json()["result"] == "succeeded"
-    connect.assert_awaited_once_with("aa:bb:cc:11:22:33")
 
 
 def test_native_auth_still_rejects_ingress_header_alone():

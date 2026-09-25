@@ -4,9 +4,7 @@ import { SpeakerCard } from './components/SpeakerCard';
 import { DiscoveryModal } from './components/DiscoveryModal';
 import { AdapterStatus } from './components/AdapterStatus';
 import { SettingsModal } from './components/SettingsModal';
-import { apiClient, DeviceInfo, NativeDiagnostics, OperatorDiagnostics, RecoveryContract } from './api/client';
-import { DiagnosticsPanel } from './components/DiagnosticsPanel';
-import { RecoveryPanel } from './components/RecoveryPanel';
+import { apiClient, DeviceInfo, NativeDiagnostics } from './api/client';
 import { AlertCircle, Bluetooth, Plus, Volume2, RefreshCw, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -16,17 +14,11 @@ export const App: React.FC = () => {
   const [diagnostics, setDiagnostics] = useState<NativeDiagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [operatorDiagnostics, setOperatorDiagnostics] = useState<OperatorDiagnostics | null>(null);
-  const [recovery, setRecovery] = useState<RecoveryContract | null>(null);
-  const [operatorLoading, setOperatorLoading] = useState(true);
-  const [operatorError, setOperatorError] = useState<string | null>(null);
 
   const pairedSpeakers = devices.filter((d) => d.paired);
 
   const refreshDiagnostics = async () => {
-    setOperatorLoading(true);
     setDiagnosticsError(null);
-    setOperatorError(null);
 
     try {
       setDiagnostics(await apiClient.getNativeDiagnostics());
@@ -35,22 +27,6 @@ export const App: React.FC = () => {
       setDiagnosticsError(error instanceof Error ? error.message : 'Native diagnostics are unavailable');
     }
 
-    try {
-      const nextDiagnostics = await apiClient.getDiagnostics();
-      setOperatorDiagnostics(nextDiagnostics);
-    } catch (error) {
-      setOperatorDiagnostics(null);
-      setOperatorError(error instanceof Error ? error.message : 'Diagnostics are unavailable');
-    }
-
-    try {
-      setRecovery(await apiClient.getRecovery());
-    } catch {
-      // Recovery routes require native auth; keep operator diagnostics available without it.
-      setRecovery(null);
-    } finally {
-      setOperatorLoading(false);
-    }
   };
 
   useEffect(() => {
@@ -63,11 +39,11 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 bg-slate-900 text-slate-100 p-6 md:p-10 max-w-7xl mx-auto w-full">
+    <div className="neu-page flex-1 text-slate-100 p-6 md:p-10 max-w-7xl mx-auto w-full">
       {/* Top Navbar */}
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-8 border-b border-slate-800">
         <div className="flex items-center space-x-3.5">
-          <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/20 text-white">
+          <div className="neu-button p-3 bg-blue-600 rounded-2xl text-white">
             <Bluetooth className="w-7 h-7" />
           </div>
           <div>
@@ -93,14 +69,14 @@ export const App: React.FC = () => {
         <div className="flex items-center space-x-3">
           <button
             onClick={refreshAll}
-            className="p-2.5 text-slate-400 hover:text-white bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 transition"
+            className="neu-button p-2.5 text-slate-400 hover:text-white bg-slate-800 rounded-xl"
             title="Refresh State"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
           <button
             onClick={() => setIsDiscoveryOpen(true)}
-            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-medium text-sm rounded-xl flex items-center space-x-2 shadow-lg shadow-blue-600/20 transition"
+            className="neu-button px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-medium text-sm rounded-xl flex items-center space-x-2"
           >
             <Plus className="w-4 h-4" />
             <span>Add Speaker</span>
@@ -112,22 +88,13 @@ export const App: React.FC = () => {
       <div className="mt-6">
         <AdapterStatus adapters={adapters} onRefresh={refreshAll} />
       </div>
-      {bluetoothError && <div className="mt-4 rounded-xl border border-rose-800/80 bg-rose-950/50 px-4 py-3 text-sm text-rose-200" role="alert">{bluetoothError} <button className="ml-2 underline" onClick={refreshAll}>Retry</button></div>}
-
-      <div data-demo-mode={operatorDiagnostics?.demo_mode ? 'true' : 'false'}>
-        <DiagnosticsPanel diagnostics={operatorDiagnostics} loading={operatorLoading} error={operatorError} onExport={() => void apiClient.downloadSupportBundle()} />
-      </div>
-      <RecoveryPanel
-        contract={recovery}
-        target={operatorDiagnostics?.last_failure?.speaker}
-        onComplete={(result) => { if (result.diagnostics) setOperatorDiagnostics(result.diagnostics); }}
-      />
+      {bluetoothError && <div className="neu-surface-subtle mt-4 rounded-xl px-4 py-3 text-sm text-rose-200" role="alert">{bluetoothError} <button className="ml-2 underline" onClick={refreshAll}>Retry</button></div>}
 
       {/* Integration Status Accordion */}
-      <section className="mt-4 border border-slate-800 bg-slate-800/30 rounded-xl overflow-hidden transition-all" aria-live="polite">
+      <section className="neu-surface mt-4 rounded-lg overflow-hidden transition-all" aria-live="polite">
         <button
           onClick={() => setShowDiagnostics(!showDiagnostics)}
-          className="w-full px-4 py-2.5 flex items-center justify-between text-xs text-slate-400 hover:text-slate-200 transition"
+          className="w-full px-3 py-2 flex items-center justify-between text-xs text-slate-400 hover:text-slate-200 transition"
         >
           <div className="flex items-center space-x-2">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
@@ -143,7 +110,7 @@ export const App: React.FC = () => {
         </button>
 
         {showDiagnostics && (
-          <div className="px-4 pb-3.5 pt-1 border-t border-slate-800/80 bg-slate-900/40">
+          <div className="neu-inset px-3 pb-3 pt-1">
             {diagnosticsError ? (
               <p className="flex items-center gap-2 text-xs text-rose-300"><AlertCircle className="w-3.5 h-3.5" />{diagnosticsError}</p>
             ) : diagnostics ? (
@@ -160,8 +127,8 @@ export const App: React.FC = () => {
       </section>
 
       {/* Main Speakers Grid */}
-      <main className="mt-8">
-        <div className="flex items-center justify-between mb-5">
+      <main className="mt-6">
+        <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-bold text-slate-200 flex items-center gap-2">
             <Volume2 className="w-5 h-5 text-blue-400" />
             <span>Speakers</span>
@@ -170,7 +137,7 @@ export const App: React.FC = () => {
         </div>
 
         {pairedSpeakers.length === 0 ? (
-          <div className="bg-slate-800/40 border border-dashed border-slate-700 rounded-2xl p-12 text-center">
+          <div className="neu-surface rounded-2xl p-12 text-center">
             <Volume2 className="w-12 h-12 mx-auto text-slate-600 mb-3" />
             <h3 className="text-base font-semibold text-slate-300">No speakers added yet</h3>
             <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
@@ -178,7 +145,7 @@ export const App: React.FC = () => {
             </p>
             <button
               onClick={() => setIsDiscoveryOpen(true)}
-              className="mt-5 px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg inline-flex items-center space-x-1.5 transition"
+              className="neu-button mt-5 px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg inline-flex items-center space-x-1.5"
             >
               <Plus className="w-4 h-4" />
               <span>Add Speaker</span>

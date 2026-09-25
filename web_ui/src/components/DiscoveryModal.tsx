@@ -165,9 +165,9 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
       aria-labelledby="discovery-dialog-title"
       id="discovery-dialog"
     >
-      <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]">
+      <div className="neu-surface rounded-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]">
         {/* Header */}
-        <div className="p-5 border-b border-slate-700 flex items-center justify-between bg-slate-900/50">
+        <div className="neu-inset p-4 flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <div className="p-2.5 bg-blue-600/20 text-blue-400 rounded-xl">
               <Bluetooth className="w-5 h-5" />
@@ -180,7 +180,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
           <button
             ref={closeButtonRef}
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700 transition"
+              className="neu-button p-2 text-slate-400 hover:text-white rounded-lg"
             aria-label="Close dialog"
           >
             <X className="w-5 h-5" />
@@ -207,7 +207,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
         )}
 
         {/* Scan & Search Action Bar */}
-        <div className="p-4 bg-slate-900/30 border-b border-slate-700/80 space-y-3">
+        <div className="neu-inset p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             {/* Live Scan Indicator */}
             <div className="flex items-center space-x-2">
@@ -219,7 +219,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
 
             <div className="flex items-center space-x-2">
               {showPinInput ? (
-                <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1">
+                <div className="neu-inset flex items-center space-x-1.5 rounded-lg px-2 py-1">
                   <Key className="w-3.5 h-3.5 text-slate-400" />
                   <input
                     type="text"
@@ -233,7 +233,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               ) : (
                 <button
                   onClick={() => setShowPinInput(true)}
-                  className="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 bg-slate-800 border border-slate-700 rounded-lg transition"
+                  className="neu-button px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 rounded-lg"
                 >
                   Custom PIN
                 </button>
@@ -241,8 +241,8 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
 
               <button
                 onClick={handleToggleScan}
-                className={`px-4 py-1.5 text-xs font-semibold rounded-lg flex items-center space-x-2 transition ${
-                  isScanning ? 'bg-slate-700 text-slate-200 hover:bg-slate-600' : 'bg-blue-600 text-white hover:bg-blue-500'
+                className={`neu-button px-4 py-1.5 text-xs font-semibold rounded-lg flex items-center space-x-2 ${
+                  isScanning ? 'text-slate-200' : 'bg-blue-600 text-white hover:bg-blue-500'
                 }`}
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
@@ -260,7 +260,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search by MAC address or name (e.g. EC:81 or Logitech)..."
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="neu-control w-full rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
               />
               {searchQuery && (
                 <button
@@ -277,8 +277,8 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                 onClick={() => setAudioOnlyFilter(false)}
                 className={`flex-1 sm:flex-none px-3 py-2 text-xs rounded-xl flex items-center justify-center space-x-1.5 border transition ${
                   !audioOnlyFilter
-                    ? 'bg-blue-600/30 text-blue-300 border-blue-500/50'
-                    : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-300'
+                    ? 'neu-inset text-blue-300'
+                    : 'neu-button text-slate-400 hover:text-slate-300'
                 }`}
               >
                 <Radio className="w-3.5 h-3.5" />
@@ -288,8 +288,8 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                 onClick={() => setAudioOnlyFilter(true)}
                 className={`flex-1 sm:flex-none px-3 py-2 text-xs rounded-xl flex items-center justify-center space-x-1.5 border transition ${
                   audioOnlyFilter
-                    ? 'bg-blue-600/30 text-blue-300 border-blue-500/50'
-                    : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-300'
+                    ? 'neu-inset text-blue-300'
+                    : 'neu-button text-slate-400 hover:text-slate-300'
                 }`}
               >
                 <Volume2 className="w-3.5 h-3.5" />
@@ -300,7 +300,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
         </div>
 
         {/* Device List */}
-        <div className="p-5 overflow-y-auto space-y-3 flex-1">
+        <div className="p-4 overflow-y-auto space-y-2 flex-1">
           {filteredDevices.length === 0 ? (
             <div className="text-center py-10 text-slate-400">
               <Bluetooth className="w-12 h-12 mx-auto text-slate-600 mb-3" />
@@ -324,7 +324,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               return (
                 <div
                   key={dev.address}
-                  className="bg-slate-900/60 border border-slate-700/70 hover:border-slate-600 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition"
+                  className="neu-surface-subtle rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition"
                 >
                   <div className="flex items-center space-x-3.5">
                     <div className={`p-2.5 rounded-lg ${dev.is_audio_sink ? 'bg-blue-600/20 text-blue-400' : 'bg-slate-800 text-slate-400'}`}>
@@ -372,7 +372,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                         onClick={() => handleDisconnect(dev.address)}
                         disabled={isLoading}
                         aria-label={`Disconnect ${displayName}`}
-                        className="px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-300 text-xs font-medium rounded-lg flex items-center space-x-1.5 transition disabled:opacity-50"
+                        className="neu-button px-3 py-1.5 text-amber-300 text-xs font-medium rounded-lg flex items-center space-x-1.5 disabled:opacity-50"
                       >
                         <Power className="w-3.5 h-3.5" />
                         <span>{isLoading ? '...' : 'Disconnect'}</span>
@@ -382,7 +382,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                         onClick={() => handlePair(dev.address)}
                         disabled={isLoading}
                         aria-label={`Connect to ${displayName}`}
-                        className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg flex items-center space-x-1.5 transition disabled:opacity-50"
+                        className="neu-button px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg flex items-center space-x-1.5 disabled:opacity-50"
                       >
                         <Plus className="w-3.5 h-3.5" />
                         <span>{isLoading ? 'Connecting...' : 'Connect'}</span>
@@ -394,7 +394,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                         onClick={() => handleRemove(dev.address)}
                         disabled={isLoading}
                         aria-label={`Remove ${displayName}`}
-                        className="px-2.5 py-1.5 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 text-rose-300 text-xs font-medium rounded-lg flex items-center space-x-1 transition disabled:opacity-50"
+                        className="neu-button px-2.5 py-1.5 text-rose-300 text-xs font-medium rounded-lg flex items-center space-x-1 disabled:opacity-50"
                         title="Remove device"
                       >
                         <Trash2 className="w-3.5 h-3.5 text-rose-400" />
@@ -409,7 +409,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
         </div>
 
         {/* Direct / Manual MAC Pair Footer */}
-        <div className="p-4 bg-slate-900/70 border-t border-slate-700/80">
+        <div className="neu-inset p-4">
           <p className="text-xs text-slate-400 mb-2 font-medium">Connect by Bluetooth MAC Address:</p>
           <div className="flex flex-col sm:flex-row items-center gap-2">
             <input
@@ -417,13 +417,13 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               value={manualMac}
               onChange={(e) => setManualMac(e.target.value)}
               placeholder="e.g. EC:81:93:53:A9:16"
-              className="w-full sm:flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="neu-control w-full sm:flex-1 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
             />
             <div className="flex items-center space-x-2 w-full sm:w-auto">
               <button
                 onClick={() => handlePair(manualMac)}
                 disabled={!manualMac.trim() || actionAddress === manualMac.trim()}
-                className="flex-1 sm:flex-none px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl flex items-center justify-center space-x-1.5 transition"
+                className="neu-button flex-1 sm:flex-none px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl flex items-center justify-center space-x-1.5"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>{actionAddress === manualMac.trim() ? 'Connecting...' : 'Connect'}</span>
@@ -431,7 +431,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               <button
                 onClick={() => handleRemove(manualMac)}
                 disabled={!manualMac.trim() || actionAddress === manualMac.trim()}
-                className="flex-1 sm:flex-none px-4 py-2 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 disabled:opacity-50 text-rose-300 text-xs font-semibold rounded-xl flex items-center justify-center space-x-1.5 transition"
+                className="neu-button flex-1 sm:flex-none px-4 py-2 disabled:opacity-50 text-rose-300 text-xs font-semibold rounded-xl flex items-center justify-center space-x-1.5"
                 title="Remove MAC"
               >
                 <Trash2 className="w-3.5 h-3.5 text-rose-400" />

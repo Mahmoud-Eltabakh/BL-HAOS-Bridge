@@ -45,11 +45,7 @@ def test_demo_mode_injects_before_live_manager_and_serves_production_routes(monk
     monkeypatch.setenv("BLHAOS_DEMO_SCENARIO", "reconnect_exhausted")
     with TestClient(app) as client:
         assert app.state.demo_runtime.live_initialization_calls == []
-        response = client.get("/api/diagnostics")
+        response = client.get("/api/diagnostics/native")
         assert response.status_code == 200
-        assert response.json()["demo_mode"] is True
-        assert response.json()["demo_scenario"] == "reconnect_exhausted"
-        token = app.state.config_store.settings.native_token
-        recovery = client.get("/api/recovery", headers={"Authorization": f"Bearer {token}"})
-        assert recovery.status_code == 200
-        assert "retry_reconnect" in recovery.json()["guidance"]["actions"]
+        assert response.json()["native_transport_ready"] is True
+        assert client.get("/api/health").status_code == 200

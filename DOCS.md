@@ -88,9 +88,9 @@ The add-on log identifies BlueZ and PipeWire state; the Home Assistant log ident
 
 `query_ha.py` is read-only by default. It requires `HA_URL` and `HA_TOKEN` from the local process environment and never accepts a token as a command argument. After rotating any prior token, run `python query_ha.py` for preflight. Add-on lifecycle actions and `play-media` require their named command plus `--apply`; playback also requires an explicit native entity, media identifier, and media type. Do not record tokens, media URLs, raw WebSocket frames, or full device addresses in tickets or source control.
 
-## Diagnostics, Guided Recovery, and Demo Mode
+## Operational Status and Demo Mode
 
-The Ingress diagnostics panel shows the bounded health snapshot, failure class, lifecycle events, and a redacted support-bundle export. Guided recovery actions are available through the authenticated native transport or the add-on's authenticated Ingress path, and are limited to named operations: refresh diagnostics, refresh one normalized speaker record, retry one bounded reconnect, or recheck a named dependency. Shell commands, arbitrary Bluetooth addresses, raw exceptions, credentials, and media URLs are never accepted by the recovery API.
+The Ingress dashboard keeps the operator workflow focused on adapter state, speaker discovery, connection, and native Home Assistant integration readiness. The standalone Diagnostics and Guided recovery panels are not part of the dashboard, and their operator-only routes are not exposed by the add-on. Runtime health telemetry remains available through the health endpoint for automated validation and support tooling.
 
 For offline demonstrations and SIL validation, set `BLHAOS_DEMO_MODE=true` and choose one of `healthy`, `pairing_failure`, `sink_missing`, `reconnect_exhausted`, `native_integration_unavailable`, or `restart_degraded` with `BLHAOS_DEMO_SCENARIO`. Demo mode is off by default and injects fixed adapters, speakers, events, timestamps, and recovery outcomes before live D-Bus, PipeWire, Snapcast, or Home Assistant clients are initialized. Unknown scenarios are rejected.
 

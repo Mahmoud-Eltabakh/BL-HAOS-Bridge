@@ -71,15 +71,15 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
   };
 
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg flex flex-col justify-between hover:border-slate-600 transition-all">
+    <div className="neu-surface rounded-xl p-4 flex flex-col justify-between transition-all">
       <div>
         <div className="flex items-start justify-between">
           <div className="flex items-center space-x-3">
-            <div className={`p-3 rounded-xl ${device.connected ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700 text-slate-400'}`}>
+            <div className={`neu-inset p-3 rounded-xl ${device.connected ? 'text-emerald-400' : 'text-slate-400'}`}>
               <Bluetooth className="w-6 h-6" />
             </div>
             <div>
-              <h3 className="font-semibold text-lg text-slate-100">{device.alias || device.name || device.address}</h3>
+              <h3 className="font-semibold text-base text-slate-100">{device.alias || device.name || device.address}</h3>
               <p className="text-xs text-slate-400 flex items-center space-x-2">
                 <span className="font-mono text-slate-300">{device.address}</span>
                 <span>•</span>
@@ -88,14 +88,14 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
               </p>
             </div>
           </div>
-          <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${device.connected ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-slate-700 text-slate-300'}`}>
+          <span className={`neu-inset px-2.5 py-1 text-xs font-medium rounded-full ${device.connected ? 'text-emerald-300' : 'text-slate-300'}`}>
             {device.connected ? 'Connected' : 'Disconnected'}
           </span>
         </div>
 
         {/* Device Type & Auto-Reconnect Tag */}
         <div className="mt-4 flex items-center space-x-2 text-xs">
-          <span className="bg-slate-900/80 px-2.5 py-1 rounded-lg text-slate-300 border border-slate-700">
+          <span className="neu-inset px-2.5 py-1 rounded-lg text-slate-300">
             {device.device_type}
           </span>
           {device.trusted && (
@@ -106,7 +106,7 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
         </div>
 
         {errorMsg && (
-          <div className="mt-3 p-2 bg-rose-950/80 border border-rose-800 rounded-lg text-rose-300 text-xs flex items-center gap-1.5">
+            <div className="neu-inset mt-3 p-2 rounded-lg text-rose-300 text-xs flex items-center gap-1.5">
             <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
             <span>{errorMsg}</span>
           </div>
@@ -115,7 +115,7 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
 
       {/* Volume slider when connected */}
       {device.connected && (
-        <div className="mt-5 pt-4 border-t border-slate-700/60">
+        <div className="neu-inset mt-4 rounded-lg p-3">
           <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
             <span className="flex items-center gap-1.5"><Volume2 className="w-4 h-4 text-slate-400" /> Volume</span>
             <span className="font-mono text-slate-200">{volume}%</span>
@@ -133,27 +133,27 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
             onChange={(e) => setVolume(Number(e.target.value))}
             onPointerUp={() => void commitVolume(volume)}
             onKeyUp={() => void commitVolume(volume)}
-            className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+            className="neu-range w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer"
           />
         </div>
       )}
 
       {/* Inline Confirmation for Remove */}
       {showConfirmRemove ? (
-        <div className="mt-5 pt-3 border-t border-slate-700/80 flex items-center justify-between gap-2">
+        <div className="neu-inset mt-4 rounded-lg p-2.5 flex items-center justify-between gap-2">
           <span className="text-xs text-rose-300 font-medium">Remove speaker?</span>
           <div className="flex items-center space-x-2">
             <button
               onClick={() => setShowConfirmRemove(false)}
               disabled={loading}
-              className="px-3 py-1.5 text-xs text-slate-400 hover:text-white rounded-lg transition"
+              className="neu-button px-3 py-1.5 text-xs text-slate-400 hover:text-white rounded-lg"
             >
               Cancel
             </button>
             <button
               onClick={handleRemove}
               disabled={loading}
-              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-lg shadow transition"
+              className="neu-button px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-lg"
             >
               {loading ? 'Removing...' : 'Confirm Remove'}
             </button>
@@ -161,13 +161,13 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
         </div>
       ) : (
         /* Action Footer */
-        <div className="mt-5 pt-3 border-t border-slate-700 flex flex-wrap items-center justify-between gap-2">
+        <div className="neu-inset mt-4 rounded-lg p-2.5 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center space-x-2">
             {device.connected ? (
               <button
                 onClick={handleConnectToggle}
                 disabled={loading}
-                className="px-3.5 py-2 text-xs font-semibold rounded-xl flex items-center space-x-1.5 bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                className="neu-button px-3.5 py-2 text-xs font-semibold rounded-xl flex items-center space-x-1.5 text-amber-300 disabled:opacity-50"
               >
                 <Power className="w-3.5 h-3.5" />
                 <span>{loading ? 'Disconnecting...' : 'Disconnect'}</span>
@@ -176,7 +176,7 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
               <button
                 onClick={handleConnectToggle}
                 disabled={loading}
-                className="px-3.5 py-2 text-xs font-semibold rounded-xl flex items-center space-x-1.5 bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50 shadow-md shadow-blue-600/20"
+                className="neu-button px-3.5 py-2 text-xs font-semibold rounded-xl flex items-center space-x-1.5 bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50"
               >
                 <Power className="w-3.5 h-3.5" />
                 <span>{loading ? 'Connecting...' : 'Connect'}</span>
@@ -185,7 +185,7 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
 
             <button
               onClick={() => setShowConfirmRemove(true)}
-              className="px-3 py-2 text-xs font-medium rounded-xl flex items-center space-x-1.5 bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20 transition-colors"
+              className="neu-button px-3 py-2 text-xs font-medium rounded-xl flex items-center space-x-1.5 text-rose-300"
               title="Remove speaker"
             >
               <Trash2 className="w-3.5 h-3.5 text-rose-400" />
@@ -196,7 +196,7 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
           <div className="flex items-center space-x-1 text-slate-400">
             <button
               onClick={() => onSettingsClick(device)}
-              className="px-2.5 py-2 text-xs font-medium bg-slate-700/60 hover:bg-slate-700 hover:text-slate-200 border border-slate-600/50 rounded-xl transition-colors flex items-center space-x-1"
+              className="neu-button px-2.5 py-2 text-xs font-medium text-slate-300 hover:text-slate-200 rounded-xl flex items-center space-x-1"
               title="Settings"
             >
               <Settings className="w-3.5 h-3.5" />

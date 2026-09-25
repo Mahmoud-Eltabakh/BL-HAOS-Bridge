@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.50
+
+- Simplify the Ingress dashboard by removing the Diagnostics and Guided recovery panels and their operator-only backend routes. Native Home Assistant integration status remains available.
+
 ## 0.2.49
 
 - Report a playback timeline so Home Assistant can draw a progress bar. The bridge now tracks elapsed playing time per speaker (pausing the clock while paused, clearing it on stop or when the stream ends) and probes the media duration in the background with `ffprobe`, so playback is never delayed while the length is resolved. The position/duration envelope is published in the native `playback` payload and mapped to `media_position`, `media_position_updated_at` and `media_duration`.

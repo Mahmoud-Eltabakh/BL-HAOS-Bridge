@@ -90,8 +90,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       aria-labelledby="settings-dialog-title"
       id="settings-dialog"
     >
-      <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
-        <div className="p-5 border-b border-slate-700 flex items-center justify-between bg-slate-900/50">
+      <div className="neu-surface rounded-2xl w-full max-w-lg overflow-hidden">
+        <div className="neu-inset p-5 flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <Sliders className="w-5 h-5 text-blue-400" />
             <h3 id="settings-dialog-title" className="font-bold text-white text-base">Speaker Settings</h3>
@@ -99,7 +99,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <button
             ref={closeButtonRef}
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700 transition"
+            className="neu-button p-2 text-slate-400 hover:text-white rounded-lg"
             aria-label="Close settings"
           >
             <X className="w-5 h-5" />
@@ -121,7 +121,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               value={alias}
               onChange={(e) => setAlias(e.target.value)}
               placeholder="e.g. Living Room Speaker"
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+              className="neu-control w-full rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
             />
           </div>
 
@@ -130,7 +130,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <select
               value={preferredAdapter}
               onChange={(e) => setPreferredAdapter(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+              className="neu-control w-full rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
             >
               {adapters.map((ad) => (
                 <option key={ad.interface} value={ad.interface}>
@@ -157,7 +157,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               aria-valuemax={100}
               aria-valuenow={defaultVolume}
               onChange={(e) => setDefaultVolume(Number(e.target.value))}
-              className="w-full h-2 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-blue-500"
+              className="neu-range w-full h-2 bg-slate-900 rounded-lg appearance-none cursor-pointer"
             />
           </div>
 
@@ -170,22 +170,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               type="checkbox"
               checked={autoReconnect}
               onChange={(e) => setAutoReconnect(e.target.checked)}
-              className="w-5 h-5 rounded bg-slate-900 border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+              className="neu-control w-5 h-5 rounded text-blue-600 focus:ring-0 cursor-pointer"
             />
           </div>
         </div>
 
-        <div className="p-4 bg-slate-900/50 border-t border-slate-700 flex justify-end gap-2">
+        <div className="neu-inset p-4 flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white rounded-xl hover:bg-slate-700 transition"
+            className="neu-button px-4 py-2 text-xs font-medium text-slate-300 hover:text-white rounded-xl"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl flex items-center space-x-1.5 shadow-lg shadow-blue-600/20 transition"
+            className="neu-button px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl flex items-center space-x-1.5"
           >
             <Save className="w-3.5 h-3.5" />
             <span>{saving ? 'Saving...' : 'Save Settings'}</span>
