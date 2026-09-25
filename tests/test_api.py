@@ -216,6 +216,40 @@ def test_pair_publishes_native_speaker():
         assert published == [dev_addr]
 
 
+def test_pairing_failure_surfaces_a_bounded_bluez_reason():
+    """Operators need the real BlueZ reason instead of a generic failure string."""
+    dev_addr = "aa:bb:cc:dd:ee:09"
+
+    async def pair(_address):
+        raise RuntimeError("org.bluez.Error.Failed br-connection-page-timeout")
+
+    with TestClient(app) as client:
+        app.state.bt_manager.pair_and_trust = pair
+        response = client.post("/api/devices/pair", json={"address": dev_addr, "pin": None})
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail.startswith("Pairing failed:")
+    assert "br-connection-page-timeout" in detail
+
+
+def test_pairing_failure_redacts_credentials_in_reason():
+    """Surfaced failure detail must not leak tokens or URLs."""
+    dev_addr = "aa:bb:cc:dd:ee:0a"
+
+    async def pair(_address):
+        raise RuntimeError("denied token=supersecret123 at https://bridge.local/pair?t=abc")
+
+    with TestClient(app) as client:
+        app.state.bt_manager.pair_and_trust = pair
+        response = client.post("/api/devices/pair", json={"address": dev_addr, "pin": None})
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "supersecret123" not in detail
+    assert "https://" not in detail
+
+
 def test_media_type_accepts_home_assistant_content_types():
     """HA sends content types like 'music'; they must not 422 a play_media call."""
     from backend.bl_haos.health import validate_media_type

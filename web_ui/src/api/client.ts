@@ -102,11 +102,22 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     payload = null;
   }
   if (!res.ok) {
-    const message = res.status === 401 ? 'Authentication is required.'
-      : res.status === 404 ? 'The requested Bluetooth resource was not found.'
-        : res.status >= 500 ? 'The bridge is temporarily unavailable.'
-          : 'The request could not be completed.';
-    throw new Error(message);
+    // Prefer the bridge's own bounded, redacted detail so operators can see the
+    // real reason a pairing/connection attempt failed instead of a generic
+    // transport message.
+    const detail = typeof payload?.detail === 'string' ? payload.detail.trim() : '';
+    const message =
+      detail ||
+      (res.status === 401
+        ? 'Authentication is required.'
+        : res.status === 404
+          ? 'The requested Bluetooth resource was not found.'
+          : res.status >= 500
+            ? 'The bridge is temporarily unavailable.'
+            : 'The request could not be completed.');
+    const error = new Error(message) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
   }
   return payload as T;
 }

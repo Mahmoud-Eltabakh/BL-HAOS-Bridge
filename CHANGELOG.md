@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.45
+
+- Fix "Add Speaker" dialog crashing the whole web UI: the auto-scan `useRef`/`useEffect` were declared below the `if (!isOpen) return null` early return, so the first open threw "Rendered more hooks than during the previous render" and nothing could be paired from the GUI.
+- Surface the bounded, redacted BlueZ reason for pairing and connection failures instead of a generic message, so the dialog can explain why a speaker refused to connect.
+- Give device-row actions distinct accessible names (`Connect to <device>`, `Disconnect <device>`, `Remove <device>`) so they are unambiguous for assistive tech and tests.
+
 ## 0.2.44
 
 - Fail fast when PipeWire or PulseAudio sink discovery stalls, preventing Home Assistant media commands from timing out while waiting for the speaker.

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -49,7 +50,32 @@ def test_ingress_shows_native_diagnostics_and_relative_api_error_state():
     assert "refreshDiagnostics" in app
 
 
-def test_ingress_contains_guided_recovery_and_demo_contracts():
+def test_modal_hooks_are_declared_before_early_returns():
+    """React hooks must never sit below an early `return null`.
+
+    A hook declared after the early return makes the modal crash with
+    "Rendered more hooks than during the previous render" the first time it
+    opens, which is exactly how the Add Speaker dialog used to break.
+    """
+    hook_call = re.compile(r"^\s*(?:const|let)\s+.*\buse(?:State|Ref|Effect|Callback|Memo)\s*\(")
+
+    for name in ("DiscoveryModal.tsx", "SettingsModal.tsx"):
+        lines = Path(f"web_ui/src/components/{name}").read_text(encoding="utf-8").splitlines()
+        early_return = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if "if (!isOpen" in line and "return null" in line
+            ),
+            None,
+        )
+        assert early_return is not None, f"{name} must keep its isOpen early return"
+
+        trailing_hooks = [
+            line.strip() for line in lines[early_return + 1 :] if hook_call.match(line)
+        ]
+        assert not trailing_hooks, f"{name} declares hooks after its early return: {trailing_hooks}"
+
     client_ts = Path("web_ui/src/api/client.ts").read_text(encoding="utf-8")
     app = Path("web_ui/src/App.tsx").read_text(encoding="utf-8")
     assert "getDiagnostics" in client_ts

@@ -485,7 +485,10 @@ async def pair_device(payload: PairRequest, request: Request):
             logger.warning("Pairing busy for %s: %s", payload.address, detail)
             raise HTTPException(status_code=409, detail="Bluetooth pairing is already in progress") from e
         logger.error("Pairing error for %s: %s", payload.address, detail)
-        raise HTTPException(status_code=400, detail="Pairing failed") from e
+        # Surface the bounded, redacted BlueZ reason so the operator UI can
+        # explain why pairing failed instead of showing a generic message.
+        reason = detail or "unknown BlueZ error"
+        raise HTTPException(status_code=400, detail=f"Pairing failed: {reason}") from e
 
 
 @router.post("/devices/{address}/connect")
@@ -505,7 +508,8 @@ async def connect_device(address: str, request: Request):
             logger.warning("Connection busy for %s: %s", address, detail)
             raise HTTPException(status_code=409, detail="Bluetooth connection is already in progress") from e
         logger.error("Connection error for %s: %s", address, detail)
-        raise HTTPException(status_code=400, detail="Connection failed") from e
+        reason = detail or "unknown BlueZ error"
+        raise HTTPException(status_code=400, detail=f"Connection failed: {reason}") from e
 
 
 @router.post("/devices/{address}/disconnect")

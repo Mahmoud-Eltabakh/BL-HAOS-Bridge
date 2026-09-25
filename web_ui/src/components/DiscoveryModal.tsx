@@ -26,6 +26,10 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  // Auto-start discovery once per open so new devices stream in immediately
+  // without requiring the user to press Start Scan first. Declared here with
+  // the other hooks: hooks must never sit below the early `return null`.
+  const autoStartRef = useRef(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -51,6 +55,23 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
       if (isOpen) previousFocusRef.current?.focus();
     };
   }, [isOpen, onClose]);
+
+  // Auto-start discovery when the modal opens so new devices stream in
+  // immediately without requiring the user to press Start Scan first.
+  useEffect(() => {
+    if (isOpen && !autoStartRef.current) {
+      autoStartRef.current = true;
+      if (!isScanning) {
+        void apiClient.startScan().then(onRefresh).catch(() => {
+          // Surface as a non-blocking status; the user can retry manually.
+          setStatusMessage({ type: 'error', text: 'Could not start scanning. Try the Start Scan button.' });
+        });
+      }
+    }
+    if (!isOpen) {
+      autoStartRef.current = false;
+    }
+  }, [isOpen, isScanning, onRefresh]);
 
   if (!isOpen) return null;
 
@@ -87,7 +108,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
       const msg = err?.message || String(err);
       setStatusMessage({
         type: 'error',
-        text: msg.includes('Page Timeout')
+        text: /page timeout|br-connection-page-timeout|no route to host/i.test(msg)
           ? `Could not connect to ${address}. Ensure the speaker is in pairing mode (blinking LED) and try again.`
           : `Connection failed for ${address}: ${msg}`,
       });
@@ -134,24 +155,6 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
     }
     onRefresh();
   };
-
-  // Auto-start discovery when the modal opens so new devices stream in
-  // immediately without requiring the user to press Start Scan first.
-  const autoStartRef = useRef(false);
-  useEffect(() => {
-    if (isOpen && !autoStartRef.current) {
-      autoStartRef.current = true;
-      if (!isScanning) {
-        void apiClient.startScan().then(onRefresh).catch(() => {
-          // Surface as a non-blocking status; the user can retry manually.
-          setStatusMessage({ type: 'error', text: 'Could not start scanning. Try the Start Scan button.' });
-        });
-      }
-    }
-    if (!isOpen) {
-      autoStartRef.current = false;
-    }
-  }, [isOpen, isScanning, onRefresh]);
 
   return (
     <div
@@ -368,6 +371,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                       <button
                         onClick={() => handleDisconnect(dev.address)}
                         disabled={isLoading}
+                        aria-label={`Disconnect ${displayName}`}
                         className="px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-300 text-xs font-medium rounded-lg flex items-center space-x-1.5 transition disabled:opacity-50"
                       >
                         <Power className="w-3.5 h-3.5" />
@@ -377,6 +381,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                       <button
                         onClick={() => handlePair(dev.address)}
                         disabled={isLoading}
+                        aria-label={`Connect to ${displayName}`}
                         className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg flex items-center space-x-1.5 transition disabled:opacity-50"
                       >
                         <Plus className="w-3.5 h-3.5" />
@@ -388,6 +393,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                       <button
                         onClick={() => handleRemove(dev.address)}
                         disabled={isLoading}
+                        aria-label={`Remove ${displayName}`}
                         className="px-2.5 py-1.5 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 text-rose-300 text-xs font-medium rounded-lg flex items-center space-x-1 transition disabled:opacity-50"
                         title="Remove device"
                       >
