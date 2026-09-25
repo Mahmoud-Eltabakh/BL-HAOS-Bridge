@@ -4,6 +4,19 @@ BLUEZ_SERVICE = "org.bluez"
 DBUS_OM_IFACE = "org.freedesktop.DBus.ObjectManager"
 DBUS_PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
 
+# The D-Bus daemon itself, used to register signal match rules.
+DBUS_DAEMON_SERVICE = "org.freedesktop.DBus"
+DBUS_DAEMON_PATH = "/org/freedesktop/DBus"
+
+# A D-Bus match rule is required before the bus daemon will deliver BlueZ's
+# broadcast signals to this connection. dbus-fast only installs match rules
+# automatically for high-level proxy `on_<Signal>` handlers, so a bare
+# `add_message_handler()` receives nothing and discovery appears dead.
+BLUEZ_SIGNAL_MATCH_RULES = (
+    f"type='signal',sender='{BLUEZ_SERVICE}',interface='{DBUS_OM_IFACE}'",
+    f"type='signal',sender='{BLUEZ_SERVICE}',interface='{DBUS_PROPERTIES_IFACE}',member='PropertiesChanged'",
+)
+
 ADAPTER_INTERFACE = "org.bluez.Adapter1"
 DEVICE_INTERFACE = "org.bluez.Device1"
 AGENT_INTERFACE = "org.bluez.Agent1"

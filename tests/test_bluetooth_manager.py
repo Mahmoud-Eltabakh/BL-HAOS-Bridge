@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 import pytest
+from dbus_fast import Variant
 from backend.bl_haos.bluetooth.constants import (
     A2DP_SINK_UUID,
     ADAPTER_INTERFACE,
@@ -170,6 +173,166 @@ def test_dbus_loss_is_not_reported_as_healthy():
     assert mgr.bus is None
     assert component.state == HealthState.UNAVAILABLE
     assert component.failure.classification == FailureClass.DBUS_DISCONNECTED
+
+
+@pytest.mark.asyncio
+async def test_subscribe_signals_registers_bluez_match_rules():
+    """The bus daemon must be told to deliver BlueZ signals to this connection.
+
+    dbus-fast's add_message_handler() only routes already-delivered messages and
+    installs no match rule, so discovery results would never reach the bridge.
+    """
+    from dbus_fast import Message, MessageType
+
+    from backend.bl_haos.bluetooth.constants import BLUEZ_SIGNAL_MATCH_RULES
+
+    calls: list[Message] = []
+
+    class FakeBus:
+        def __init__(self):
+            self.handlers = []
+
+        async def call(self, message):
+            calls.append(message)
+            return Message(message_type=MessageType.METHOD_RETURN, reply_serial=1)
+
+        def add_message_handler(self, handler):
+            self.handlers.append(handler)
+
+    mgr = BluetoothManager()
+    mgr.bus = FakeBus()
+
+    await mgr._subscribe_signals()
+
+    assert [c.member for c in calls] == ["AddMatch"] * len(BLUEZ_SIGNAL_MATCH_RULES)
+    assert [c.destination for c in calls] == ["org.freedesktop.DBus"] * len(BLUEZ_SIGNAL_MATCH_RULES)
+    rules = [c.body[0] for c in calls]
+    assert all("sender='org.bluez'" in rule for rule in rules)
+    assert any("freedesktop.DBus.ObjectManager" in rule for rule in rules)
+    assert any("PropertiesChanged" in rule for rule in rules)
+    assert len(mgr.bus.handlers) == 1
+
+
+@pytest.mark.asyncio
+async def test_subscribe_signals_is_idempotent_for_one_bus():
+    """Repeated initialization must not pile up duplicate match rules."""
+    from dbus_fast import Message, MessageType
+
+    from backend.bl_haos.bluetooth.constants import BLUEZ_SIGNAL_MATCH_RULES
+
+    calls: list[Message] = []
+
+    class FakeBus:
+        async def call(self, message):
+            calls.append(message)
+            return Message(message_type=MessageType.METHOD_RETURN, reply_serial=1)
+
+        def add_message_handler(self, handler):
+            pass
+
+    mgr = BluetoothManager()
+    mgr.bus = FakeBus()
+
+    await mgr._subscribe_signals()
+    await mgr._subscribe_signals()
+
+    assert len(calls) == len(BLUEZ_SIGNAL_MATCH_RULES)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_signals_survives_a_rejected_match_rule():
+    """A rejected rule must be logged, not fatal, so the daemon still starts."""
+    from dbus_fast import Message, MessageType
+
+    class FailingBus:
+        def __init__(self):
+            self.handlers = []
+
+        async def call(self, message):
+            raise RuntimeError("bus closed")
+
+        def add_message_handler(self, handler):
+            self.handlers.append(handler)
+
+    mgr = BluetoothManager()
+    mgr.bus = FailingBus()
+
+    await mgr._subscribe_signals()
+
+    assert len(mgr.bus.handlers) == 1
+    assert mgr._signal_bus is mgr.bus
+
+
+@pytest.mark.asyncio
+async def test_discovery_signals_populate_the_device_list():
+    """An InterfacesAdded signal must surface the device through /api/devices."""
+    mgr = BluetoothManager()
+    added = []
+    mgr.add_event_listener(lambda event, data: added.append(event))
+
+    mgr._handle_dbus_message(
+        SimpleNamespace(
+            member="InterfacesAdded",
+            interface="org.freedesktop.DBus.ObjectManager",
+            path="/",
+            body=[
+                "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_10",
+                {
+                    DEVICE_INTERFACE: {
+                        "Address": "AA:BB:CC:DD:EE:10",
+                        "Name": "Living Room Speaker",
+                        "Adapter": "/org/bluez/hci0",
+                        "UUIDs": [A2DP_SINK_UUID],
+                        "Class": 0x240414,
+                        "Paired": False,
+                        "Trusted": False,
+                        "Connected": False,
+                    }
+                },
+            ],
+        )
+    )
+
+    devices = mgr.get_devices(audio_only=False)
+    assert [d.address for d in devices] == ["AA:BB:CC:DD:EE:10"]
+    assert added == ["device_discovered"]
+
+
+@pytest.mark.asyncio
+async def test_device_property_signal_updates_the_device_list():
+    """PropertiesChanged must refresh the cached device so the UI sees updates."""
+    mgr = BluetoothManager()
+    dev_path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_11"
+    mgr._on_interfaces_added(
+        dev_path,
+        {
+            DEVICE_INTERFACE: {
+                "Address": "AA:BB:CC:DD:EE:11",
+                "Name": "Kitchen Speaker",
+                "Adapter": "/org/bluez/hci0",
+                "UUIDs": [A2DP_SINK_UUID],
+                "Class": 0x240414,
+                "Paired": False,
+                "Trusted": False,
+                "Connected": False,
+                "RSSI": -80,
+            }
+        },
+    )
+    updated = []
+    mgr.add_event_listener(lambda event, data: updated.append(event))
+
+    mgr._handle_dbus_message(
+        SimpleNamespace(
+            member="PropertiesChanged",
+            interface="org.freedesktop.DBus.Properties",
+            path=dev_path,
+            body=[DEVICE_INTERFACE, {"RSSI": Variant("n", -55)}, []],
+        )
+    )
+
+    assert mgr.get_devices(audio_only=False)[0].rssi == -55
+    assert updated == ["device_updated"]
 
 
 @pytest.mark.asyncio

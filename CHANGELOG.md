@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.46
+
+- Fix Bluetooth discovery returning nothing: the bridge registered a D-Bus message handler but never a match rule, so the bus daemon never delivered BlueZ's `InterfacesAdded`/`InterfacesRemoved`/`PropertiesChanged` signals. Discovered devices were silently dropped, `GET /api/devices` stayed empty and the scan list never updated in the UI. The bridge now registers explicit match rules for BlueZ's ObjectManager and PropertiesChanged signals.
+
 ## 0.2.45
 
 - Fix "Add Speaker" dialog crashing the whole web UI: the auto-scan `useRef`/`useEffect` were declared below the `if (!isOpen) return null` early return, so the first open threw "Rendered more hooks than during the previous render" and nothing could be paired from the GUI.

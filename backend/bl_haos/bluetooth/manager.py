@@ -5,7 +5,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from dbus_fast import BusType
+from dbus_fast import BusType, Message, MessageType
 from dbus_fast.aio import MessageBus
 
 from .adapter import BluetoothAdapter
@@ -15,6 +15,9 @@ from .constants import (
     AGENT_MANAGER_INTERFACE,
     AGENT_PATH,
     BLUEZ_SERVICE,
+    BLUEZ_SIGNAL_MATCH_RULES,
+    DBUS_DAEMON_PATH,
+    DBUS_DAEMON_SERVICE,
     DBUS_OM_IFACE,
     DBUS_PROPERTIES_IFACE,
     DEVICE_INTERFACE,
@@ -100,9 +103,39 @@ class BluetoothManager:
             return
         if self._signal_bus is self.bus:
             return
-        # InterfacesAdded / Removed
+        # The bus daemon only forks BlueZ's broadcast signals to connections
+        # that registered a matching match rule; `add_message_handler()` routes
+        # already-delivered messages but installs no rule of its own. Without
+        # this step discovery results never reach the handler, so the device
+        # list stays empty and the UI never updates while scanning.
+        for match_rule in BLUEZ_SIGNAL_MATCH_RULES:
+            await self._add_match_rule(match_rule)
         self.bus.add_message_handler(self._handle_dbus_message)
         self._signal_bus = self.bus
+
+    async def _add_match_rule(self, match_rule: str) -> bool:
+        """Ask the D-Bus daemon to deliver a matching BlueZ signal to us."""
+        if not self.bus:
+            return False
+        try:
+            reply = await self.bus.call(
+                Message(
+                    destination=DBUS_DAEMON_SERVICE,
+                    interface=DBUS_DAEMON_SERVICE,
+                    path=DBUS_DAEMON_PATH,
+                    member="AddMatch",
+                    signature="s",
+                    body=[match_rule],
+                )
+            )
+        except Exception as e:
+            logger.warning("BlueZ signal match rule failed (%s): %s", match_rule, e)
+            return False
+        if reply.message_type == MessageType.ERROR:
+            logger.warning("BlueZ signal match rule rejected (%s): %s", match_rule, reply.body)
+            return False
+        logger.debug("Registered BlueZ signal match rule: %s", match_rule)
+        return True
 
     def mark_dbus_disconnected(self, detail: Any = None) -> None:
         """Invalidate transport readiness and publish a bounded loss observation."""
