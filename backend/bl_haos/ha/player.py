@@ -22,6 +22,10 @@ SINK_PROBE_TIMEOUT = 5
 # which surfaced as "the first play does nothing, the second one works".
 STOP_GRACE_SECONDS = 2.0
 KILL_GRACE_SECONDS = 1.5
+# How long a command waits for a previous stream's children to disappear. The
+# player releases the A2DP sink immediately, so a short window avoids audible
+# overlap while keeping play/stop snappy even when the decoder is wedged.
+COMMAND_STOP_BUDGET_SECONDS = 0.25
 # Bound how much audio may be queued ahead of the speaker. The default
 # PulseAudio buffer is large enough that pause/stop kept playing for a while.
 PLAYER_LATENCY_MSEC = 250
@@ -527,22 +531,50 @@ class MediaPlayerBridge:
         for process in processes:
             if process.returncode is None:
                 self._terminate_process(process)
-        for process in processes:
-            if process.returncode is None and not await self._async_wait_for_exit(process, STOP_GRACE_SECONDS):
-                self._kill_process(process)
-                if not await self._async_wait_for_exit(process, KILL_GRACE_SECONDS):
-                    logger.warning(
-                        "Playback process %s for %s did not exit within %.1fs; continuing without it",
-                        getattr(process, "pid", "?"),
-                        address,
-                        KILL_GRACE_SECONDS,
-                    )
+        # Give the player a moment to release the sink, then hand whatever is
+        # left to a background reaper. A decoder stuck in uninterruptible I/O
+        # can survive SIGKILL, and the command path must never wait for that.
+        await self._async_wait_for_exits(processes, COMMAND_STOP_BUDGET_SECONDS)
+        self._track_task(
+            self._async_reap_processes(address, processes),
+            f"reap playback processes {address}",
+        )
         logger.debug(
             "Released %d playback process(es) for %s in %.2fs",
             len(processes),
             address,
             asyncio.get_running_loop().time() - started,
         )
+
+    async def _async_wait_for_exits(
+        self, processes: tuple[asyncio.subprocess.Process, ...], timeout: float
+    ) -> None:
+        """Wait for every child to exit, bounded by one shared deadline."""
+        pending = [process.wait() for process in processes if process.returncode is None]
+        if not pending:
+            return
+        try:
+            await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+
+    async def _async_reap_processes(
+        self, address: str, processes: tuple[asyncio.subprocess.Process, ...]
+    ) -> None:
+        """Escalate and collect children that outlive the command budget."""
+        for process in processes:
+            if process.returncode is not None:
+                continue
+            if await self._async_wait_for_exit(process, STOP_GRACE_SECONDS):
+                continue
+            self._kill_process(process)
+            if not await self._async_wait_for_exit(process, KILL_GRACE_SECONDS):
+                logger.warning(
+                    "Playback process %s for %s did not exit within %.1fs; continuing without it",
+                    getattr(process, "pid", "?"),
+                    address,
+                    KILL_GRACE_SECONDS,
+                )
 
     @staticmethod
     def _continue_process(process: asyncio.subprocess.Process) -> None:

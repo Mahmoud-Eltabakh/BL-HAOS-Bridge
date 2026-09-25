@@ -12,4 +12,4 @@ if sys.platform == "win32":
     if not hasattr(socket, "SCM_RIGHTS"):
         socket.SCM_RIGHTS = 0x01  # type: ignore[attr-defined]
 
-__version__ = "0.2.47"
+__version__ = "0.2.48"

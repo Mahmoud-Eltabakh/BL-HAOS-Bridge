@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.48
+
+- Playback commands no longer wait for a previous stream's decoder to disappear. On this hardware `ffmpeg` can survive even `SIGKILL` while blocked in uninterruptible I/O, so `play_media`/`stop` were spending the whole teardown window (about 3s) before answering. The player is still given a short window to release the A2DP sink, then any leftover child is escalated and collected in the background, which keeps repeated play/pause/stop snappy.
+
 ## 0.2.47
 
 - Fix "the first play does nothing, the second attempt works": stopping a previous stream could block forever. `_stop_processes` awaited `process.wait()` without a bound after `SIGKILL`, so a child stuck on a wedged A2DP sink made the *next* `play_media` never spawn its decoder/player. Every teardown wait is now bounded, and the caller always proceeds.

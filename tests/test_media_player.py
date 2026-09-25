@@ -400,6 +400,28 @@ def test_continue_process_signals_the_process_group(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stop_processes_returns_without_waiting_out_the_grace_window(monkeypatch):
+    """A wedged child must be reaped in the background, not in front of the user."""
+    monkeypatch.setattr("backend.bl_haos.ha.player.COMMAND_STOP_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr("backend.bl_haos.ha.player.STOP_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr("backend.bl_haos.ha.player.KILL_GRACE_SECONDS", 0.01)
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+    bridge.active_processes[address] = (WedgedProcess(pid=111), WedgedProcess(pid=222))
+
+    started = time.monotonic()
+    await bridge._stop_processes(address)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.3, "the command path must not wait out the escalation window"
+    assert address not in bridge.active_processes
+
+    await asyncio.sleep(0.1)
+    assert not bridge._background_tasks, "the background reaper must finish and be collected"
+
+
+@pytest.mark.asyncio
 async def test_stop_processes_is_a_noop_without_active_processes():
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
 
