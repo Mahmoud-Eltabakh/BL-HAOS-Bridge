@@ -12,6 +12,24 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from ..config import ConfigStore, PlayerSettings
+from ..constants import (
+    COMMAND_PAUSE,
+    COMMAND_PLAY,
+    COMMAND_PLAY_MEDIA,
+    COMMAND_SET_VOLUME,
+    COMMAND_STOP,
+    HA_COMMAND_PAUSE,
+    HA_COMMAND_PLAY,
+    HA_COMMAND_PLAY_MEDIA_PREFIX,
+    HA_COMMAND_STOP,
+    HA_COMMAND_VOLUME_PREFIX,
+    PLAYBACK_IDLE,
+    PLAYBACK_PAUSED,
+    PLAYBACK_PLAYING,
+    VOLUME_MAX_PERCENT,
+    VOLUME_MAX_RATIO,
+    VOLUME_MIN_RATIO,
+)
 from ..health import FailureClass, HealthRegistry, HealthState, normalize_address, validate_identifier, validate_media_url
 
 logger = logging.getLogger("bl_haos.ha.player")
@@ -124,7 +142,7 @@ class MediaPlayerBridge:
         return lock
 
     def get_state(self, address: str) -> str:
-        return self.states.get(self._address(address), "idle")
+        return self.states.get(self._address(address), PLAYBACK_IDLE)
 
     def get_timeline(self, address: str) -> dict[str, Any]:
         """Return the position/duration/title envelope Home Assistant renders."""
@@ -275,7 +293,7 @@ class MediaPlayerBridge:
             volume,
             url,
         )
-        if operation == "play":
+        if operation == COMMAND_PLAY:
             if address not in self.active_processes:
                 last_url = self.last_urls.get(address)
                 if not last_url:
@@ -286,29 +304,29 @@ class MediaPlayerBridge:
             logger.debug("Resuming playback processes for %s (SIGCONT)", address)
             await self._signal_processes(address, getattr(signal, "SIGCONT", signal.SIGTERM))
             self._resume_timeline(address)
-            self.states[address] = "playing"
-        elif operation == "pause":
+            self.states[address] = PLAYBACK_PLAYING
+        elif operation == COMMAND_PAUSE:
             if address not in self.active_processes:
                 logger.debug("Pause operation failed for %s: no active playback process", address)
                 raise MediaPlayerError("No active playback to pause")
             logger.debug("Pausing playback processes for %s (SIGSTOP)", address)
             await self._signal_processes(address, getattr(signal, "SIGSTOP", signal.SIGTERM))
             self._pause_timeline(address)
-            self.states[address] = "paused"
-        elif operation == "stop":
+            self.states[address] = PLAYBACK_PAUSED
+        elif operation == COMMAND_STOP:
             logger.debug("Stopping playback processes for %s", address)
             await self._stop_processes(address)
             self._clear_timeline(address)
-            self.states[address] = "idle"
-        elif operation == "set_volume":
-            if volume is None or not 0 <= volume <= 1:
+            self.states[address] = PLAYBACK_IDLE
+        elif operation == COMMAND_SET_VOLUME:
+            if volume is None or not VOLUME_MIN_RATIO <= volume <= VOLUME_MAX_RATIO:
                 raise MediaPlayerError("Volume must be between 0.0 and 1.0")
             self.volumes[address] = volume
             if self.config_store:
-                self.config_store.update_speaker(address, default_volume=round(volume * 100))
+                self.config_store.update_speaker(address, default_volume=round(volume * VOLUME_MAX_PERCENT))
             logger.debug("Setting volume for %s to %s", address, volume)
             await self._apply_volume(address, volume)
-        elif operation == "play_media":
+        elif operation == COMMAND_PLAY_MEDIA:
             if not url:
                 raise MediaPlayerError("Media URL is required")
             await self.play_url(address, url)
@@ -323,17 +341,17 @@ class MediaPlayerBridge:
         addr = self._address(address)
         logger.info("Received command for %s", addr)
 
-        if cmd == "PLAY":
-            await self.execute(addr, "play")
-        elif cmd == "PAUSE":
-            await self.execute(addr, "pause")
-        elif cmd == "STOP":
-            await self.execute(addr, "stop")
-        elif cmd.startswith("PLAY_MEDIA:"):
-            await self.execute(addr, "play_media", url=cmd[len("PLAY_MEDIA:"):])
-        elif cmd.startswith("VOLUME:"):
+        if cmd == HA_COMMAND_PLAY:
+            await self.execute(addr, COMMAND_PLAY)
+        elif cmd == HA_COMMAND_PAUSE:
+            await self.execute(addr, COMMAND_PAUSE)
+        elif cmd == HA_COMMAND_STOP:
+            await self.execute(addr, COMMAND_STOP)
+        elif cmd.startswith(HA_COMMAND_PLAY_MEDIA_PREFIX):
+            await self.execute(addr, COMMAND_PLAY_MEDIA, url=cmd[len(HA_COMMAND_PLAY_MEDIA_PREFIX):])
+        elif cmd.startswith(HA_COMMAND_VOLUME_PREFIX):
             try:
-                await self.execute(addr, "set_volume", volume=float(cmd[len("VOLUME:"):]))
+                await self.execute(addr, COMMAND_SET_VOLUME, volume=float(cmd[len(HA_COMMAND_VOLUME_PREFIX):]))
             except ValueError:
                 raise MediaPlayerError("Volume must be numeric")
 
@@ -398,7 +416,7 @@ class MediaPlayerBridge:
         self.active_processes[addr] = (decoder, player)
         self.last_urls[addr] = url
         self._start_timeline(addr, url)
-        self.states[addr] = "playing"
+        self.states[addr] = PLAYBACK_PLAYING
         total_seconds = time.monotonic() - started
         logger.debug(
             "Playback started for %s (decoder PID=%s, player PID=%s)",
@@ -918,7 +936,7 @@ class MediaPlayerBridge:
                 player.returncode,
             )
             self.active_processes.pop(address, None)
-            self.states[address] = "idle"
+            self.states[address] = PLAYBACK_IDLE
             self._clear_timeline(address)
             await self._notify(address)
 
@@ -932,7 +950,7 @@ class MediaPlayerBridge:
         for address in tuple(self.active_processes):
             stopping.extend(self.active_processes[address])
             await self._stop_processes(address)
-            self.states[address] = "idle"
+            self.states[address] = PLAYBACK_IDLE
         # Let the children disappear before the reaper tasks are cancelled, so a
         # wedged decoder is still escalated to SIGKILL on the way out.
         await self._async_wait_for_exits(

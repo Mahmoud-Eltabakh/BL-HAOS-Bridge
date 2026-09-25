@@ -19,21 +19,52 @@ from .api.ws import router as ws_router
 from .bluetooth.manager import BluetoothManager
 from .bluetooth.reconnect import AutoReconnectEngine
 from .config import ConfigStore
+from .constants import (
+    APP_DESCRIPTION,
+    APP_SLUG,
+    APP_TITLE,
+    BEARER_PREFIX,
+    COMPONENT_BLUETOOTH,
+    COMPONENT_HEALTH,
+    COMPONENT_LIFECYCLE,
+    COMPONENT_NATIVE_BRIDGE,
+    COMPONENT_PIPEWIRE,
+    ENV_LOG_LEVEL,
+    ENV_SUPERVISOR_TOKEN,
+    EVENT_DEVICE_DISCOVERED,
+    EVENT_DEVICE_UPDATED,
+    EVENT_HEALTH_OBSERVATION,
+    EVENT_TELEMETRY,
+    LOGGER_NAME,
+    LOG_FORMAT,
+    LOG_LEVEL_INFO,
+    PLAYBACK_STOPPED,
+    RECOVERY_HEALTHY,
+    RECOVERY_PENDING,
+    ROOT_PATH,
+    SOURCE_BLUEZ,
+    SOURCE_STARTUP,
+    STATIC_DIRECTORY_CANDIDATES,
+    STATIC_INDEX_FILE,
+    SUPERVISOR_DISCOVERY_TIMEOUT_SECONDS,
+    SUPERVISOR_DISCOVERY_URL,
+    VERSION,
+)
 from .diagnostics import DiagnosticsService
 from .demo import DemoRuntime
 from .ha.player import MediaPlayerBridge
 from .health import FailureClass, HealthRegistry, HealthState, SpeakerState
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="[bl-haos] %(asctime)s %(levelname)s [%(name)s.%(funcName)s]: %(message)s",
+    level=getattr(logging, LOG_LEVEL_INFO),
+    format=LOG_FORMAT,
 )
 logger = logging.getLogger("bl_haos.main")
 
 
 async def _publish_supervisor_discovery(native_token: str, log_level: str) -> None:
     """Push the native bridge token to Supervisor so the integration can auto-connect."""
-    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
+    supervisor_token = os.environ.get(ENV_SUPERVISOR_TOKEN)
     if not supervisor_token or not native_token:
         logger.debug(
             "Supervisor discovery skipped (supervisor_token present: %s, native_token present: %s)",
@@ -45,10 +76,10 @@ async def _publish_supervisor_discovery(native_token: str, log_level: str) -> No
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "http://supervisor/discovery",
-                headers={"Authorization": f"Bearer {supervisor_token}"},
-                json={"service": "bl_haos", "config": {"token": native_token, "log_level": log_level}},
-                timeout=aiohttp.ClientTimeout(total=5),
+                SUPERVISOR_DISCOVERY_URL,
+                headers={"Authorization": f"{BEARER_PREFIX}{supervisor_token}"},
+                json={"service": APP_SLUG, "config": {"token": native_token, "log_level": log_level}},
+                timeout=aiohttp.ClientTimeout(total=SUPERVISOR_DISCOVERY_TIMEOUT_SECONDS),
             ) as response:
                 if response.status >= 400:
                     logger.warning("Supervisor discovery registration failed: HTTP %s", response.status)
@@ -74,19 +105,19 @@ async def lifespan(app: FastAPI):
             snapshot.lifecycle.value,
         )
         event = diagnostics.record_event(
-            "health_observation",
-            component="health",
+            EVENT_HEALTH_OBSERVATION,
+            component=COMPONENT_HEALTH,
             detail={"status": snapshot.status.value, "lifecycle": snapshot.lifecycle.value},
-            recovery="healthy" if snapshot.status == HealthState.HEALTHY else "pending",
+            recovery=RECOVERY_HEALTHY if snapshot.status == HealthState.HEALTHY else RECOVERY_PENDING,
         )
-        await ws_manager.broadcast("telemetry", event)
+        await ws_manager.broadcast(EVENT_TELEMETRY, event)
 
     health.add_listener(_publish_health_telemetry)
     await health.publish(ws_manager)
     config_store = ConfigStore()
     app.state.config_store = config_store
-    log_level = os.environ.get("LOG_LEVEL", config_store.settings.log_level).upper()
-    logging.getLogger("bl_haos").setLevel(getattr(logging, log_level, logging.INFO))
+    log_level = os.environ.get(ENV_LOG_LEVEL, config_store.settings.log_level).upper()
+    logging.getLogger(LOGGER_NAME).setLevel(getattr(logging, log_level, getattr(logging, LOG_LEVEL_INFO)))
     logger.debug(
         "Configuration loaded: demo_mode=%s, log_level=%s, speakers_count=%d",
         config_store.settings.demo_mode,
@@ -115,11 +146,11 @@ async def lifespan(app: FastAPI):
     await bt_manager.initialize()
     app.state.bt_manager = bt_manager
     health.observe_component(
-        "bluetooth",
+        COMPONENT_BLUETOOTH,
         HealthState.HEALTHY if bt_manager.bus is not None else HealthState.UNAVAILABLE,
         failure=None if bt_manager.bus is not None else FailureClass.DBUS_UNAVAILABLE,
         detail=None if bt_manager.bus is not None else "System D-Bus unavailable",
-        source="bluez",
+        source=SOURCE_BLUEZ,
     )
 
     async def _publish_native_speaker(address: str) -> None:
@@ -136,9 +167,9 @@ async def lifespan(app: FastAPI):
     app.state.ha_bridge = ha_bridge
     app.state.publish_native_speaker = _publish_native_speaker
     app.state.native_ws_manager = native_ws_manager
-    health.observe_component("native_bridge", HealthState.HEALTHY, required=False, source="startup")
+    health.observe_component(COMPONENT_NATIVE_BRIDGE, HealthState.HEALTHY, required=False, source=SOURCE_STARTUP)
 
-    health.observe_component("pipewire", HealthState.UNKNOWN, required=False, source="startup")
+    health.observe_component(COMPONENT_PIPEWIRE, HealthState.UNKNOWN, required=False, source=SOURCE_STARTUP)
 
     # Wire event broadcaster to WebSocket manager and HA Discovery
     def _broadcast_bt_event(event_type: str, data):
@@ -150,7 +181,7 @@ async def lifespan(app: FastAPI):
         task = asyncio.create_task(_broadcast_bt_event(event_type, data))
         tracked.add(task)
         task.add_done_callback(tracked.discard)
-        if event_type in ("device_updated", "device_discovered") and hasattr(data, "address"):
+        if event_type in (EVENT_DEVICE_UPDATED, EVENT_DEVICE_DISCOVERED) and hasattr(data, "address"):
             is_audio = getattr(data, "is_audio_sink", False)
             is_conn = getattr(data, "connected", False)
             is_trust = getattr(data, "trusted", False)
@@ -159,7 +190,7 @@ async def lifespan(app: FastAPI):
             if is_audio and (is_trust or is_paired or is_conn):
                 asyncio.create_task(_publish_native_speaker(data.address))
                 if not is_conn:
-                    asyncio.create_task(ha_bridge.execute(data.address, "stop"))
+                    asyncio.create_task(ha_bridge.execute(data.address, PLAYBACK_STOPPED))
                     ha_bridge.unregister_keepalive(data.address)
                 reconnect_engine.register_speaker(data.address)
             if is_conn and is_audio:
@@ -205,11 +236,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="BL-HAOS Bluetooth Audio Adapter",
-    description="High-fidelity Bluetooth Audio Adapter for Home Assistant OS",
-    version="0.1.0",
+    title=APP_TITLE,
+    description=APP_DESCRIPTION,
+    version=VERSION,
     lifespan=lifespan,
-    root_path="",
+    root_path=ROOT_PATH,
 )
 
 
@@ -222,7 +253,7 @@ app.include_router(api_router)
 app.include_router(ws_router)
 
 # Mount static web frontend if built assets exist
-for static_dir in [Path("web_ui/dist"), Path("/var/www/bl-haos"), Path("frontend/dist")]:
-    if static_dir.exists() and (static_dir / "index.html").exists():
+for static_dir in (Path(candidate) for candidate in STATIC_DIRECTORY_CANDIDATES):
+    if static_dir.exists() and (static_dir / STATIC_INDEX_FILE).exists():
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
         break

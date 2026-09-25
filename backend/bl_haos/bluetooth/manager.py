@@ -24,6 +24,18 @@ from .constants import (
 )
 from .device import BluetoothDevice
 from .models import AdapterInfo, DeviceInfo
+from ..constants import (
+    ADAPTER_NAME_FALLBACK,
+    AGENT_CAPABILITY,
+    BLUEZ_ROOT_PATH,
+    BLUEZ_ROOT_PATH_TRAILER,
+    COMPONENT_BLUETOOTH,
+    DEVICE_PATH_PREFIX,
+    EVENT_DBUS_DISCONNECTED,
+    EVENT_DEVICE_DISCOVERED,
+    EVENT_DEVICE_UPDATED,
+    SOURCE_BLUEZ,
+)
 from ..health import FailureClass, HealthRegistry, HealthState, SpeakerState, normalize_address, validate_adapter_name
 
 logger = logging.getLogger("bl_haos.bluetooth.manager")
@@ -51,6 +63,19 @@ class BluetoothManager:
             except Exception as e:
                 logger.error("Error in event listener: %s", e)
 
+    def _observe_bluetooth(
+        self,
+        state: HealthState,
+        *,
+        failure: FailureClass | None = None,
+        detail: Any = None,
+    ) -> None:
+        """Publish one bounded observation for the Bluetooth component."""
+        if self.health:
+            self.health.observe_component(
+                COMPONENT_BLUETOOTH, state, failure=failure, detail=detail, source=SOURCE_BLUEZ
+            )
+
     async def initialize(self) -> None:
         """Connect to system D-Bus, register Agent, and discover initial adapters/devices."""
         try:
@@ -64,10 +89,10 @@ class BluetoothManager:
 
             # Register with AgentManager1
             try:
-                introspection = await self.bus.introspect(BLUEZ_SERVICE, "/org/bluez")
-                proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/org/bluez", introspection)
+                introspection = await self.bus.introspect(BLUEZ_SERVICE, BLUEZ_ROOT_PATH)
+                proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, BLUEZ_ROOT_PATH, introspection)
                 agent_mgr = proxy.get_interface(AGENT_MANAGER_INTERFACE)
-                await agent_mgr.call_register_agent(AGENT_PATH, "DisplayYesNo")
+                await agent_mgr.call_register_agent(AGENT_PATH, AGENT_CAPABILITY)
                 await agent_mgr.call_request_default_agent(AGENT_PATH)
                 logger.info("BlueZ Pairing Agent successfully registered at %s", AGENT_PATH)
             except Exception as e:
@@ -83,20 +108,13 @@ class BluetoothManager:
                 len(self.devices),
             )
             if self.health:
-                self.health.observe_component("bluetooth", HealthState.HEALTHY, source="bluez")
+                self.health.observe_component(COMPONENT_BLUETOOTH, HealthState.HEALTHY, source=SOURCE_BLUEZ)
 
         except Exception as e:
             logger.warning("System D-Bus connection not available: %s", e)
             self.bus = None
             self._initialized = False
-            if self.health:
-                self.health.observe_component(
-                    "bluetooth",
-                    HealthState.UNAVAILABLE,
-                    failure=FailureClass.DBUS_UNAVAILABLE,
-                    detail=e,
-                    source="bluez",
-                )
+            self._observe_bluetooth(HealthState.UNAVAILABLE, failure=FailureClass.DBUS_UNAVAILABLE, detail=e)
 
     async def _subscribe_signals(self):
         if not self.bus:
@@ -143,28 +161,23 @@ class BluetoothManager:
         self._initialized = False
         self.adapters.clear()
         self.devices.clear()
-        if self.health:
-            self.health.observe_component(
-                "bluetooth",
-                HealthState.UNAVAILABLE,
-                failure=FailureClass.DBUS_DISCONNECTED,
-                detail=detail or "D-Bus transport disconnected",
-                source="bluez",
-            )
-        self._notify("dbus_disconnected", detail)
+        self._observe_bluetooth(
+            HealthState.UNAVAILABLE,
+            failure=FailureClass.DBUS_DISCONNECTED,
+            detail=detail or "D-Bus transport disconnected",
+        )
+        self._notify(EVENT_DBUS_DISCONNECTED, detail)
 
     async def recover_dbus(self) -> bool:
         """Perform one bounded D-Bus reinitialization attempt."""
         if self.bus is not None and self._initialized:
             return True
         await self.initialize()
-        if self.bus is None and self.health:
-            self.health.observe_component(
-                "bluetooth",
+        if self.bus is None:
+            self._observe_bluetooth(
                 HealthState.UNAVAILABLE,
                 failure=FailureClass.DBUS_UNAVAILABLE,
                 detail="D-Bus reinitialization unavailable",
-                source="bluez",
             )
         return self.bus is not None
 
@@ -220,18 +233,18 @@ class BluetoothManager:
             if path in self.devices:
                 self.devices[path].update_properties(changed)
                 logger.debug("BlueZ device properties changed on %s: %s", path, list(changed.keys()))
-                self._notify("device_updated", self.devices[path].to_info())
+                self._notify(EVENT_DEVICE_UPDATED, self.devices[path].to_info())
             else:
                 dev = BluetoothDevice(self.bus, path, changed)
                 self.devices[path] = dev
                 logger.debug("BlueZ new device from property change: %s (%s)", dev.address, path)
-                self._notify("device_discovered", dev.to_info())
+                self._notify(EVENT_DEVICE_DISCOVERED, dev.to_info())
 
     async def _load_managed_objects(self):
         if not self.bus:
             return
-        introspection = await self.bus.introspect(BLUEZ_SERVICE, "/")
-        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
+        introspection = await self.bus.introspect(BLUEZ_SERVICE, BLUEZ_ROOT_PATH_TRAILER)
+        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, BLUEZ_ROOT_PATH_TRAILER, introspection)
         om = proxy.get_interface(DBUS_OM_IFACE)
         objects = await om.call_get_managed_objects()
 
@@ -270,7 +283,7 @@ class BluetoothManager:
         address = normalize_address(address)
         formatted_addr = address.upper().replace(":", "_")
         for adapter in self.adapters.values():
-            dev_path = f"{adapter.path}/dev_{formatted_addr}"
+            dev_path = f"{adapter.path}/{DEVICE_PATH_PREFIX}{formatted_addr}"
             try:
                 introspection = await self.bus.introspect(BLUEZ_SERVICE, dev_path)
                 proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, dev_path, introspection)
@@ -283,7 +296,7 @@ class BluetoothManager:
                 continue
         return None
 
-    def get_adapter_by_name(self, name: str = "hci0") -> BluetoothAdapter | None:
+    def get_adapter_by_name(self, name: str = ADAPTER_NAME_FALLBACK) -> BluetoothAdapter | None:
         name = validate_adapter_name(name)
         for adapter in self.adapters.values():
             if adapter.interface_name == name or adapter.path.endswith(name):

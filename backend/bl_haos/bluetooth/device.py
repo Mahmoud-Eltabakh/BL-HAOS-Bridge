@@ -9,6 +9,7 @@ from dbus_fast.aio import MessageBus
 
 from .constants import (
     A2DP_SINK_UUID,
+    AUDIO_SERVICE_SHORT_UUIDS,
     AUDIO_SINK_UUIDS,
     BLUEZ_SERVICE,
     DBUS_PROPERTIES_IFACE,
@@ -17,6 +18,18 @@ from .constants import (
     MINOR_DEVICE_CLASSES_AUDIO,
 )
 from .models import DeviceInfo
+from ..constants import (
+    ADAPTER_NAME_FALLBACK,
+    AUDIO_DEVICE_LABEL,
+    AUDIO_ICON_HINTS,
+    AUDIO_NAME_KEYWORDS,
+    BLUETOOTH_DEVICE_LABEL,
+    CLASS_OF_DEVICE_MAJOR_MASK,
+    CLASS_OF_DEVICE_MINOR_MASK,
+    ICON_TO_DEVICE_TYPE,
+    NON_AUDIO_ICON_HINTS,
+    SPEAKER_DEVICE_TYPE,
+)
 
 logger = logging.getLogger("bl_haos.bluetooth.device")
 
@@ -56,7 +69,7 @@ class BluetoothDevice:
 
     @property
     def adapter_name(self) -> str:
-        return self.adapter_path.split("/")[-1] if self.adapter_path else "hci0"
+        return self.adapter_path.split("/")[-1] if self.adapter_path else ADAPTER_NAME_FALLBACK
 
     @property
     def paired(self) -> bool:
@@ -95,35 +108,30 @@ class BluetoothDevice:
             if u_clean in AUDIO_SINK_UUIDS:
                 return True
             # Also check if 16-bit audio service identifier is embedded in standard 128-bit UUID
-            if any(part in u_clean for part in ("110a", "110b", "110c", "110d", "110e", "110f", "1108", "1112", "111e", "111f", "1131")):
+            if any(part in u_clean for part in AUDIO_SERVICE_SHORT_UUIDS):
                 return True
 
         # Check Class of Device
         if self.class_of_device is not None:
-            major = self.class_of_device & 0x1F00
+            major = self.class_of_device & CLASS_OF_DEVICE_MAJOR_MASK
             if major == MAJOR_DEVICE_CLASS_AUDIO_VIDEO:
                 return True
-            minor = self.class_of_device & 0x1FFC
+            minor = self.class_of_device & CLASS_OF_DEVICE_MINOR_MASK
             if minor in MINOR_DEVICE_CLASSES_AUDIO:
                 return True
 
         # Check icon hint
         icon = str(self._get_prop("Icon", "")).lower()
-        if any(h in icon for h in ("audio", "sound", "speaker", "headphone", "headset")):
+        if any(hint in icon for hint in AUDIO_ICON_HINTS):
             return True
 
         # Check name or alias audio keywords
         name_or_alias = f"{self.name or ''} {self.alias or ''}".lower()
-        audio_keywords = (
-            "speaker", "sound", "audio", "headphone", "headset", "earbuds", "airpods",
-            "receiver", "adapter", "logitech", "soundbar", "soundlink", "jbl", "bose",
-            "sony", "anker", "soundcore", "echo", "nest", "marshall", "sonos"
-        )
-        if any(kw in name_or_alias for kw in audio_keywords):
+        if any(keyword in name_or_alias for keyword in AUDIO_NAME_KEYWORDS):
             return True
 
         # If currently connected or paired (and not an explicit non-audio input device)
-        if (self.connected or self.paired) and icon not in ("input-keyboard", "input-mouse", "input-gaming"):
+        if (self.connected or self.paired) and icon not in NON_AUDIO_ICON_HINTS:
             return True
 
         return False
@@ -132,21 +140,18 @@ class BluetoothDevice:
     def device_type(self) -> str:
         """Human-readable device classification."""
         if self.class_of_device is not None:
-            minor = self.class_of_device & 0x1FFC
+            minor = self.class_of_device & CLASS_OF_DEVICE_MINOR_MASK
             if minor in MINOR_DEVICE_CLASSES_AUDIO:
                 return MINOR_DEVICE_CLASSES_AUDIO[minor]
-            if (self.class_of_device & 0x1F00) == MAJOR_DEVICE_CLASS_AUDIO_VIDEO:
-                return "Audio Device"
+            if (self.class_of_device & CLASS_OF_DEVICE_MAJOR_MASK) == MAJOR_DEVICE_CLASS_AUDIO_VIDEO:
+                return AUDIO_DEVICE_LABEL
 
         icon = self._get_prop("Icon", "")
-        if "speaker" in icon:
-            return "Speaker"
-        if "headphone" in icon:
-            return "Headphones"
-        if "headset" in icon:
-            return "Headset"
+        for hint, label in ICON_TO_DEVICE_TYPE:
+            if hint in icon:
+                return label
 
-        return "Speaker" if self.is_audio_sink else "Bluetooth Device"
+        return SPEAKER_DEVICE_TYPE if self.is_audio_sink else BLUETOOTH_DEVICE_LABEL
 
     def update_properties(self, changed: dict[str, Any]):
         """Update properties and timestamp from PropertiesChanged signal."""

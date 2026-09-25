@@ -2,6 +2,31 @@
  * Dynamic Ingress URL Resolver and REST Client
  */
 
+import {
+  API_ADAPTERS,
+  API_DIAGNOSTICS_NATIVE,
+  API_HEALTH,
+  API_SCAN_START,
+  API_SCAN_STOP,
+  API_SETTINGS,
+  API_DEVICES_PAIR,
+  DEFAULT_PIN,
+  ERROR_MESSAGES,
+  HTTP_NOT_FOUND,
+  HTTP_SERVER_ERROR,
+  HTTP_UNAUTHORIZED,
+  JSON_CONTENT_TYPE,
+  PAYLOAD_DETAIL_KEY,
+  WS_PUBLIC_PATH,
+  apiAdapterPower,
+  apiDevice,
+  apiDeviceConnect,
+  apiDeviceDisconnect,
+  apiDeviceVolume,
+  apiDevices,
+  apiSpeakerSettings,
+} from '../constants';
+
 export function getBasePath(): string {
   // Strips trailing slash from current path
   return window.location.pathname.replace(/\/+$/, '');
@@ -17,7 +42,7 @@ export function getWebSocketUrl(): string {
   const isSecure = window.location.protocol === 'https:';
   const proto = isSecure ? 'wss:' : 'ws:';
   const base = getBasePath();
-  return `${proto}//${window.location.host}${base}/ws`;
+  return `${proto}//${window.location.host}${base}${WS_PUBLIC_PATH}`;
 }
 
 export interface AdapterInfo {
@@ -67,16 +92,16 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     // Prefer the bridge's own bounded, redacted detail so operators can see the
     // real reason a pairing/connection attempt failed instead of a generic
     // transport message.
-    const detail = typeof payload?.detail === 'string' ? payload.detail.trim() : '';
+    const detail = typeof payload?.[PAYLOAD_DETAIL_KEY] === 'string' ? payload.detail.trim() : '';
     const message =
       detail ||
-      (res.status === 401
-        ? 'Authentication is required.'
-        : res.status === 404
-          ? 'The requested Bluetooth resource was not found.'
-          : res.status >= 500
-            ? 'The bridge is temporarily unavailable.'
-            : 'The request could not be completed.');
+      (res.status === HTTP_UNAUTHORIZED
+        ? ERROR_MESSAGES.authenticationRequired
+        : res.status === HTTP_NOT_FOUND
+          ? ERROR_MESSAGES.resourceNotFound
+          : res.status >= HTTP_SERVER_ERROR
+            ? ERROR_MESSAGES.bridgeUnavailable
+            : ERROR_MESSAGES.requestFailed);
     const error = new Error(message) as Error & { status?: number };
     error.status = res.status;
     throw error;
@@ -86,78 +111,78 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 export const apiClient = {
   async getHealth() {
-    return requestJson(getApiUrl('/api/health'));
+    return requestJson(getApiUrl(API_HEALTH));
   },
   async getNativeDiagnostics(): Promise<NativeDiagnostics> {
-    const payload = await requestJson<NativeDiagnostics>(getApiUrl('/api/diagnostics/native'));
+    const payload = await requestJson<NativeDiagnostics>(getApiUrl(API_DIAGNOSTICS_NATIVE));
     if (!payload || typeof payload !== 'object') {
-      throw new Error('Native diagnostics are unavailable');
+      throw new Error(ERROR_MESSAGES.nativeDiagnosticsUnavailable);
     }
     return payload;
   },
   async getAdapters(): Promise<AdapterInfo[]> {
-    return requestJson<AdapterInfo[]>(getApiUrl('/api/adapters'));
+    return requestJson<AdapterInfo[]>(getApiUrl(API_ADAPTERS));
   },
   async setAdapterPower(name: string, powered: boolean) {
-    return requestJson(getApiUrl(`/api/adapters/${name}/power`), {
+    return requestJson(getApiUrl(apiAdapterPower(name)), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': JSON_CONTENT_TYPE },
       body: JSON.stringify({ powered }),
     });
   },
   async startScan(adapterName?: string) {
-    return requestJson(getApiUrl('/api/scan/start'), {
+    return requestJson(getApiUrl(API_SCAN_START), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': JSON_CONTENT_TYPE },
       body: JSON.stringify({ adapter_name: adapterName }),
     });
   },
   async stopScan(adapterName?: string) {
-    return requestJson(getApiUrl('/api/scan/stop'), {
+    return requestJson(getApiUrl(API_SCAN_STOP), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': JSON_CONTENT_TYPE },
       body: JSON.stringify({ adapter_name: adapterName }),
     });
   },
   async getDevices(audioOnly = true): Promise<DeviceInfo[]> {
-    return requestJson<DeviceInfo[]>(getApiUrl(`/api/devices?audio_only=${audioOnly}`));
+    return requestJson<DeviceInfo[]>(getApiUrl(apiDevices(audioOnly)));
   },
-  async pairDevice(address: string, pin = '0000') {
-    return requestJson(getApiUrl('/api/devices/pair'), {
+  async pairDevice(address: string, pin = DEFAULT_PIN) {
+    return requestJson(getApiUrl(API_DEVICES_PAIR), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': JSON_CONTENT_TYPE },
       body: JSON.stringify({ address, pin }),
     });
   },
   async connectDevice(address: string) {
-    return requestJson(getApiUrl(`/api/devices/${address}/connect`), {
+    return requestJson(getApiUrl(apiDeviceConnect(address)), {
       method: 'POST',
     });
   },
   async disconnectDevice(address: string) {
-    return requestJson(getApiUrl(`/api/devices/${address}/disconnect`), {
+    return requestJson(getApiUrl(apiDeviceDisconnect(address)), {
       method: 'POST',
     });
   },
   async setDeviceVolume(address: string, volume: number) {
-    return requestJson(getApiUrl(`/api/devices/${address}/volume`), {
+    return requestJson(getApiUrl(apiDeviceVolume(address)), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': JSON_CONTENT_TYPE },
       body: JSON.stringify({ volume }),
     });
   },
   async removeDevice(address: string) {
-    return requestJson(getApiUrl(`/api/devices/${address}`), {
+    return requestJson(getApiUrl(apiDevice(address)), {
       method: 'DELETE',
     });
   },
   async getSettings() {
-    return requestJson(getApiUrl('/api/settings'));
+    return requestJson(getApiUrl(API_SETTINGS));
   },
   async updateSpeaker(address: string, settings: any) {
-    return requestJson(getApiUrl(`/api/settings/speakers/${address}`), {
+    return requestJson(getApiUrl(apiSpeakerSettings(address)), {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': JSON_CONTENT_TYPE },
       body: JSON.stringify(settings),
     });
   },

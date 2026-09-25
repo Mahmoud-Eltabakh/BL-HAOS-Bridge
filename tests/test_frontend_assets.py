@@ -38,11 +38,15 @@ def test_dynamic_ws_url_calculation():
 
 def test_ingress_shows_native_diagnostics_and_relative_api_error_state():
     client_ts = Path("web_ui/src/api/client.ts").read_text(encoding="utf-8")
+    constants_ts = Path("web_ui/src/constants.ts").read_text(encoding="utf-8")
     app = Path("web_ui/src/App.tsx").read_text(encoding="utf-8")
 
     assert "getNativeDiagnostics" in client_ts
-    assert "getApiUrl('/api/diagnostics/native')" in client_ts
-    assert "Native diagnostics are unavailable" in client_ts
+    # The endpoint and its message come from the single shared constants module.
+    assert "API_DIAGNOSTICS_NATIVE" in client_ts
+    assert "API_DIAGNOSTICS_NATIVE = " in constants_ts
+    assert "/api/diagnostics/native" in constants_ts
+    assert "Native diagnostics are unavailable" in constants_ts
     assert "Native integration" in app
     assert "diagnosticsError" in app
     assert "refreshDiagnostics" in app

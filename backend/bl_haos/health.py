@@ -9,6 +9,32 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
+from .constants import (
+    BEARER_PREFIX,
+    BROADCAST_ADDRESS_OCTET,
+    COMPONENT_LIFECYCLE,
+    DELETE_CODEPOINT,
+    HEALTH_CONTRACT_VERSION,
+    HTTP_SCHEMES,
+    MAX_ADDRESS_LENGTH,
+    MAX_DETAIL_LENGTH,
+    MAX_IDENTIFIER_LENGTH,
+    MAX_MEDIA_TYPE_LENGTH,
+    MAX_MEDIA_URL_LENGTH,
+    MAX_TCP_PORT,
+    MIN_PORTABLE_CODEPOINT,
+    MIN_TCP_PORT,
+    MULTICAST_ADDRESS_BIT,
+    PIN_DIGITS_MAX,
+    PIN_DIGITS_MIN,
+    REDACTED_PLACEHOLDER,
+    SECRET_TOKENS,
+    SENSITIVE_QUERY_KEY_TOKENS,
+    SOURCE_LIFECYCLE,
+    URL_PATTERN,
+    URL_REDACTION_PLACEHOLDER,
+)
+
 
 class HealthState(str, Enum):
     STARTING = "starting"
@@ -42,28 +68,25 @@ class FailureClass(str, Enum):
     SHUTDOWN_INCOMPLETE = "shutdown_incomplete"
 
 
-MAX_DETAIL_LENGTH = 256
-MAX_MEDIA_URL_LENGTH = 2048
-MAX_MEDIA_TYPE_LENGTH = 128
-MAX_IDENTIFIER_LENGTH = 64
-_SECRET_PATTERN = re.compile(r"(?i)(token|password|secret|authorization|bearer)\s*[:=]\s*[^\s,;]+")
-_SENSITIVE_QUERY_KEYS = re.compile(r"(?i)(token|password|secret|authorization|bearer|api[_-]?key|key)")
+_SECRET_PATTERN = re.compile(rf"(?i)({'|'.join(SECRET_TOKENS)})\s*[:=]\s*[^\s,;]+")
+_SENSITIVE_QUERY_KEYS = re.compile(rf"(?i)({'|'.join(SENSITIVE_QUERY_KEY_TOKENS)})")
 _MAC_PATTERN = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
 _ADAPTER_PATTERN = re.compile(r"^hci[0-9]{1,2}$")
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_PIN_PATTERN = re.compile(rf"^[0-9]{{{PIN_DIGITS_MIN},{PIN_DIGITS_MAX}}}$")
 
 
 def normalize_address(address: str) -> str:
     if not isinstance(address, str):
         raise ValueError("Invalid Bluetooth address")
     address = address.strip()
-    if not address or len(address) > 17 or any(ord(char) < 32 for char in address):
+    if not address or len(address) > MAX_ADDRESS_LENGTH or any(ord(char) < MIN_PORTABLE_CODEPOINT for char in address):
         raise ValueError("Invalid Bluetooth address")
     normalized = address.lower().replace("-", ":")
     if not _MAC_PATTERN.fullmatch(normalized):
         raise ValueError("Invalid Bluetooth address")
     first_octet = int(normalized[:2], 16)
-    if first_octet == 0xFF or first_octet & 1:
+    if first_octet == BROADCAST_ADDRESS_OCTET or first_octet & MULTICAST_ADDRESS_BIT:
         raise ValueError("Invalid Bluetooth address")
     return normalized
 
@@ -83,13 +106,13 @@ def validate_identifier(value: str, label: str = "Identifier") -> str:
 def validate_media_url(url: str) -> str:
     if not isinstance(url, str) or not url or len(url) > MAX_MEDIA_URL_LENGTH:
         raise ValueError("Media URL must be a safe HTTP(S) URL")
-    if any(ord(character) < 32 or ord(character) == 127 for character in url):
+    if any(ord(character) < MIN_PORTABLE_CODEPOINT or ord(character) == DELETE_CODEPOINT for character in url):
         raise ValueError("Media URL must be a safe HTTP(S) URL")
     parsed = urlsplit(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+    if parsed.scheme not in HTTP_SCHEMES or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Media URL must be a safe HTTP(S) URL")
     try:
-        if parsed.port is not None and not 1 <= parsed.port <= 65535:
+        if parsed.port is not None and not MIN_TCP_PORT <= parsed.port <= MAX_TCP_PORT:
             raise ValueError
     except ValueError as error:
         raise ValueError("Media URL must be a safe HTTP(S) URL") from error
@@ -119,8 +142,8 @@ def validate_media_type(media_type: str | None) -> str | None:
 
 
 def validate_pin(pin: str | None) -> str | None:
-    if pin is not None and not re.fullmatch(r"[0-9]{4,8}", pin):
-        raise ValueError("PIN must contain 4 to 8 digits")
+    if pin is not None and not _PIN_PATTERN.fullmatch(pin):
+        raise ValueError(f"PIN must contain {PIN_DIGITS_MIN} to {PIN_DIGITS_MAX} digits")
     return pin
 
 
@@ -133,33 +156,33 @@ def safe_detail(detail: Any) -> str | None:
     else:
         text = str(detail)
     text = text.replace("\r", " ").replace("\n", " ")
-    text = _SECRET_PATTERN.sub(r"\1=[redacted]", text)
+    text = _SECRET_PATTERN.sub(rf"\1={REDACTED_PLACEHOLDER}", text)
     if "://" in text:
-        text = re.sub(r"[a-z]+://[^\s]+", _redact_url_match, text, flags=re.I)
+        text = re.sub(URL_PATTERN, _redact_url_match, text, flags=re.I)
     return text[:MAX_DETAIL_LENGTH]
 
 
 def _redact_url_match(match: re.Match[str]) -> str:
-    return "[url redacted]"
+    return URL_REDACTION_PLACEHOLDER
 
 
 def redact_value(value: Any) -> Any:
     """Recursively remove credentials from support-facing values."""
     if isinstance(value, dict):
         return {
-            str(key): "[redacted]" if _SENSITIVE_QUERY_KEYS.search(str(key)) else redact_value(item)
+            str(key): REDACTED_PLACEHOLDER if _SENSITIVE_QUERY_KEYS.search(str(key)) else redact_value(item)
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple, set)):
         return [redact_value(item) for item in value]
     if isinstance(value, str) and "://" in value:
-        return re.sub(r"[a-z]+://[^\s]+", _redact_url_match, value, flags=re.I)
+        return re.sub(URL_PATTERN, _redact_url_match, value, flags=re.I)
     return value
 
 
 def authorized_bearer(authorization: str | None, expected: str) -> bool:
     """Compare bearer credentials without exposing the expected token."""
-    supplied = authorization.removeprefix("Bearer ") if isinstance(authorization, str) else ""
+    supplied = authorization.removeprefix(BEARER_PREFIX) if isinstance(authorization, str) else ""
     import hmac
 
     return bool(expected) and hmac.compare_digest(supplied, expected)
@@ -191,7 +214,7 @@ class SpeakerHealth(BaseModel):
 
 
 class HealthSnapshot(BaseModel):
-    version: int = 1
+    version: int = HEALTH_CONTRACT_VERSION
     status: HealthState
     lifecycle: HealthState
     components: dict[str, ComponentHealth] = Field(default_factory=dict)
@@ -262,7 +285,9 @@ class HealthRegistry:
     def set_lifecycle(self, state: HealthState, *, failure: FailureClass | str | None = None, detail: Any = None) -> HealthSnapshot:
         self.lifecycle = state
         if failure:
-            self.observe_component("lifecycle", state, required=False, failure=failure, detail=detail, source="lifecycle")
+            self.observe_component(
+                COMPONENT_LIFECYCLE, state, required=False, failure=failure, detail=detail, source=SOURCE_LIFECYCLE
+            )
         return self.snapshot()
 
     def snapshot(self) -> HealthSnapshot:

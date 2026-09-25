@@ -3,6 +3,8 @@
 import socket
 import sys
 
+from .constants import VERSION
+
 # Windows development compatibility shim for dbus-fast
 if sys.platform == "win32":
     if not hasattr(socket, "CMSG_LEN"):
@@ -12,4 +14,4 @@ if sys.platform == "win32":
     if not hasattr(socket, "SCM_RIGHTS"):
         socket.SCM_RIGHTS = 0x01  # type: ignore[attr-defined]
 
-__version__ = "0.2.55"
+__version__ = VERSION

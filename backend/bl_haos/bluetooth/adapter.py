@@ -8,6 +8,7 @@ from dbus_fast.aio import MessageBus
 
 from .constants import ADAPTER_INTERFACE, BLUEZ_SERVICE, DBUS_PROPERTIES_IFACE
 from .models import AdapterInfo
+from ..constants import ADDRESS_TYPE_PUBLIC, BLUETOOTH_ADAPTER_LABEL
 
 logger = logging.getLogger("bl_haos.bluetooth.adapter")
 
@@ -35,7 +36,7 @@ class BluetoothAdapter:
 
     @property
     def name(self) -> str:
-        return self._get_prop("Name", f"Bluetooth Adapter ({self.interface_name})")
+        return self._get_prop("Name", f"{BLUETOOTH_ADAPTER_LABEL} ({self.interface_name})")
 
     @property
     def alias(self) -> str:
@@ -125,7 +126,7 @@ class BluetoothAdapter:
                 pass
         self._properties["Discovering"] = False
 
-    async def connect_device(self, address: str, address_type: str = "public") -> str | None:
+    async def connect_device(self, address: str, address_type: str = ADDRESS_TYPE_PUBLIC) -> str | None:
         """Connect directly to a device by MAC address, creating the D-Bus object if needed."""
         logger.debug("Connecting device %s via Adapter1 on %s", address, self.interface_name)
         if not self.bus:

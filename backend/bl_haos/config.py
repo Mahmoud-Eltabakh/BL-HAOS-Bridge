@@ -8,12 +8,33 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .constants import (
+    CONFIG_DIRECTORY,
+    CONFIG_FILE_MODE,
+    CONFIG_TEMP_SUFFIX,
+    DEFAULT_CODEC,
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_DEMO_SCENARIO,
+    DEFAULT_LOG_LEVEL,
+    DEFAULT_VOLUME_PERCENT,
+    DEFAULT_VOLUME_RATIO,
+    ENV_DEMO_MODE,
+    ENV_DEMO_SCENARIO,
+    ENV_NATIVE_TOKEN,
+    FALLBACK_CONFIG_PATH,
+    MAX_ALIAS_LENGTH,
+    SUPPORTED_CODECS,
+    TOKEN_ENTROPY_BYTES,
+    TRUTHY_FLAGS,
+    VOLUME_MAX_PERCENT,
+    VOLUME_MAX_RATIO,
+    VOLUME_MIN_PERCENT,
+    VOLUME_MIN_RATIO,
+)
+
 logger = logging.getLogger("bl_haos.config")
 
 _MISSING = object()
-
-DEFAULT_CONFIG_PATH = "/data/bl_haos_config.json"
-FALLBACK_CONFIG_PATH = "/tmp/bl_haos_config.json"
 
 
 class SpeakerSettings(BaseModel):
@@ -23,20 +44,20 @@ class SpeakerSettings(BaseModel):
     custom_alias: str | None = None
     auto_reconnect: bool = True
     preferred_adapter: str | None = None
-    default_volume: int = Field(default=70, ge=0, le=100)
+    default_volume: int = Field(default=DEFAULT_VOLUME_PERCENT, ge=VOLUME_MIN_PERCENT, le=VOLUME_MAX_PERCENT)
     codec_override: str | None = None
 
     @field_validator("custom_alias")
     @classmethod
     def valid_alias(cls, value: str | None) -> str | None:
-        if value is not None and (len(value) > 128 or any(ord(char) < 32 for char in value)):
+        if value is not None and (len(value) > MAX_ALIAS_LENGTH or any(ord(char) < 32 for char in value)):
             raise ValueError("Speaker alias is invalid")
         return value
 
     @field_validator("codec_override")
     @classmethod
     def valid_codec(cls, value: str | None) -> str | None:
-        if value is not None and value not in {"auto", "sbc", "sbc_xq", "aac", "aptx", "aptx_hd", "ldac"}:
+        if value is not None and value not in SUPPORTED_CODECS:
             raise ValueError("Codec override is invalid")
         return value
 
@@ -52,7 +73,7 @@ class PlayerSettings(BaseModel):
     latency_msec: int = Field(default=250, gt=0)
     sample_rate_hz: int = Field(default=48000, gt=0)
     channels: int = Field(default=2, gt=0)
-    default_volume: float = Field(default=0.70, ge=0, le=1)
+    default_volume: float = Field(default=DEFAULT_VOLUME_RATIO, ge=VOLUME_MIN_RATIO, le=VOLUME_MAX_RATIO)
     keepalive_interval_seconds: float = Field(default=240, gt=0)
     keepalive_pulse_duration_seconds: float = Field(default=1, gt=0)
     pipe_chunk_size: int = Field(default=64 * 1024, gt=0)
@@ -61,12 +82,12 @@ class PlayerSettings(BaseModel):
 class SystemSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    log_level: str = "info"
-    default_codec: str = "auto"
+    log_level: str = DEFAULT_LOG_LEVEL
+    default_codec: str = DEFAULT_CODEC
     auto_reconnect_enabled: bool = True
     native_token: str = Field(default="", exclude=True, repr=False)
     demo_mode: bool = False
-    demo_scenario: str = "healthy"
+    demo_scenario: str = DEFAULT_DEMO_SCENARIO
     player: PlayerSettings = Field(default_factory=PlayerSettings)
     speakers: dict[str, SpeakerSettings] = Field(default_factory=dict)
 
@@ -99,7 +120,7 @@ class ConfigStore:
     def __init__(self, config_file: str | None = None):
         if config_file:
             self.file_path = Path(config_file)
-        elif Path("/data").exists() and os.access("/data", os.W_OK):
+        elif Path(CONFIG_DIRECTORY).exists() and os.access(CONFIG_DIRECTORY, os.W_OK):
             self.file_path = Path(DEFAULT_CONFIG_PATH)
         else:
             self.file_path = Path(FALLBACK_CONFIG_PATH)
@@ -114,7 +135,7 @@ class ConfigStore:
                 data = json.loads(self.file_path.read_text(encoding="utf-8"))
                 self.settings = SystemSettings.model_validate(_drop_legacy_keys(data))
                 self.settings.demo_mode = self._configured_demo_mode()
-                self.settings.demo_scenario = os.environ.get("BLHAOS_DEMO_SCENARIO", self.settings.demo_scenario)
+                self.settings.demo_scenario = os.environ.get(ENV_DEMO_SCENARIO, self.settings.demo_scenario)
                 if not self.settings.native_token or any(ord(char) < 32 for char in self.settings.native_token):
                     self.settings.native_token = self._configured_token()
                     self.save()
@@ -133,30 +154,30 @@ class ConfigStore:
 
     @staticmethod
     def _configured_token() -> str:
-        configured = os.environ.get("BLHAOS_NATIVE_TOKEN", "")
+        configured = os.environ.get(ENV_NATIVE_TOKEN, "")
         if configured and not any(ord(char) < 32 for char in configured):
             return configured
-        return secrets.token_urlsafe(32)
+        return secrets.token_urlsafe(TOKEN_ENTROPY_BYTES)
 
     @staticmethod
     def _configured_demo_mode() -> bool:
-        return os.environ.get("BLHAOS_DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+        return os.environ.get(ENV_DEMO_MODE, "").strip().lower() in TRUTHY_FLAGS
 
     @staticmethod
     def _configured_demo_scenario() -> str:
-        return os.environ.get("BLHAOS_DEMO_SCENARIO", "healthy").strip() or "healthy"
+        return os.environ.get(ENV_DEMO_SCENARIO, DEFAULT_DEMO_SCENARIO).strip() or DEFAULT_DEMO_SCENARIO
 
     def save(self) -> None:
         """Atomically persist settings to JSON file."""
         try:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = self.file_path.with_suffix(".tmp")
+            temp_path = self.file_path.with_suffix(CONFIG_TEMP_SUFFIX)
             data = self.settings.model_dump(mode="json")
             data["native_token"] = self.settings.native_token
             temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            temp_path.chmod(0o600)
+            temp_path.chmod(CONFIG_FILE_MODE)
             temp_path.replace(self.file_path)
-            self.file_path.chmod(0o600)
+            self.file_path.chmod(CONFIG_FILE_MODE)
             logger.info("Saved configuration to %s", self.file_path)
         except Exception as e:
             logger.error("Failed to save config to %s", self.file_path)

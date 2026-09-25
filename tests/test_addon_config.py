@@ -31,6 +31,23 @@ def test_config_yaml_syntax_and_fields():
     assert "schema" in data
     assert data["options"]["log_level"] == "info"
 
+def test_runtime_version_is_sourced_from_the_shared_constant():
+    """The daemon version and the add-on manifest must not drift apart.
+
+    ``config.yaml`` is what Home Assistant reads; ``bl_haos.constants.VERSION`` is
+    what the running daemon reports. Bumping one without the other used to be
+    silent, so this test makes the drift loud.
+    """
+    from backend.bl_haos import __version__
+    from backend.bl_haos.constants import VERSION
+
+    with open(Path("config.yaml"), "r", encoding="utf-8") as f:
+        manifest = yaml.safe_load(f)
+
+    assert VERSION == __version__, "bl_haos.__version__ must mirror constants.VERSION"
+    assert manifest["version"] == VERSION, "config.yaml version must match constants.VERSION"
+
+
 def test_repository_yaml_and_documentation():
     repo_path = Path("repository.yaml")
     assert repo_path.exists(), "repository.yaml must exist at root of add-on repository"

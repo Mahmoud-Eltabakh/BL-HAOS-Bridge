@@ -7,6 +7,7 @@ from typing import Any
 from dbus_fast.service import ServiceInterface, method
 
 from .constants import AGENT_INTERFACE
+from ..constants import DEFAULT_PIN
 
 logger = logging.getLogger("bl_haos.bluetooth.agent")
 
@@ -19,7 +20,7 @@ class BlueZAgent(ServiceInterface):
         confirm_callback: Callable[[str, int], bool] | None = None,
     ):
         super().__init__(AGENT_INTERFACE)
-        self.pin_callback = pin_callback or (lambda dev: "0000")
+        self.pin_callback = pin_callback or (lambda dev: DEFAULT_PIN)
         self.passkey_callback = passkey_callback or (lambda dev: 0)
         self.confirm_callback = confirm_callback or (lambda dev, key: True)
         self.active_requests: dict[str, Any] = {}

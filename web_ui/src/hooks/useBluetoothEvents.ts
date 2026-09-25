@@ -1,5 +1,17 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { getWebSocketUrl, apiClient, AdapterInfo, DeviceInfo } from '../api/client';
+import {
+  ERROR_MESSAGES,
+  EVENT_ADAPTER_ADDED,
+  EVENT_ADAPTER_UPDATED,
+  EVENT_DEVICE_DISCOVERED,
+  EVENT_DEVICE_REMOVED,
+  EVENT_DEVICE_UPDATED,
+  SCAN_POLL_INTERVAL_MS,
+  WS_RECONNECT_BASE_DELAY_MS,
+  WS_RECONNECT_MAX_DELAY_MS,
+  WS_RECONNECT_MULTIPLIER,
+} from '../constants';
 
 export function useBluetoothEvents() {
   const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
@@ -21,13 +33,13 @@ export function useBluetoothEvents() {
       setIsScanning(adapterList.some((a) => a.discovering));
       setError(null);
     } catch (e) {
-      setError('Bluetooth state is unavailable. Check the bridge connection and retry.');
+      setError(ERROR_MESSAGES.bluetoothStateUnavailable);
     }
   }, []);
 
   useEffect(() => {
     let unmounted = false;
-    let retryDelay = 1000;
+    let retryDelay = WS_RECONNECT_BASE_DELAY_MS;
 
     const connectWs = () => {
       if (unmounted) return;
@@ -38,16 +50,16 @@ export function useBluetoothEvents() {
       ws.onopen = () => {
         if (unmounted) return;
         setWsConnected(true);
-        retryDelay = 1000;
+        retryDelay = WS_RECONNECT_BASE_DELAY_MS;
         void refreshData();
       };
 
       ws.onclose = () => {
         if (unmounted) return;
         setWsConnected(false);
-        // Exponential backoff reconnect up to 10s
+        // Exponential backoff reconnect up to the shared ceiling.
         reconnectTimeoutRef.current = setTimeout(() => {
-          retryDelay = Math.min(10000, retryDelay * 1.5);
+          retryDelay = Math.min(WS_RECONNECT_MAX_DELAY_MS, retryDelay * WS_RECONNECT_MULTIPLIER);
           connectWs();
         }, retryDelay);
       };
@@ -59,7 +71,7 @@ export function useBluetoothEvents() {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.event === 'device_discovered' || msg.event === 'device_updated') {
+          if (msg.event === EVENT_DEVICE_DISCOVERED || msg.event === EVENT_DEVICE_UPDATED) {
             const dev = msg.data as DeviceInfo;
             setDevices((prev) => {
               const index = prev.findIndex((d) => d.address === dev.address);
@@ -74,13 +86,13 @@ export function useBluetoothEvents() {
             });
             // A discovered device usually means a scan is running; keep the
             // indicator honest even if the adapter event was missed.
-            if (msg.event === 'device_discovered') {
+            if (msg.event === EVENT_DEVICE_DISCOVERED) {
               setIsScanning(true);
             }
-          } else if (msg.event === 'device_removed') {
+          } else if (msg.event === EVENT_DEVICE_REMOVED) {
             const removedPath = msg.data as string;
             setDevices((prev) => prev.filter((d) => d.path !== removedPath));
-          } else if (msg.event === 'adapter_updated' || msg.event === 'adapter_added') {
+          } else if (msg.event === EVENT_ADAPTER_UPDATED || msg.event === EVENT_ADAPTER_ADDED) {
             const adapter = msg.data as AdapterInfo;
             setAdapters((prev) => {
               const index = prev.findIndex((a) => a.interface === adapter.interface);
@@ -131,7 +143,7 @@ export function useBluetoothEvents() {
         } catch (err) {
           console.debug('Failed to poll devices during scan', err);
         }
-      }, 2000);
+      }, SCAN_POLL_INTERVAL_MS);
     }
 
     return () => {

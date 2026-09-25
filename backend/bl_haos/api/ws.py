@@ -6,12 +6,22 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from ..constants import (
+    EVENT_HEALTH,
+    EVENT_SPEAKER_UPDATED,
+    WS_HEALTH_DEFAULT_VERSION,
+    WS_NATIVE_PATH,
+    WS_PING,
+    WS_PONG,
+    WS_POLICY_VIOLATION_CODE,
+    WS_PUBLIC_PATH,
+)
 from ..health import authorized_bearer, safe_detail
 
 logger = logging.getLogger("bl_haos.api.ws")
 router = APIRouter(tags=["websocket"])
-NATIVE_SPEAKER_UPDATED_EVENT = "speaker_updated"
-HEALTH_EVENT = "health"
+NATIVE_SPEAKER_UPDATED_EVENT = EVENT_SPEAKER_UPDATED
+HEALTH_EVENT = EVENT_HEALTH
 
 
 class ConnectionManager:
@@ -41,7 +51,7 @@ class ConnectionManager:
             )
         }
         if event_type == HEALTH_EVENT and isinstance(message["data"], dict):
-            message["version"] = message["data"].get("version", 1)
+            message["version"] = message["data"].get("version", WS_HEALTH_DEFAULT_VERSION)
         raw_text = json.dumps(message)
         dead_connections = []
 
@@ -60,15 +70,15 @@ ws_manager = ConnectionManager()
 native_ws_manager = ConnectionManager()
 
 
-@router.websocket("/ws")
+@router.websocket(WS_PUBLIC_PATH)
 async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
     try:
         while True:
             # Keep-alive heartbeat & client messages
             text = await websocket.receive_text()
-            if text == "ping":
-                await websocket.send_text("pong")
+            if text == WS_PING:
+                await websocket.send_text(WS_PONG)
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -77,13 +87,13 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
-@router.websocket("/ws/native")
+@router.websocket(WS_NATIVE_PATH)
 async def native_websocket_endpoint(websocket: WebSocket):
     """Serve native speaker updates on the private Supervisor network."""
     expected = websocket.app.state.config_store.settings.native_token
     if not authorized_bearer(websocket.headers.get("authorization"), expected):
         logger.debug("Native WebSocket connection rejected: authentication required")
-        await websocket.close(code=1008, reason="Native bridge authentication required")
+        await websocket.close(code=WS_POLICY_VIOLATION_CODE, reason="Native bridge authentication required")
         return
     await native_ws_manager.connect(websocket)
     logger.debug("Native WebSocket client connected successfully")

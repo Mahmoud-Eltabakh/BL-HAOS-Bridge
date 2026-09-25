@@ -40,6 +40,13 @@ HSP_HS_UUID = "00001108-0000-1000-8000-00805f9b34fb"
 HSP_AG_UUID = "00001112-0000-1000-8000-00805f9b34fb"
 HEADSET_HS_UUID = "00001131-0000-1000-8000-00805f9b34fb"
 
+# 16-bit audio service identifiers. They are matched both standalone and as a
+# substring of a full 128-bit UUID, so the short form is the single source.
+AUDIO_SERVICE_SHORT_UUIDS = (
+    "110a", "110b", "110c", "110d", "110e", "110f",
+    "1108", "1112", "111e", "111f", "1131",
+)
+
 AUDIO_SINK_UUIDS = {
     A2DP_SINK_UUID.lower(),
     A2DP_SOURCE_UUID.lower(),
@@ -52,10 +59,8 @@ AUDIO_SINK_UUIDS = {
     HSP_HS_UUID.lower(),
     HSP_AG_UUID.lower(),
     HEADSET_HS_UUID.lower(),
-    "110a", "110b", "110c", "110d", "110e", "110f",
-    "1108", "1112", "111e", "111f", "1131",
-    "0x110a", "0x110b", "0x110c", "0x110d", "0x110e", "0x110f",
-    "0x1108", "0x1112", "0x111e", "0x111f", "0x1131",
+    *AUDIO_SERVICE_SHORT_UUIDS,
+    *(f"0x{short_uuid}" for short_uuid in AUDIO_SERVICE_SHORT_UUIDS),
 }
 
 # Major Device Classes (bits 8-12 of Class of Device)

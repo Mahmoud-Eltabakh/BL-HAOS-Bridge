@@ -5,8 +5,26 @@ from __future__ import annotations
 from typing import Any
 
 from .bluetooth.models import AdapterInfo, DeviceInfo
+from .constants import (
+    COMMAND_PAUSE,
+    COMMAND_PLAY,
+    COMMAND_SET_VOLUME,
+    COMMAND_STOP,
+    COMPONENT_BLUETOOTH,
+    COMPONENT_DEMO,
+    COMPONENT_NATIVE_BRIDGE,
+    COMPONENT_PIPEWIRE,
+    DEFAULT_VOLUME_RATIO,
+    EVENT_DEMO_SCENARIO,
+    PLAYBACK_IDLE,
+    PLAYBACK_PLAYING,
+    SOURCE_DEMO,
+)
 from .diagnostics import DiagnosticsService
 from .health import FailureClass, HealthRegistry, HealthState, SpeakerState
+
+# The demonstration speaker the dashboard focuses on in every scenario.
+DEMO_PRIMARY_SPEAKER = "aa:bb:cc:11:22:33"
 
 DEMO_SCENARIOS = {
     "healthy": None,
@@ -119,28 +137,28 @@ class DemoRuntime:
                 rssi=-72,
             ),
         }
-        self.device = self.devices["aa:bb:cc:11:22:33"]
-        self._states: dict[str, str] = {"aa:bb:cc:11:22:33": "idle"}
-        self._volumes: dict[str, float] = {"aa:bb:cc:11:22:33": 0.70}
+        self.device = self.devices[DEMO_PRIMARY_SPEAKER]
+        self._states: dict[str, str] = {DEMO_PRIMARY_SPEAKER: PLAYBACK_IDLE}
+        self._volumes: dict[str, float] = {DEMO_PRIMARY_SPEAKER: DEFAULT_VOLUME_RATIO}
         self._prepare_health()
 
     def _prepare_health(self) -> None:
-        self.health.observe_component("bluetooth", HealthState.HEALTHY, source="demo")
-        self.health.observe_component("pipewire", HealthState.HEALTHY if self.scenario not in {"sink_missing"} else HealthState.UNAVAILABLE, source="demo")
+        self.health.observe_component(COMPONENT_BLUETOOTH, HealthState.HEALTHY, source=SOURCE_DEMO)
+        self.health.observe_component(COMPONENT_PIPEWIRE, HealthState.HEALTHY if self.scenario not in {"sink_missing"} else HealthState.UNAVAILABLE, source=SOURCE_DEMO)
         if self.scenario == "native_integration_unavailable":
-            self.health.observe_component("native_bridge", HealthState.UNAVAILABLE, required=False, failure=FailureClass.NATIVE_INTEGRATION_UNAVAILABLE, source="demo")
+            self.health.observe_component(COMPONENT_NATIVE_BRIDGE, HealthState.UNAVAILABLE, required=False, failure=FailureClass.NATIVE_INTEGRATION_UNAVAILABLE, source=SOURCE_DEMO)
         failure = DEMO_SCENARIOS[self.scenario]
         if failure:
             failure_class, state = failure
             self.health.observe_speaker(self.device.address, SpeakerState.UNAVAILABLE, failure=failure_class, detail="Deterministic demo failure", attempt=2)
             if failure_class == FailureClass.SINK_MISSING.value:
-                self.health.observe_component("pipewire", state, failure=failure_class, source="demo")
+                self.health.observe_component(COMPONENT_PIPEWIRE, state, failure=failure_class, source=SOURCE_DEMO)
         else:
             self.health.observe_speaker(self.device.address, SpeakerState.CONNECTED)
         self.health.set_lifecycle(HealthState.HEALTHY if self.scenario == "healthy" else HealthState.DEGRADED)
         self.diagnostics_service.record_event(
-            "demo_scenario",
-            component="demo",
+            EVENT_DEMO_SCENARIO,
+            component=COMPONENT_DEMO,
             detail={"scenario": self.scenario, "event_order": 1},
             correlation_id="demo-event-0001",
         )
@@ -176,8 +194,8 @@ class DemoRuntime:
             dev.paired = True
             dev.trusted = True
             dev.connected = True
-            self._states[normalized] = "idle"
-            self._volumes.setdefault(normalized, 0.70)
+            self._states[normalized] = PLAYBACK_IDLE
+            self._volumes.setdefault(normalized, DEFAULT_VOLUME_RATIO)
             self.health.observe_speaker(normalized, SpeakerState.CONNECTED)
             return True
         return False
@@ -218,22 +236,22 @@ class DemoRuntime:
 
     def get_state(self, address: str) -> str:
         normalized = address.lower().replace("-", ":")
-        return self._states.get(normalized, "idle")
+        return self._states.get(normalized, PLAYBACK_IDLE)
 
     def get_volume(self, address: str) -> float:
         normalized = address.lower().replace("-", ":")
-        return self._volumes.get(normalized, 0.70)
+        return self._volumes.get(normalized, DEFAULT_VOLUME_RATIO)
 
     async def execute(self, address: str, operation: str, **kwargs: Any) -> None:
         normalized = address.lower().replace("-", ":")
-        if operation == "set_volume":
+        if operation == COMMAND_SET_VOLUME:
             volume = kwargs.get("volume")
             if volume is not None:
                 self._volumes[normalized] = float(volume)
-        elif operation == "play":
-            self._states[normalized] = "playing"
-        elif operation in ("pause", "stop"):
-            self._states[normalized] = "idle"
+        elif operation == COMMAND_PLAY:
+            self._states[normalized] = PLAYBACK_PLAYING
+        elif operation in (COMMAND_PAUSE, COMMAND_STOP):
+            self._states[normalized] = PLAYBACK_IDLE
         return None
 
     async def start_keepalive(self) -> None:

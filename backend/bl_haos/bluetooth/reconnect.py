@@ -11,6 +11,20 @@ from pydantic import BaseModel
 
 from .manager import BluetoothManager
 from .models import DeviceInfo
+from ..constants import (
+    EVENT_DEVICE_DISCOVERED,
+    EVENT_DEVICE_UPDATED,
+    RECONNECT_BACKOFF_JITTER,
+    RECONNECT_BACKOFF_MULTIPLIER,
+    RECONNECT_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+    RECONNECT_INITIAL_BACKOFF_SECONDS,
+    RECONNECT_MAX_BACKOFF_SECONDS,
+    RECONNECT_MAX_FAILURES_BEFORE_BREAKER,
+    RECONNECT_MIN_BACKOFF_SECONDS,
+    RECONNECT_MIN_FAILURES_AFTER_HEAL,
+    RECONNECT_POLL_INTERVAL_SECONDS,
+    RECONNECT_SELF_HEAL_FAILURE_THRESHOLD,
+)
 from ..health import FailureClass, HealthRegistry, SpeakerState, normalize_address
 
 logger = logging.getLogger("bl_haos.bluetooth.reconnect")
@@ -39,11 +53,11 @@ class AutoReconnectEngine:
     def __init__(
         self,
         manager: BluetoothManager,
-        initial_backoff: float = 1.0,
-        backoff_multiplier: float = 1.5,
-        max_backoff: float = 20.0,
-        max_failures_before_breaker: int = 8,
-        circuit_breaker_cooldown: float = 10.0,
+        initial_backoff: float = RECONNECT_INITIAL_BACKOFF_SECONDS,
+        backoff_multiplier: float = RECONNECT_BACKOFF_MULTIPLIER,
+        max_backoff: float = RECONNECT_MAX_BACKOFF_SECONDS,
+        max_failures_before_breaker: int = RECONNECT_MAX_FAILURES_BEFORE_BREAKER,
+        circuit_breaker_cooldown: float = RECONNECT_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
         health_registry: HealthRegistry | None = None,
     ):
         self.manager = manager
@@ -99,17 +113,17 @@ class AutoReconnectEngine:
             del self.profiles[addr]
 
     def _calculate_backoff_delay(self, step: int) -> float:
-        """Calculate exponential backoff with +/- 15% random jitter."""
+        """Calculate exponential backoff with random jitter."""
         delay = min(self.max_backoff, self.initial_backoff * (self.backoff_multiplier ** step))
-        jitter = delay * random.uniform(-0.15, 0.15)
-        return max(0.5, delay + jitter)
+        jitter = delay * random.uniform(-RECONNECT_BACKOFF_JITTER, RECONNECT_BACKOFF_JITTER)
+        return max(RECONNECT_MIN_BACKOFF_SECONDS, delay + jitter)
 
     def _handle_bluetooth_event(self, event_type: str, data: Any):
         """React to live Bluetooth events from the manager."""
         if not self._running:
             return
 
-        if event_type in ("device_updated", "device_discovered"):
+        if event_type in (EVENT_DEVICE_UPDATED, EVENT_DEVICE_DISCOVERED):
             if isinstance(data, DeviceInfo):
                 self._on_device_event(data)
 
@@ -186,7 +200,7 @@ class AutoReconnectEngine:
                 await self._tick()
             except Exception as e:
                 logger.error("Error in reconnect loop tick: %s", e)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(RECONNECT_POLL_INTERVAL_SECONDS)
 
     async def _tick(self) -> None:
         now = time.time()
@@ -279,7 +293,7 @@ class AutoReconnectEngine:
                 logger.warning("Failed to reconnect to %s: %s (Failures: %d)", addr, e, profile.consecutive_failures)
                 logger.debug("Auto-reconnect next retry calculation for %s (backoff_step=%d)", addr, profile.backoff_step)
 
-                if profile.consecutive_failures >= 2:
+                if profile.consecutive_failures >= RECONNECT_SELF_HEAL_FAILURE_THRESHOLD:
                     try:
                         recovered = await self._recover_stale_device(profile)
                         if recovered:
@@ -293,7 +307,7 @@ class AutoReconnectEngine:
                         else:
                             profile.state = ReconnectState.BACKOFF
                             profile.next_retry_time = time.time() + self.initial_backoff
-                            profile.consecutive_failures = max(profile.consecutive_failures, 3)
+                            profile.consecutive_failures = max(profile.consecutive_failures, RECONNECT_MIN_FAILURES_AFTER_HEAL)
                             logger.info("Triggered self-healing recovery for stale speaker %s", addr)
                         return
                     except Exception as recovery_exc:
@@ -317,8 +331,8 @@ class AutoReconnectEngine:
                         self.health.observe_speaker(
                             addr,
                             SpeakerState.RECONNECTING,
-                            failure=FailureClass.STALE_BLUEZ_OBJECT if profile.consecutive_failures >= 2 else None,
-                            detail=e if profile.consecutive_failures >= 2 else None,
+                            failure=FailureClass.STALE_BLUEZ_OBJECT if profile.consecutive_failures >= RECONNECT_SELF_HEAL_FAILURE_THRESHOLD else None,
+                            detail=e if profile.consecutive_failures >= RECONNECT_SELF_HEAL_FAILURE_THRESHOLD else None,
                             attempt=profile.consecutive_failures,
                         )
                     delay = self._calculate_backoff_delay(profile.backoff_step)

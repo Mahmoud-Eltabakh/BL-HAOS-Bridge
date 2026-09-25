@@ -9,14 +9,24 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from .constants import (
+    BOUNDED_STRING_LENGTH,
+    COMPONENT_SPEAKER,
+    DIAGNOSTICS_CONTRACT_VERSION,
+    DIAGNOSTICS_EVENT_VERSION,
+    MAX_DETAIL_LENGTH,
+    MAX_DIAGNOSTICS_DEPTH,
+    MAX_IDENTIFIER_LENGTH,
+    OMITTED_PLACEHOLDER,
+)
 from .health import HealthRegistry, redact_value, safe_detail
 
 
 class DiagnosticsService:
     """Project canonical health observations into bounded support-facing data."""
 
-    CONTRACT_VERSION = 1
-    EVENT_VERSION = 1
+    CONTRACT_VERSION = DIAGNOSTICS_CONTRACT_VERSION
+    EVENT_VERSION = DIAGNOSTICS_EVENT_VERSION
     MAX_EVENTS = 50
     MAX_EVENT_AGE = 24 * 60 * 60
     MAX_EVENT_BYTES = 4096
@@ -31,8 +41,8 @@ class DiagnosticsService:
 
     @classmethod
     def _bounded(cls, value: Any, depth: int = 0) -> Any:
-        if depth > 4:
-            return "[omitted]"
+        if depth > MAX_DIAGNOSTICS_DEPTH:
+            return OMITTED_PLACEHOLDER
         if isinstance(value, Mapping):
             result: dict[str, Any] = {}
             for key in sorted(value, key=str):
@@ -47,7 +57,7 @@ class DiagnosticsService:
         if isinstance(value, (list, tuple, set)):
             return [cls._bounded(item, depth + 1) for item in list(value)[: cls.MAX_COLLECTION_ITEMS]]
         if isinstance(value, str):
-            return redact_value(value)[:256]
+            return redact_value(value)[:BOUNDED_STRING_LENGTH]
         if isinstance(value, (int, float, bool)) or value is None:
             return value
         return safe_detail(value)
@@ -71,25 +81,25 @@ class DiagnosticsService:
     ) -> dict[str, Any]:
         event: dict[str, Any] = {
             "version": self.EVENT_VERSION,
-            "name": str(name)[:64],
+            "name": str(name)[:MAX_IDENTIFIER_LENGTH],
             "timestamp": self.clock(),
             "correlation_id": correlation_id or uuid.uuid4().hex,
-            "component": str(component)[:64],
+            "component": str(component)[:MAX_IDENTIFIER_LENGTH],
         }
         if speaker:
-            event["speaker"] = str(speaker)[:64]
+            event["speaker"] = str(speaker)[:MAX_IDENTIFIER_LENGTH]
         if adapter:
-            event["adapter"] = str(adapter)[:64]
+            event["adapter"] = str(adapter)[:MAX_IDENTIFIER_LENGTH]
         if detail is not None:
             event["detail"] = self._bounded(detail)
         if failure_class is not None:
             event["failure_class"] = getattr(failure_class, "value", str(failure_class))
         if transition_reason:
-            event["transition_reason"] = str(transition_reason)[:256]
+            event["transition_reason"] = str(transition_reason)[:MAX_DETAIL_LENGTH]
         if recovery:
-            event["recovery"] = str(recovery)[:64]
+            event["recovery"] = str(recovery)[:MAX_IDENTIFIER_LENGTH]
         if self._event_size(event) > self.MAX_EVENT_BYTES:
-            event["detail"] = "[omitted]"
+            event["detail"] = OMITTED_PLACEHOLDER
         self._events.append(event)
         return dict(event)
 
@@ -110,7 +120,7 @@ class DiagnosticsService:
         for speaker in snapshot.speakers.values():
             if speaker.failure:
                 failures.append({
-                    "component": "speaker",
+                    "component": COMPONENT_SPEAKER,
                     "speaker": speaker.address,
                     "classification": speaker.failure.classification.value,
                     "detail": speaker.failure.detail,

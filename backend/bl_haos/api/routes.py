@@ -12,6 +12,27 @@ from ..bluetooth.models import AdapterInfo, DeviceInfo
 from ..bluetooth.device import BluetoothOperationInProgress
 from ..config import SpeakerSettings, SystemSettings
 from ..ha.player import MediaPlayerError
+from ..constants import (
+    A2DP_SINK_RETRY_ATTEMPTS,
+    A2DP_SINK_RETRY_INTERVAL,
+    API_PREFIX,
+    APP_NAME,
+    BEARER_PREFIX,
+    DEFAULT_PIN,
+    MAX_ADDRESS_LENGTH,
+    MAX_ALIAS_LENGTH,
+    MAX_MEDIA_TYPE_LENGTH,
+    MAX_MEDIA_URL_LENGTH,
+    NATIVE_BRIDGE_ID,
+    NATIVE_BRIDGE_VERSION,
+    NATIVE_COMMAND_VERSION,
+    PLAYBACK_IDLE,
+    SUPPORTED_CODECS,
+    VOLUME_MAX_PERCENT,
+    VOLUME_MAX_RATIO,
+    VOLUME_MIN_PERCENT,
+    VOLUME_MIN_RATIO,
+)
 from ..health import (
     HealthRegistry,
     HealthState,
@@ -24,17 +45,13 @@ from ..health import (
 )
 
 logger = logging.getLogger("bl_haos.api.routes")
-router = APIRouter(prefix="/api", tags=["api"])
-NATIVE_BRIDGE_ID = "bl_haos_native_bridge"
-NATIVE_BRIDGE_VERSION = 1
-A2DP_SINK_RETRY_ATTEMPTS = 20
-A2DP_SINK_RETRY_INTERVAL = 0.5
+router = APIRouter(prefix=API_PREFIX, tags=["api"])
 
 
 def require_native_auth(authorization: str | None, request: Request) -> None:
     """Reject native transport requests without the installation credential."""
     expected = request.app.state.config_store.settings.native_token
-    supplied = authorization.removeprefix("Bearer ") if isinstance(authorization, str) else ""
+    supplied = authorization.removeprefix(BEARER_PREFIX) if isinstance(authorization, str) else ""
     if not expected or not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Native bridge authentication required")
 
@@ -56,8 +73,8 @@ def native_diagnostics(app: Any) -> dict[str, Any]:
 
 
 class PairRequest(BaseModel):
-    address: str = Field(min_length=17, max_length=17)
-    pin: str | None = "0000"
+    address: str = Field(min_length=MAX_ADDRESS_LENGTH, max_length=MAX_ADDRESS_LENGTH)
+    pin: str | None = DEFAULT_PIN
 
     @field_validator("address")
     @classmethod
@@ -86,7 +103,7 @@ class ScanRequest(BaseModel):
 class VolumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    volume: int = Field(ge=0, le=100)
+    volume: int = Field(ge=VOLUME_MIN_PERCENT, le=VOLUME_MAX_PERCENT)
 
 
 class SpeakerUpdateRequest(BaseModel):
@@ -95,7 +112,7 @@ class SpeakerUpdateRequest(BaseModel):
     custom_alias: str | None = None
     auto_reconnect: bool | None = None
     preferred_adapter: str | None = None
-    default_volume: int | None = Field(default=None, ge=0, le=100)
+    default_volume: int | None = Field(default=None, ge=VOLUME_MIN_PERCENT, le=VOLUME_MAX_PERCENT)
     codec_override: str | None = None
 
     @field_validator("preferred_adapter")
@@ -106,14 +123,14 @@ class SpeakerUpdateRequest(BaseModel):
     @field_validator("custom_alias")
     @classmethod
     def valid_alias(cls, value: str | None) -> str | None:
-        if value is not None and (len(value) > 128 or any(ord(char) < 32 for char in value)):
+        if value is not None and (len(value) > MAX_ALIAS_LENGTH or any(ord(char) < 32 for char in value)):
             raise ValueError("Speaker alias is invalid")
         return value
 
     @field_validator("codec_override")
     @classmethod
     def valid_codec(cls, value: str | None) -> str | None:
-        if value is not None and value not in {"auto", "sbc", "sbc_xq", "aac", "aptx", "aptx_hd", "ldac"}:
+        if value is not None and value not in SUPPORTED_CODECS:
             raise ValueError("Codec override is invalid")
         return value
 
@@ -121,11 +138,11 @@ class SpeakerUpdateRequest(BaseModel):
 class NativeCommandRequest(BaseModel):
     """Versioned command payload accepted from the bundled integration only."""
 
-    version: Literal[1] = 1
+    version: Literal[NATIVE_COMMAND_VERSION] = NATIVE_COMMAND_VERSION
     operation: Literal["play", "pause", "stop", "set_volume", "play_media"]
-    volume: float | None = Field(default=None, ge=0, le=1)
-    url: str | None = Field(default=None, max_length=2048)
-    media_type: str | None = Field(default=None, max_length=128)
+    volume: float | None = Field(default=None, ge=VOLUME_MIN_RATIO, le=VOLUME_MAX_RATIO)
+    url: str | None = Field(default=None, max_length=MAX_MEDIA_URL_LENGTH)
+    media_type: str | None = Field(default=None, max_length=MAX_MEDIA_TYPE_LENGTH)
 
     @field_validator("url")
     @classmethod
@@ -162,7 +179,7 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
         "trusted": bool(device.trusted or device.paired or device.connected),
         "is_audio_sink": device.is_audio_sink,
         "playback": {
-            "state": bridge.get_state(device.address) if bridge else "idle",
+            "state": bridge.get_state(device.address) if bridge else PLAYBACK_IDLE,
             "volume": bridge.get_volume(device.address) if bridge else None,
             **native_playback_timeline(bridge, device.address),
         },
@@ -185,12 +202,12 @@ async def get_health(request: Request):
     snapshot = registry.snapshot() if registry else None
     logger.debug(
         "Health check requested (status=%s, dbus_connected=%s)",
-        snapshot.status.value if snapshot else "unknown",
+        snapshot.status.value if snapshot else HealthState.UNKNOWN.value,
         request.app.state.bt_manager.bus is not None,
     )
     return {
         "status": "ok" if not snapshot or snapshot.status == HealthState.HEALTHY else snapshot.status.value,
-        "service": "BL-HAOS",
+        "service": APP_NAME,
         "dbus_connected": request.app.state.bt_manager.bus is not None,
         "adapters_count": len(request.app.state.bt_manager.get_adapters()),
         "devices_count": len(request.app.state.bt_manager.get_devices(audio_only=False)),
