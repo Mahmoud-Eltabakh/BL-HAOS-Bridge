@@ -28,8 +28,8 @@ logger = logging.getLogger("bl_haos.api.routes")
 router = APIRouter(prefix="/api", tags=["api"])
 NATIVE_BRIDGE_ID = "bl_haos_native_bridge"
 NATIVE_BRIDGE_VERSION = 1
-A2DP_SINK_RETRY_ATTEMPTS = 15
-A2DP_SINK_RETRY_INTERVAL = 1.0
+A2DP_SINK_RETRY_ATTEMPTS = 20
+A2DP_SINK_RETRY_INTERVAL = 0.5
 
 
 def require_native_auth(authorization: str | None, request: Request) -> None:

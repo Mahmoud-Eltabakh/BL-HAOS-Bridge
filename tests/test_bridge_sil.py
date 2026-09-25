@@ -258,6 +258,7 @@ def test_auto_reconnect_reports_bluez_failure_distinctly(monkeypatch):
 
 def test_auto_reconnect_reports_sink_still_missing_distinctly(monkeypatch):
     """When BlueZ reconnects but no sink appears, the error says so instead of a generic message."""
+    from backend.bl_haos.api.routes import A2DP_SINK_RETRY_ATTEMPTS
     from backend.bl_haos.ha.player import MediaPlayerError
 
     execute = AsyncMock(side_effect=MediaPlayerError("Connected PipeWire A2DP sink is unavailable"))
@@ -280,8 +281,8 @@ def test_auto_reconnect_reports_sink_still_missing_distinctly(monkeypatch):
     assert response.status_code == 409
     assert "no audio sink appeared" in response.json()["detail"]
     connect.assert_awaited_once_with("aa:bb:cc:dd:ee:03")
-    assert execute.await_count == 16
-    assert sleep.await_count == 15
+    assert execute.await_count == A2DP_SINK_RETRY_ATTEMPTS + 1
+    assert sleep.await_count == A2DP_SINK_RETRY_ATTEMPTS
 
 
 def test_auto_reconnect_waits_until_sink_recovers(monkeypatch):
