@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.53
+
+- Make the Ingress dashboard readable. The previous theme removed every border and kept its surfaces within roughly 1.08:1 of each other, so cards, input wells and buttons all rendered as one flat grey mass. The palette now has a deliberate ramp (page `#151a23`, card `#242d3b`, well `#0f141c`, raised `#313d4f` — 1.26:1 to 1.33:1 apart), every surface keeps a 1px border, and buttons carry their own surface instead of rendering as floating text. Text tiers moved to audited tokens (`--neu-text` / `--neu-muted` / `--neu-faint`) that clear WCAG AA (4.5:1) on all four surfaces, form placeholders are no longer drawn at 3.8:1, and the focus ring keeps a 12:1 outline against the page.
+- Add `tests/test_theme_contrast.py`, which parses the palette out of `web_ui/src/index.css` and fails the build if the surface ramp collapses, a text tier drops below 4.5:1, a surface class loses its border, or the focus ring drops below 3:1.
+
 ## 0.2.52
 
 - Label Home Assistant text-to-speech announcements as "Text to speech" instead of showing the opaque TTS cache hash (for example "2vE 5bV-rMNr9-jxFRDdHQ") as the media title.

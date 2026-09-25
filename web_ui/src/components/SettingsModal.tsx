@@ -121,7 +121,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               value={alias}
               onChange={(e) => setAlias(e.target.value)}
               placeholder="e.g. Living Room Speaker"
-              className="neu-control w-full rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
+              className="neu-control neu-placeholder w-full rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
             />
           </div>
 
@@ -143,7 +143,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                <Volume2 className="w-3.5 h-3.5 text-slate-400" /> Default Startup Volume
+                <Volume2 className="w-3.5 h-3.5 neu-text-faint" /> Default Startup Volume
               </label>
               <span className="text-xs font-mono text-slate-200">{defaultVolume}%</span>
             </div>
@@ -157,25 +157,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               aria-valuemax={100}
               aria-valuenow={defaultVolume}
               onChange={(e) => setDefaultVolume(Number(e.target.value))}
-              className="neu-range w-full h-2 bg-slate-900 rounded-lg appearance-none cursor-pointer"
+              className="neu-range w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer"
             />
           </div>
 
           <div className="flex items-center justify-between pt-2">
             <div>
               <p className="text-sm font-medium text-slate-200">Auto-Reconnect</p>
-              <p className="text-xs text-slate-400">Automatically reconnect when speaker turns on or is in range</p>
+              <p className="text-xs neu-text-muted">Automatically reconnect when speaker turns on or is in range</p>
             </div>
             <input
               type="checkbox"
               checked={autoReconnect}
               onChange={(e) => setAutoReconnect(e.target.checked)}
-              className="neu-control w-5 h-5 rounded text-blue-600 focus:ring-0 cursor-pointer"
+              className="neu-checkbox w-5 h-5 focus:ring-0"
             />
           </div>
         </div>
 
-        <div className="neu-inset p-4 flex justify-end gap-2">
+        <div className="p-4 flex justify-end gap-2 border-t neu-hairline">
           <button
             onClick={onClose}
             className="neu-button px-4 py-2 text-xs font-medium text-slate-300 hover:text-white rounded-xl"

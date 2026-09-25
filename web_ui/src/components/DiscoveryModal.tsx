@@ -167,20 +167,20 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
     >
       <div className="neu-surface rounded-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]">
         {/* Header */}
-        <div className="neu-inset p-4 flex items-center justify-between">
+        <div className="p-4 flex items-center justify-between border-b neu-hairline">
           <div className="flex items-center space-x-3">
             <div className="p-2.5 bg-blue-600/20 text-blue-400 rounded-xl">
               <Bluetooth className="w-5 h-5" />
             </div>
             <div>
               <h2 id="discovery-dialog-title" className="text-lg font-bold text-white">Add Bluetooth Speaker</h2>
-              <p className="text-xs text-slate-400">Discover and connect nearby Bluetooth audio devices</p>
+              <p className="text-xs neu-text-muted">Discover and connect nearby Bluetooth audio devices</p>
             </div>
           </div>
           <button
             ref={closeButtonRef}
             onClick={onClose}
-              className="neu-button p-2 text-slate-400 hover:text-white rounded-lg"
+              className="neu-button p-2 text-slate-300 hover:text-white rounded-lg"
             aria-label="Close dialog"
           >
             <X className="w-5 h-5" />
@@ -207,7 +207,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
         )}
 
         {/* Scan & Search Action Bar */}
-        <div className="neu-inset p-4 space-y-3">
+        <div className="p-4 space-y-3 border-b neu-hairline">
           <div className="flex flex-wrap items-center justify-between gap-3">
             {/* Live Scan Indicator */}
             <div className="flex items-center space-x-2">
@@ -233,7 +233,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               ) : (
                 <button
                   onClick={() => setShowPinInput(true)}
-                  className="neu-button px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 rounded-lg"
+                  className="neu-button px-3 py-1.5 text-xs text-slate-300 hover:text-white rounded-lg"
                 >
                   Custom PIN
                 </button>
@@ -260,7 +260,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search by MAC address or name (e.g. EC:81 or Logitech)..."
-                className="neu-control w-full rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
+                className="neu-control neu-placeholder w-full rounded-xl pl-9 pr-4 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-400/70"
               />
               {searchQuery && (
                 <button
@@ -302,8 +302,8 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
         {/* Device List */}
         <div className="p-4 overflow-y-auto space-y-2 flex-1">
           {filteredDevices.length === 0 ? (
-            <div className="text-center py-10 text-slate-400">
-              <Bluetooth className="w-12 h-12 mx-auto text-slate-600 mb-3" />
+            <div className="text-center py-10 neu-text-muted">
+              <Bluetooth className="w-12 h-12 mx-auto neu-text-faint opacity-70 mb-3" />
               <p className="text-sm">
                 {searchQuery
                   ? `No Bluetooth devices matching "${searchQuery}"`
@@ -311,7 +311,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                     ? 'Scanning — devices will appear here the moment they are found.'
                     : 'No Bluetooth devices detected yet.'}
               </p>
-              <p className="text-xs text-slate-500 mt-1">
+              <p className="text-xs neu-text-faint mt-1">
                 Put your speaker in pairing mode or manage MAC addresses directly below.
               </p>
             </div>
@@ -324,10 +324,10 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
               return (
                 <div
                   key={dev.address}
-                  className="neu-surface-subtle rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition"
+                  className="neu-inset rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition hover:border-slate-500/60"
                 >
                   <div className="flex items-center space-x-3.5">
-                    <div className={`p-2.5 rounded-lg ${dev.is_audio_sink ? 'bg-blue-600/20 text-blue-400' : 'bg-slate-800 text-slate-400'}`}>
+                    <div className={`p-2.5 rounded-lg ${dev.is_audio_sink ? 'bg-blue-600/20 text-blue-300' : 'neu-inset neu-text-muted'}`}>
                       {dev.is_audio_sink ? <Volume2 className="w-5 h-5" /> : <Bluetooth className="w-5 h-5" />}
                     </div>
                     <div>
@@ -338,7 +338,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                             Named
                           </span>
                         ) : (
-                          <span className="text-[10px] bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.5 rounded">
+                          <span className="text-[10px] neu-inset neu-text-faint px-1.5 py-0.5 rounded">
                             Unnamed Device
                           </span>
                         )}
@@ -353,7 +353,7 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-slate-400 font-mono flex items-center space-x-2 mt-0.5">
+                      <p className="text-xs neu-text-muted font-mono flex items-center space-x-2 mt-0.5">
                         <span className="text-blue-300 font-semibold">{dev.address}</span>
                         <span>•</span>
                         <span>{dev.device_type || 'Bluetooth Device'}</span>
@@ -409,15 +409,15 @@ export const DiscoveryModal: React.FC<DiscoveryModalProps> = ({
         </div>
 
         {/* Direct / Manual MAC Pair Footer */}
-        <div className="neu-inset p-4">
-          <p className="text-xs text-slate-400 mb-2 font-medium">Connect by Bluetooth MAC Address:</p>
+        <div className="p-4 border-t neu-hairline">
+          <p className="text-xs neu-text-muted mb-2 font-medium">Connect by Bluetooth MAC Address:</p>
           <div className="flex flex-col sm:flex-row items-center gap-2">
             <input
               type="text"
               value={manualMac}
               onChange={(e) => setManualMac(e.target.value)}
               placeholder="e.g. EC:81:93:53:A9:16"
-              className="neu-control w-full sm:flex-1 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
+              className="neu-control neu-placeholder w-full sm:flex-1 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:ring-2 focus:ring-blue-400/70"
             />
             <div className="flex items-center space-x-2 w-full sm:w-auto">
               <button

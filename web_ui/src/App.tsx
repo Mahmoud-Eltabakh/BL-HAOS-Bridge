@@ -41,7 +41,7 @@ export const App: React.FC = () => {
   return (
     <div className="neu-page flex-1 text-slate-100 p-6 md:p-10 max-w-7xl mx-auto w-full">
       {/* Top Navbar */}
-      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-8 border-b border-slate-800">
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-8 border-b neu-hairline">
         <div className="flex items-center space-x-3.5">
           <div className="neu-button p-3 bg-blue-600 rounded-2xl text-white">
             <Bluetooth className="w-7 h-7" />
@@ -62,14 +62,14 @@ export const App: React.FC = () => {
                 {wsConnected ? 'Live' : 'Offline'}
               </span>
             </h1>
-            <p className="text-xs text-slate-400 mt-0.5">Home Assistant OS Bluetooth Audio Adapter & Multi-Room Sync</p>
+            <p className="text-xs neu-text-muted mt-0.5">Home Assistant OS Bluetooth Audio Adapter & Multi-Room Sync</p>
           </div>
         </div>
 
         <div className="flex items-center space-x-3">
           <button
             onClick={refreshAll}
-            className="neu-button p-2.5 text-slate-400 hover:text-white bg-slate-800 rounded-xl"
+            className="neu-button p-2.5 rounded-xl text-slate-300 hover:text-white"
             title="Refresh State"
           >
             <RefreshCw className="w-4 h-4" />
@@ -94,16 +94,16 @@ export const App: React.FC = () => {
       <section className="neu-surface mt-4 rounded-lg overflow-hidden transition-all" aria-live="polite">
         <button
           onClick={() => setShowDiagnostics(!showDiagnostics)}
-          className="w-full px-3 py-2 flex items-center justify-between text-xs text-slate-400 hover:text-slate-200 transition"
+          className="w-full px-3 py-2 flex items-center justify-between text-xs neu-text-muted hover:text-white transition"
         >
           <div className="flex items-center space-x-2">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="font-medium text-slate-300">Home Assistant Native integration</span>
-            <span className="text-[10px] bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.2 rounded">
+            <span className="font-medium text-slate-200">Home Assistant Native integration</span>
+            <span className="text-[10px] neu-inset neu-text-faint px-1.5 py-0.2 rounded">
               {diagnostics?.native_transport_ready ? 'Connected' : 'Ready'}
             </span>
           </div>
-          <div className="flex items-center space-x-1.5 text-slate-400">
+          <div className="flex items-center space-x-1.5 neu-text-muted">
             <span>Details</span>
             {showDiagnostics ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </div>
@@ -138,9 +138,9 @@ export const App: React.FC = () => {
 
         {pairedSpeakers.length === 0 ? (
           <div className="neu-surface rounded-2xl p-12 text-center">
-            <Volume2 className="w-12 h-12 mx-auto text-slate-600 mb-3" />
-            <h3 className="text-base font-semibold text-slate-300">No speakers added yet</h3>
-            <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+            <Volume2 className="w-12 h-12 mx-auto neu-text-faint opacity-70 mb-3" />
+            <h3 className="text-base font-semibold text-slate-200">No speakers added yet</h3>
+            <p className="text-xs neu-text-muted mt-1 max-w-sm mx-auto">
               Click Add Speaker to discover and connect your Bluetooth speaker.
             </p>
             <button

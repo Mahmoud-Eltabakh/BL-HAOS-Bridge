@@ -146,7 +146,7 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
             <button
               onClick={() => setShowConfirmRemove(false)}
               disabled={loading}
-              className="neu-button px-3 py-1.5 text-xs text-slate-400 hover:text-white rounded-lg"
+              className="neu-button px-3 py-1.5 text-xs text-slate-300 hover:text-white rounded-lg"
             >
               Cancel
             </button>

@@ -37,12 +37,12 @@ export const AdapterStatus: React.FC<AdapterStatusProps> = ({ adapters, onRefres
         >
           <span className={`w-2 h-2 rounded-full ${adapter.powered ? 'bg-emerald-400' : 'bg-rose-500'}`} />
           <span className="font-semibold text-slate-200">{adapter.interface}</span>
-          <span className="text-slate-400 font-mono hidden sm:inline">({adapter.address})</span>
+          <span className="neu-text-muted font-mono hidden sm:inline">({adapter.address})</span>
           <button
             onClick={() => void togglePower(adapter.interface, adapter.powered)}
             disabled={pending !== null}
             aria-label={`${adapter.powered ? 'Power off' : 'Power on'} ${adapter.interface}`}
-            className={`neu-button p-1 rounded ${adapter.powered ? 'text-emerald-400' : 'text-slate-500'}`}
+            className={`neu-button p-1 rounded ${adapter.powered ? 'text-emerald-400' : 'text-slate-300'}`}
             title="Toggle Adapter Power"
           >
             <Power className="w-3.5 h-3.5" />
