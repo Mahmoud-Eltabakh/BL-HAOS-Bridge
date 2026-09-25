@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Diagnostics and native status', () => {
+test.describe('Native integration status', () => {
   test('details panel reveals bridge readiness and speaker sync counts', async ({ page }) => {
     await page.goto('/');
 

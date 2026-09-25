@@ -59,6 +59,9 @@ pnpm-debug.log*
 # Frontend build output is produced by the Docker build (multi-stage) and CI;
 # never commit it.
 web_ui/dist/
+# Playwright artifacts from the local/CI end-to-end run.
+web_ui/test-results/
+web_ui/playwright-report/
 
 # OS Artifacts
 .DS_Store
