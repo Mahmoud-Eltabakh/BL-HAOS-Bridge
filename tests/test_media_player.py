@@ -476,9 +476,75 @@ def test_parse_duration_reads_ffprobe_output():
 
     assert MediaPlayerBridge._parse_duration("240.05\n") == pytest.approx(240.05)
     assert MediaPlayerBridge._parse_duration("12.5\n") == pytest.approx(12.5)
+    assert MediaPlayerBridge._parse_duration("duration=240.05\n") == pytest.approx(240.05)
     assert MediaPlayerBridge._parse_duration("N/A\n") is None
     assert MediaPlayerBridge._parse_duration("0\n") is None
     assert MediaPlayerBridge._parse_duration("") is None
+
+
+def test_parse_probe_metadata_reads_tags_and_duration():
+    from backend.bl_haos.ha.player import MediaPlayerBridge
+
+    metadata = MediaPlayerBridge._parse_probe_metadata("title=Athan Fajr\nartist=Malek\n duration=240.05\n")
+    assert metadata == {"duration": pytest.approx(240.05), "title": "Athan Fajr", "artist": "Malek"}
+
+    # A stream without tags must still yield its duration.
+    assert MediaPlayerBridge._parse_probe_metadata("240.05\n")["duration"] == pytest.approx(240.05)
+    assert MediaPlayerBridge._parse_probe_metadata("") == {"duration": None, "title": None, "artist": None}
+    assert MediaPlayerBridge._parse_probe_metadata("title=\n")["title"] is None
+
+
+def test_title_from_url_prefers_a_readable_filename():
+    from backend.bl_haos.ha.player import MediaPlayerBridge
+
+    assert (
+        MediaPlayerBridge._title_from_url(
+            "http://ha:8123/media/local/03.athan_fajr_Malek%20Chibat%20Al-Hamd.mp3?authSig=abc"
+        )
+        == "03.athan fajr Malek Chibat Al-Hamd"
+    )
+    assert MediaPlayerBridge._title_from_url("http://ha:8123/audio/track.flac") == "track"
+    assert MediaPlayerBridge._title_from_url("http://ha:8123/api/tts_proxy/abc123.mp3") == "abc123"
+    assert MediaPlayerBridge._title_from_url("http://ha:8123/") is None
+    assert MediaPlayerBridge._title_from_url("") is None
+
+
+@pytest.mark.asyncio
+async def test_timeline_exposes_the_title_while_playing():
+    """The card must name what is playing, not just show a progress bar."""
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+
+    await bridge.play_url(
+        address, "http://ha:8123/media/local/04.athan_mishary.mp3?authSig=signed"
+    )
+
+    # Available immediately, before the ffprobe refinement lands.
+    assert bridge.get_timeline(address)["title"] == "04.athan mishary"
+
+    await bridge.execute(address, "stop")
+    assert bridge.get_timeline(address)["title"] is None
+
+
+@pytest.mark.asyncio
+async def test_probe_tags_refine_the_title_and_artist():
+    async def process_factory(*args, **kwargs):
+        if args[0] == "ffprobe":
+            return DurationProbeProcess(payload=b"title=Athan Fajr\nartist=Malek Chibat\n duration=240.05\n")
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "10:22:33:44:55:66"
+
+    await bridge.play_url(address, "http://ha:8123/media/local/04.athan_mishary.mp3")
+    assert bridge.get_timeline(address)["title"] == "04.athan mishary"
+
+    await asyncio.sleep(0.01)
+
+    timeline = bridge.get_timeline(address)
+    assert timeline["title"] == "Athan Fajr"
+    assert timeline["artist"] == "Malek Chibat"
+    assert timeline["duration"] == pytest.approx(240.05)
 
 
 @pytest.mark.asyncio
@@ -491,6 +557,8 @@ async def test_timeline_tracks_position_and_ignores_paused_time():
         "position": None,
         "duration": None,
         "position_updated_at": None,
+        "title": None,
+        "artist": None,
     }
 
     await bridge.play_url(address, "https://example.test/audio.mp3")

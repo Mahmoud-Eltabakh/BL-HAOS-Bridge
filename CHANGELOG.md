@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.51
+
+- Name the stream that is playing. The bridge derives a readable title from the media URL immediately (so the card is labelled the moment playback starts) and refines it, plus an artist, from embedded `title`/`artist` tags during the existing background `ffprobe` pass. Both are published in the native `playback` payload and mapped to `media_title`/`media_artist` by the integration.
+
 ## 0.2.50
 
 - Simplify the Ingress dashboard by removing the Diagnostics and Guided recovery panels and their operator-only backend routes. Native Home Assistant integration status remains available.

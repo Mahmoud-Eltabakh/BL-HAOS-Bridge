@@ -9,7 +9,7 @@ import subprocess
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from ..config import ConfigStore, PlayerSettings
 from ..health import FailureClass, HealthRegistry, HealthState, normalize_address, validate_identifier, validate_media_url
@@ -29,6 +29,8 @@ KILL_GRACE_SECONDS = PlayerSettings.model_fields["kill_grace_seconds"].default
 COMMAND_STOP_BUDGET_SECONDS = PlayerSettings.model_fields["command_stop_budget_seconds"].default
 # Bound the background duration probe; a stalled URL must not leak a child.
 DURATION_PROBE_TIMEOUT = 10
+# Display metadata is exported to the native integration; keep it bounded.
+TITLE_MAX_LENGTH = 128
 # Bound how much audio may be queued ahead of the speaker. The default
 # PulseAudio buffer is large enough that pause/stop kept playing for a while.
 PLAYER_LATENCY_MSEC = PlayerSettings.model_fields["latency_msec"].default
@@ -104,10 +106,16 @@ class MediaPlayerBridge:
         return self.states.get(self._address(address), "idle")
 
     def get_timeline(self, address: str) -> dict[str, Any]:
-        """Return the position/duration envelope Home Assistant renders as a bar."""
+        """Return the position/duration/title envelope Home Assistant renders."""
         entry = self.timelines.get(self._address(address))
         if not entry:
-            return {"position": None, "duration": None, "position_updated_at": None}
+            return {
+                "position": None,
+                "duration": None,
+                "position_updated_at": None,
+                "title": None,
+                "artist": None,
+            }
         position = self._timeline_position(entry)
         duration = entry.get("duration")
         if isinstance(duration, (int, float)):
@@ -117,7 +125,31 @@ class MediaPlayerBridge:
             "duration": duration if isinstance(duration, (int, float)) else None,
             # Stamped with the position it belongs to so HA can extrapolate.
             "position_updated_at": time.time(),
+            "title": self._text(entry.get("title")),
+            "artist": self._text(entry.get("artist")),
         }
+
+    @staticmethod
+    def _text(value: Any) -> str | None:
+        """Return a bounded display string, or None when there is nothing to show."""
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        return cleaned[:TITLE_MAX_LENGTH] or None
+
+    @staticmethod
+    def _title_from_url(url: str) -> str | None:
+        """Best-effort display name for a stream, taken from its final path segment."""
+        try:
+            path = urlsplit(url).path
+        except ValueError:
+            return None
+        name = unquote(path.rsplit("/", 1)[-1]).strip()
+        if not name:
+            return None
+        if "." in name[1:]:
+            name = name.rsplit(".", 1)[0]
+        return name.replace("_", " ").strip()[:TITLE_MAX_LENGTH] or None
 
     @staticmethod
     def _timeline_position(entry: dict[str, Any]) -> float:
@@ -128,8 +160,16 @@ class MediaPlayerBridge:
             position += time.time() - clock_started_at
         return max(position, 0.0)
 
-    def _start_timeline(self, address: str, url: str) -> None:
-        self.timelines[address] = {"position": 0.0, "clock_started_at": time.time(), "duration": None, "url": url}
+    def _start_timeline(self, address: str, url: str, title: str | None = None) -> None:
+        self.timelines[address] = {
+            "position": 0.0,
+            "clock_started_at": time.time(),
+            "duration": None,
+            "url": url,
+            # A filename is shown immediately; ffprobe tags refine it moments later.
+            "title": self._text(title) or self._title_from_url(url),
+            "artist": None,
+        }
 
     def _pause_timeline(self, address: str) -> None:
         entry = self.timelines.get(address)
@@ -428,40 +468,77 @@ class MediaPlayerBridge:
                     await process.wait()
 
     async def _async_probe_duration(self, address: str, url: str) -> None:
-        """Resolve the media duration in the background so playback starts at once."""
+        """Resolve duration and display metadata in the background.
+
+        Playback must never wait for this: the title from the URL is already
+        visible, and embedded tags simply refine it when they arrive.
+        """
         try:
             process = await self._process_factory(
-                "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", url,
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration:format_tags=title,artist",
+                "-of", "default=noprint_wrappers=1", url,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             )
         except (OSError, subprocess.SubprocessError):
-            logger.debug("Duration probe unavailable for %s", address)
+            logger.debug("Media probe unavailable for %s", address)
             return
         try:
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=DURATION_PROBE_TIMEOUT)
         except asyncio.TimeoutError:
-            logger.debug("Duration probe timed out for %s", address)
+            logger.debug("Media probe timed out for %s", address)
             self._kill_process(process)
             await self._async_wait_for_exit(process, KILL_GRACE_SECONDS)
             return
-        duration = self._parse_duration(self._decode_output(stdout))
-        if duration is None:
-            return
+        metadata = self._parse_probe_metadata(self._decode_output(stdout))
         entry = self.timelines.get(address)
         if entry is None or entry.get("url") != url:
-            # Playback already moved on; this duration belongs to a dead stream.
+            # Playback already moved on; this metadata belongs to a dead stream.
             return
-        entry["duration"] = duration
-        logger.debug("Resolved media duration for %s: %.2fs", address, duration)
-        await self._notify(address)
+        if metadata["duration"] is not None:
+            entry["duration"] = metadata["duration"]
+        if metadata["title"]:
+            entry["title"] = metadata["title"][:TITLE_MAX_LENGTH]
+        if metadata["artist"]:
+            entry["artist"] = metadata["artist"][:TITLE_MAX_LENGTH]
+        if any(metadata.values()):
+            logger.debug(
+                "Resolved media metadata for %s: duration=%s title=%s",
+                address,
+                metadata["duration"],
+                entry.get("title"),
+            )
+            await self._notify(address)
+
+    @classmethod
+    def _parse_probe_metadata(cls, output: str) -> dict[str, Any]:
+        """Read ffprobe `key=value` output, tolerating a bare numeric duration."""
+        metadata: dict[str, Any] = {"duration": None, "title": None, "artist": None}
+        for line in output.splitlines():
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if not value:
+                    continue
+                if key == "duration":
+                    metadata["duration"] = cls._parse_duration(value)
+                elif key == "title":
+                    metadata["title"] = value
+                elif key == "artist":
+                    metadata["artist"] = value
+            elif metadata["duration"] is None:
+                # Without `nokey=0` ffprobe emits the duration on its own line.
+                metadata["duration"] = cls._parse_duration(line)
+        return metadata
 
     @staticmethod
     def _parse_duration(output: str) -> float | None:
-        """Read the single numeric duration line emitted by ffprobe."""
+        """Read one numeric duration value, ignoring anything not positive."""
         for line in output.splitlines():
+            _, _, candidate = line.partition("=")
             try:
-                duration = float(line.strip())
+                duration = float((candidate or line).strip())
             except ValueError:
                 continue
             if duration > 0:
