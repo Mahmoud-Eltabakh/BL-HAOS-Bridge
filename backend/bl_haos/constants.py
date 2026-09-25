@@ -183,7 +183,7 @@ RECONNECT_BACKOFF_JITTER = 0.15
 # Redaction vocabulary
 # ---------------------------------------------------------------------------
 SECRET_TOKENS = ("token", "password", "secret", "authorization", "bearer")
-SENSITIVE_QUERY_KEY_TOKENS = (*SECRET_TOKENS, "credential", "api[_-]?key", "key")
+SENSITIVE_QUERY_KEY_TOKENS = (*SECRET_TOKENS, "api[_-]?key", "key")
 REDACTED_PLACEHOLDER = "[redacted]"
 URL_PATTERN = r"[a-z]+://[^\s]+"
 URL_REDACTION_PLACEHOLDER = "[url redacted]"
