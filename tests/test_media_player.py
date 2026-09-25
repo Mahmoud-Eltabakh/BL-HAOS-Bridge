@@ -141,6 +141,9 @@ async def test_keepalive_pulses_idle_speakers_without_changing_state():
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
     address = "10:22:33:44:55:66"
     bridge.register_keepalive(address)
+    # Registering also schedules a connect-time sink warm-up; it is covered by
+    # its own tests and would otherwise race this one's spawn assertions.
+    await bridge._cancel_sink_warmup(address)
 
     assert bridge.get_state(address) == "idle"
     await bridge._send_keepalive_pulse(address)
@@ -163,12 +166,120 @@ async def test_keepalive_skips_speakers_with_active_playback():
     bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
     address = "10:22:33:44:55:66"
     bridge.register_keepalive(address)
+    await bridge._cancel_sink_warmup(address)
 
     await bridge.handle_command(address, "PLAY_MEDIA:https://example.test/audio.mp3")
     calls.clear()
 
     await bridge._send_keepalive_pulse(address)
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_connect_warms_the_sink_so_the_first_play_does_not_pay_for_it():
+    """The A2DP sink is opened at connect time, not on the user's first play."""
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append(args[0])
+        return FakeProcess(returncode=0)
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "10:22:33:44:55:66"
+
+    bridge.register_keepalive(address)
+    await bridge._warmup_tasks[address]
+
+    assert calls[0] == "ffmpeg"
+    assert calls[1] == "pw-play"
+    # Warming the sink must not pretend audio is playing.
+    assert bridge.get_state(address) == "idle"
+    assert address not in bridge.active_processes
+
+
+@pytest.mark.asyncio
+async def test_connect_warmup_retries_while_the_sink_is_still_appearing():
+    """The sink node is often published a moment after the connect event."""
+    resolutions = {"count": 0}
+    calls = []
+
+    async def late_sink(_address):
+        resolutions["count"] += 1
+        if resolutions["count"] < 3:
+            return None
+        return "bluez_output.10_22_33_44_55_66.1"
+
+    async def process_factory(*args, **kwargs):
+        calls.append(args[0])
+        return FakeProcess(returncode=0)
+
+    bridge = MediaPlayerBridge(sink_resolver=late_sink, process_factory=process_factory)
+    bridge.warmup_retry_seconds = 0
+    address = "10:22:33:44:55:66"
+
+    bridge.register_keepalive(address)
+    await bridge._warmup_tasks[address]
+
+    assert resolutions["count"] == 3, "the warm-up must keep probing until the sink exists"
+    assert "ffmpeg" in calls
+
+
+@pytest.mark.asyncio
+async def test_connect_warmup_gives_up_within_its_budget():
+    """A speaker that never presents a sink must not leave a task looping."""
+    resolutions = {"count": 0}
+
+    async def missing_sink(_address):
+        resolutions["count"] += 1
+        return None
+
+    bridge = MediaPlayerBridge(sink_resolver=missing_sink, process_factory=fake_process)
+    bridge.warmup_attempts = 3
+    bridge.warmup_retry_seconds = 0
+    address = "10:22:33:44:55:66"
+
+    bridge.register_keepalive(address)
+    await bridge._warmup_tasks[address]
+
+    assert resolutions["count"] == 3
+    assert address not in bridge._warmup_tasks
+
+
+@pytest.mark.asyncio
+async def test_play_takes_over_from_a_pending_warmup():
+    """A real play must not race the connect-time pulse for the same sink."""
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+    bridge.register_keepalive(address)
+
+    await bridge.handle_command(address, "PLAY_MEDIA:https://example.test/audio.mp3")
+
+    assert address not in bridge._warmup_tasks
+    assert bridge.get_state(address) == "playing"
+
+
+@pytest.mark.asyncio
+async def test_sink_warmup_can_be_disabled():
+    """Callers that manage sink readiness themselves can switch warming off."""
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    bridge.warmup_attempts = 0
+
+    bridge.register_keepalive("10:22:33:44:55:66")
+
+    assert bridge._warmup_tasks == {}
+    assert "10:22:33:44:55:66" in bridge.keepalive_addresses
+
+
+@pytest.mark.asyncio
+async def test_unregister_keepalive_cancels_a_pending_warmup():
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+    bridge.register_keepalive(address)
+
+    bridge.unregister_keepalive(address)
+
+    assert address not in bridge.keepalive_addresses
+    assert address not in bridge._warmup_tasks
 
 
 @pytest.mark.asyncio

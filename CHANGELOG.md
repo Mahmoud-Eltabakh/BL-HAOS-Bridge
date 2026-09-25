@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.55
+
+- Stop a connected speaker from going slow on its first play. WirePlumber suspends an idle audio node after 5 seconds by default, and resuming an A2DP sink is not free: the transport is re-acquired and the codec is re-negotiated, which on this hardware costs seconds. That is the delay heard on the first play after connecting or after a quiet period - the sink had already been torn down again.
+  - `rootfs/etc/wireplumber/bluetooth.lua.d/51-bluez-no-suspend.lua` now sets `session.suspend-timeout-seconds = 0` for Bluetooth nodes, so the A2DP link stays configured between plays and playback starts immediately. The same policy is declared on the existing `bluez_card.*` rule, because whether a rule property lands on the sink node or stays on the card object depends on the WirePlumber build. (WirePlumber 0.5 renamed these keys; this image ships Debian bookworm, i.e. 0.4.x lua, and the add-on's existing codec rules already rely on that.)
+  - Connecting a speaker now also warms its sink: the bridge fires one short *silent* pulse in the background and retries briefly while the node is still being published, so the A2DP setup is paid at connect time instead of on the user's first `play_media`. Warming is skipped when audio is already playing, cancelled when a real play starts or the speaker disconnects, and bounded (4 attempts / 8s) so a speaker that never presents a sink cannot leave a task looping.
+  - A play that takes 1.5s or longer now logs its breakdown at info level: `Playback for <speaker> took 3.10s to start (sink 0.42s, spawn 2.68s)`. That distinguishes slow sink discovery from slow stream startup without needing debug logging.
+
 ## 0.2.54
 
 - Remove multi-room. The Snapcast integration was scaffolding rather than a feature: the container shipped `snapserver`/`snapclient` and an s6 unit that created `/tmp/snapcast/snapfifo`, but nothing in the bridge ever wrote audio into that FIFO or spawned a `snapclient`, playback already goes straight to the A2DP sink, `multiroom_sync_enabled` was never read, the `/api/multiroom/*` endpoints had no UI caller, and the Home Assistant integration never referenced a group. The add-on is now honestly what it does: a native Bluetooth audio adapter.

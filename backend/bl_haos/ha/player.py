@@ -38,6 +38,18 @@ TTS_STREAM_TITLE = "Text to speech"
 # Bound how much audio may be queued ahead of the speaker. The default
 # PulseAudio buffer is large enough that pause/stop kept playing for a while.
 PLAYER_LATENCY_MSEC = PlayerSettings.model_fields["latency_msec"].default
+# A speaker that has just connected does not necessarily have a usable sink yet:
+# WirePlumber still has to publish the node, and the first stream pays for A2DP
+# transport acquisition plus codec negotiation. A short silent pulse fired at
+# connect time moves that work off the user's first play_media instead of onto
+# it. Both bounds are enforced so a speaker that never presents a sink cannot
+# leave a task looping.
+SINK_WARMUP_ATTEMPTS = 4
+SINK_WARMUP_RETRY_SECONDS = 1.0
+SINK_WARMUP_BUDGET_SECONDS = 8.0
+# A play that takes longer than this is logged with its phase breakdown, so a
+# slow first play is diagnosable from the add-on log without debug logging.
+SLOW_PLAY_LOG_SECONDS = 1.5
 
 
 class MediaPlayerError(RuntimeError):
@@ -78,6 +90,11 @@ class MediaPlayerBridge:
         self.keepalive_interval = self.player_settings.keepalive_interval_seconds
         self.keepalive_pulse_duration = self.player_settings.keepalive_pulse_duration_seconds
         self._keepalive_task: asyncio.Task | None = None
+        # Connect-time sink warm-ups in flight, keyed by speaker address.
+        self._warmup_tasks: dict[str, asyncio.Task] = {}
+        self.warmup_attempts = SINK_WARMUP_ATTEMPTS
+        self.warmup_retry_seconds = SINK_WARMUP_RETRY_SECONDS
+        self.warmup_budget_seconds = SINK_WARMUP_BUDGET_SECONDS
         # One command at a time per speaker: overlapping play/stop requests used
         # to race on the same process pair and leave the speaker silent.
         self._address_locks: dict[str, asyncio.Lock] = {}
@@ -332,8 +349,11 @@ class MediaPlayerBridge:
 
     async def _play_url_locked(self, addr: str, url: str) -> None:
         """Start a stream for one speaker; the caller holds that speaker's lock."""
+        await self._cancel_sink_warmup(addr)
+        started = time.monotonic()
         logger.debug("Resolving audio sink for %s...", addr)
         sink = await self._sink_resolver(addr)
+        sink_seconds = time.monotonic() - started
         if not sink:
             logger.debug("No audio sink found for %s", addr)
             if self.health:
@@ -353,10 +373,11 @@ class MediaPlayerBridge:
         except ValueError as error:
             label = "PulseAudio" if sink.startswith("pulse:") else "PipeWire"
             raise MediaPlayerError(f"Connected {label} sink is invalid") from error
-        logger.debug("Resolved sink '%s' via %s transport for speaker %s", sink_name, transport, addr)
+        logger.debug("Resolved sink '%s' via %s transport for speaker %s (%.2fs)", sink_name, transport, addr, sink_seconds)
         if self.health:
             self.health.observe_component("pipewire", HealthState.HEALTHY, source=transport)
         await self._stop_processes(addr)
+        spawn_started = time.monotonic()
         try:
             logger.debug("Spawning ffmpeg decoder and %s player for %s", transport, addr)
             decoder = await self._process_factory(
@@ -378,12 +399,20 @@ class MediaPlayerBridge:
         self.last_urls[addr] = url
         self._start_timeline(addr, url)
         self.states[addr] = "playing"
+        total_seconds = time.monotonic() - started
         logger.debug(
             "Playback started for %s (decoder PID=%s, player PID=%s)",
             addr,
             getattr(decoder, "pid", None),
             getattr(player, "pid", None),
         )
+        if total_seconds >= SLOW_PLAY_LOG_SECONDS:
+            # Surfaced at info so a slow first play is visible without debug logs:
+            # the breakdown says whether the delay was sink discovery or streaming.
+            logger.info(
+                "Playback for %s took %.2fs to start (sink %.2fs, spawn %.2fs)",
+                addr, total_seconds, sink_seconds, time.monotonic() - spawn_started,
+            )
         self._track_task(self._async_probe_duration(addr, url), f"duration probe {addr}")
         self._track_task(self._drain_process_output(decoder, "ffmpeg", addr), f"ffmpeg stderr drain {addr}")
         self._track_task(self._drain_process_output(player, transport, addr), f"{transport} stderr drain {addr}")
@@ -398,11 +427,72 @@ class MediaPlayerBridge:
 
     def register_keepalive(self, address: str) -> None:
         """Track a connected speaker so its BT radio is periodically nudged awake."""
-        self.keepalive_addresses.add(self._address(address))
+        addr = self._address(address)
+        self.keepalive_addresses.add(addr)
+        self._start_sink_warmup(addr)
 
     def unregister_keepalive(self, address: str) -> None:
         """Stop nudging a speaker that is no longer connected/trusted."""
-        self.keepalive_addresses.discard(self._address(address))
+        addr = self._address(address)
+        self.keepalive_addresses.discard(addr)
+        pending = self._warmup_tasks.pop(addr, None)
+        if pending and not pending.done():
+            pending.cancel()
+
+    def _start_sink_warmup(self, addr: str) -> None:
+        """Open the A2DP sink in the background so the first play does not pay for it.
+
+        Called on every connect/trust event. The sink often is not published yet
+        at that moment, so the warm-up retries briefly instead of giving up.
+        """
+        if self.warmup_attempts <= 0:
+            return  # warming disabled (callers that manage sink readiness themselves)
+        existing = self._warmup_tasks.get(addr)
+        if existing and not existing.done():
+            return
+        self._warmup_tasks[addr] = self._track_task(
+            self._async_warm_sink(addr), f"sink warm-up {addr}"
+        )
+
+    async def _async_warm_sink(self, addr: str) -> None:
+        """Send one silent pulse as soon as the speaker's sink is available."""
+        started = time.monotonic()
+        deadline = started + self.warmup_budget_seconds
+        try:
+            for attempt in range(1, self.warmup_attempts + 1):
+                if addr in self.active_processes:
+                    return  # real audio is already flowing; nothing to warm
+                if await self._send_keepalive_pulse(addr):
+                    logger.debug(
+                        "Warmed A2DP sink for %s in %.2fs (attempt %d)",
+                        addr, time.monotonic() - started, attempt,
+                    )
+                    return
+                if time.monotonic() + self.warmup_retry_seconds >= deadline:
+                    break
+                await asyncio.sleep(self.warmup_retry_seconds)
+            logger.debug("Sink warm-up gave up for %s after %.2fs", addr, time.monotonic() - started)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Sink warm-up failed for %s", addr, exc_info=True)
+        finally:
+            self._warmup_tasks.pop(addr, None)
+
+    async def _cancel_sink_warmup(self, addr: str) -> None:
+        """Give way to a real play before it starts.
+
+        Cancelling mid-pulse cannot leave a stream running: the pulse source is
+        bound to a fixed duration, so any surviving child exits on its own.
+        """
+        task = self._warmup_tasks.pop(addr, None)
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def start_keepalive(self) -> None:
         """Start the background low-duty-cycle keep-alive loop."""
@@ -429,19 +519,23 @@ class MediaPlayerBridge:
         except asyncio.CancelledError:
             pass
 
-    async def _send_keepalive_pulse(self, address: str) -> None:
-        """Play a short, silent PCM burst to the sink without touching playback state."""
+    async def _send_keepalive_pulse(self, address: str) -> bool:
+        """Play a short, silent PCM burst to the sink without touching playback state.
+
+        Returns True when a pulse was actually sent, which is how the connect-time
+        sink warm-up knows the A2DP sink exists and is usable.
+        """
         address = self._address(address)
         if address in self.active_processes:
-            return  # already streaming real audio; no nudge needed
+            return False  # already streaming real audio; no nudge needed
         sink = await self._sink_resolver(address)
         if not sink:
-            return
+            return False
         try:
             transport, sink_name = self._parse_sink(sink)
         except ValueError:
             logger.debug("Keep-alive pulse skipped for invalid sink")
-            return
+            return False
         try:
             source = await self._process_factory(
                 "ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi",
@@ -458,7 +552,7 @@ class MediaPlayerBridge:
             )
         except (OSError, subprocess.SubprocessError) as error:
             logger.debug("Keep-alive pulse failed to start for %s: %s", address, error)
-            return
+            return False
         # Drain stderr concurrently as tracked tasks; awaiting them inline would
         # deadlock the 64KB PCM pipe (ffmpeg stdout fills while we wait for EOF).
         self._track_task(self._drain_process_output(source, "ffmpeg-keepalive", address), f"keepalive ffmpeg drain {address}")
@@ -472,6 +566,7 @@ class MediaPlayerBridge:
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
+        return True
 
     async def _async_probe_duration(self, address: str, url: str) -> None:
         """Resolve duration and display metadata in the background.
@@ -830,6 +925,9 @@ class MediaPlayerBridge:
     async def async_shutdown(self) -> None:
         logger.debug("Shutting down MediaPlayerBridge...")
         await self.stop_keepalive()
+        for pending in tuple(self._warmup_tasks.values()):
+            pending.cancel()
+        self._warmup_tasks.clear()
         stopping: list[asyncio.subprocess.Process] = []
         for address in tuple(self.active_processes):
             stopping.extend(self.active_processes[address])

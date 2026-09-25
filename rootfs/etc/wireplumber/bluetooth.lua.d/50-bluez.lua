@@ -20,5 +20,10 @@ table.insert(bluez_monitor.rules, {
   apply_properties = {
     ["bluez5.auto-connect"] = "[ a2dp_sink a2dp_source ]",
     ["bluez5.hw-volume"] = "[ a2dp_sink a2dp_source ]",
+    -- Belt and braces with 51-bluez-no-suspend.lua: whether a rule property
+    -- reaches the sink *node* or stays on the card object depends on the
+    -- WirePlumber build, so the no-suspend policy is declared on both. It is
+    -- ignored on objects that are neither, never the reverse.
+    ["session.suspend-timeout-seconds"] = 0,
   },
 })

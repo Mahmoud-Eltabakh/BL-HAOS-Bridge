@@ -266,6 +266,11 @@ def test_auto_reconnect_reports_sink_still_missing_distinctly(monkeypatch):
     sleep = AsyncMock()
 
     with TestClient(app) as client:
+        # Connecting schedules a silent sink warm-up that probes and sleeps of its
+        # own; disable it so this test counts only the reconnect retry loop.
+        app.state.ha_bridge.warmup_attempts = 0
+        for warmup in tuple(app.state.ha_bridge._warmup_tasks.values()):
+            warmup.cancel()
         _register_native_speaker(client, "AA_BB_CC_DD_EE_03")
         app.state.ha_bridge.execute = execute
         monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
@@ -298,6 +303,10 @@ def test_auto_reconnect_waits_until_sink_recovers(monkeypatch):
     sleep = AsyncMock()
 
     with TestClient(app) as client:
+        # See the note above: the connect-time warm-up sleeps too.
+        app.state.ha_bridge.warmup_attempts = 0
+        for warmup in tuple(app.state.ha_bridge._warmup_tasks.values()):
+            warmup.cancel()
         _register_native_speaker(client, "AA_BB_CC_DD_EE_04")
         app.state.ha_bridge.execute = execute
         monkeypatch.setattr(app.state.bt_manager, "connect_device", connect)
