@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.43
+
+- Fix PulseAudio paplay raw PCM invocation: omit '-' filename argument which caused paplay/pacat to fail with 'open(): No such file or directory' instead of streaming from stdin.
+- Surface playback process failure exit codes at warning level for easier operational troubleshooting.
+
 ## 0.2.42
 
 - Accept Home Assistant content types (such as "music", "video", "channel", etc.) in media type validation to prevent 422 errors during playback.

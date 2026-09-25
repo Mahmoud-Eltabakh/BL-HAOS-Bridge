@@ -260,6 +260,7 @@ async def test_media_player_uses_paplay_for_pulseaudio_sink():
     await bridge.play_url("10:22:33:44:55:66", "https://example.test/audio.mp3")
 
     assert calls[1][0][:3] == ("paplay", "--device", "bluez_sink.10_22_33_44_55_66.a2dp_sink")
+    assert "-" not in calls[1][0], "paplay must read from stdin without a '-' argument"
     assert calls[1][1]["env"]["PULSE_SERVER"] == "unix:/run/audio/pulse.sock"
 
 

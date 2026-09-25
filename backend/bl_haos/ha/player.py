@@ -106,12 +106,16 @@ class MediaPlayerBridge:
                     break
                 if logged < 50:
                     logged += 1
-                    logger.debug(
-                        "%s stderr [%s]: %s",
-                        label,
-                        address,
-                        self._decode_output(line).strip()[:256],
-                    )
+                    decoded = self._decode_output(line).strip()[:256]
+                    if "error" in decoded.lower() or "no such" in decoded.lower():
+                        logger.warning("%s stderr [%s]: %s", label, address, decoded)
+                    else:
+                        logger.debug(
+                            "%s stderr [%s]: %s",
+                            label,
+                            address,
+                            decoded,
+                        )
         except Exception:
             logger.debug("%s stderr drain failed for %s", label, address, exc_info=True)
 
@@ -388,7 +392,9 @@ class MediaPlayerBridge:
     @staticmethod
     def _player_command(transport: str, sink: str) -> tuple[str, ...]:
         if transport == "pulse":
-            return ("paplay", "--device", sink, "--raw", "--rate", "48000", "--channels", "2", "--format=s16le", "-")
+            # paplay reads raw PCM from standard input when no file argument is given.
+            # Passing "-" causes it to attempt open("-", O_RDONLY) which fails with ENOENT.
+            return ("paplay", "--device", sink, "--raw", "--rate", "48000", "--channels", "2", "--format=s16le")
         return ("pw-play", "--target", sink, "--raw", "--rate", "48000", "--channels", "2", "-")
 
     @staticmethod
@@ -460,7 +466,9 @@ class MediaPlayerBridge:
     async def _watch_processes(self, address: str, decoder: asyncio.subprocess.Process, player: asyncio.subprocess.Process) -> None:
         await asyncio.gather(decoder.wait(), player.wait(), return_exceptions=True)
         if self.active_processes.get(address) == (decoder, player):
-            logger.debug(
+            is_abnormal = (player.returncode not in (0, None)) or (decoder.returncode not in (0, None, -15, 255))
+            log_fn = logger.warning if is_abnormal else logger.debug
+            log_fn(
                 "Playback processes ended for %s (decoder code: %s, player code: %s)",
                 address,
                 decoder.returncode,
