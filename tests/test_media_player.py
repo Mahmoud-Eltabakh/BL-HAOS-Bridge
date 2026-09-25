@@ -1,5 +1,9 @@
 import asyncio
 import json
+import os
+import signal
+import time
+from types import SimpleNamespace
 
 import pytest
 from backend.bl_haos.ha.player import MediaPlayerBridge
@@ -299,3 +303,154 @@ async def test_connected_speaker_without_sink_reports_transport_held():
     assert failure is not None
     assert failure.classification == FailureClass.SINK_UNAVAILABLE_TRANSPORT_HELD
     assert "restart the add-on" in (failure.detail or "")
+
+
+class WedgedProcess(FakeProcess):
+    """A playback child that ignores every signal and never exits.
+
+    This models a decoder/player stuck on a wedged A2DP sink. Before the fix
+    `_stop_processes` awaited such a child forever, so the *next* play_media
+    never spawned its processes: the first play looked dead and the second one
+    worked because there was nothing left to tear down.
+    """
+
+    def __init__(self, pid=4242):
+        super().__init__(returncode=None)
+        self.pid = pid
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+    async def wait(self):
+        await asyncio.sleep(3600)
+
+
+@pytest.mark.asyncio
+async def test_stop_processes_never_hangs_on_a_wedged_child(monkeypatch):
+    """Teardown must always return, however badly a child misbehaves."""
+    monkeypatch.setattr("backend.bl_haos.ha.player.STOP_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr("backend.bl_haos.ha.player.KILL_GRACE_SECONDS", 0.05)
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+    bridge.active_processes[address] = (WedgedProcess(pid=111), WedgedProcess(pid=222))
+
+    started = time.monotonic()
+    await bridge._stop_processes(address)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, "teardown must stay bounded so the next command still runs"
+    assert address not in bridge.active_processes
+
+
+@pytest.mark.asyncio
+async def test_play_media_still_spawns_after_a_wedged_predecessor(monkeypatch):
+    """The reported symptom: the second play worked, the first one silently did nothing."""
+    monkeypatch.setattr("backend.bl_haos.ha.player.STOP_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr("backend.bl_haos.ha.player.KILL_GRACE_SECONDS", 0.05)
+
+    spawned = []
+
+    async def process_factory(*args, **kwargs):
+        spawned.append(args[0])
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "10:22:33:44:55:66"
+    bridge.active_processes[address] = (WedgedProcess(pid=111), WedgedProcess(pid=222))
+
+    await asyncio.wait_for(bridge.play_url(address, "https://example.test/audio.mp3"), timeout=2)
+
+    assert spawned == ["ffmpeg", "pw-play"]
+
+
+@pytest.mark.asyncio
+async def test_stop_processes_continues_children_before_signalling(monkeypatch):
+    """A SIGSTOPped child never sees SIGTERM; it must be continued first."""
+    monkeypatch.setattr("backend.bl_haos.ha.player.STOP_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr("backend.bl_haos.ha.player.KILL_GRACE_SECONDS", 0.05)
+    sequence = []
+    monkeypatch.setattr(
+        MediaPlayerBridge, "_continue_process", staticmethod(lambda process: sequence.append("continue"))
+    )
+    monkeypatch.setattr(
+        MediaPlayerBridge, "_terminate_process", staticmethod(lambda process: sequence.append("terminate"))
+    )
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+    bridge.active_processes[address] = (FakeProcess(returncode=None), FakeProcess(returncode=None))
+
+    await bridge._stop_processes(address)
+
+    assert sequence == ["continue", "continue", "terminate", "terminate"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups are required")
+def test_continue_process_signals_the_process_group(monkeypatch):
+    calls = []
+    monkeypatch.setattr("backend.bl_haos.ha.player.os.killpg", lambda pid, sig: calls.append((pid, sig)))
+
+    MediaPlayerBridge._continue_process(SimpleNamespace(pid=1234))
+
+    assert calls == [(1234, signal.SIGCONT)]
+
+
+@pytest.mark.asyncio
+async def test_stop_processes_is_a_noop_without_active_processes():
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+
+    await bridge._stop_processes("10:22:33:44:55:66")
+
+    assert bridge.active_processes == {}
+
+
+@pytest.mark.asyncio
+async def test_play_url_serializes_concurrent_commands_per_speaker():
+    """Overlapping play requests must not race on the same process pair."""
+    active = 0
+    observed = []
+
+    async def slow_sink(_address):
+        nonlocal active
+        active += 1
+        observed.append(active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        return "bluez_output.10_22_33_44_55_66.1"
+
+    bridge = MediaPlayerBridge(sink_resolver=slow_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+
+    await asyncio.gather(
+        bridge.play_url(address, "https://example.test/one.mp3"),
+        bridge.play_url(address, "https://example.test/two.mp3"),
+    )
+
+    assert max(observed) == 1
+    assert len(observed) == 2
+
+
+@pytest.mark.asyncio
+async def test_pulseaudio_player_bounds_queued_latency():
+    """Pause/stop responsiveness depends on a small client-side buffer."""
+    from backend.bl_haos.ha.player import PLAYER_LATENCY_MSEC
+
+    calls = []
+
+    async def pulse_sink(_address):
+        return "pulse:bluez_sink.10_22_33_44_55_66.a2dp_sink"
+
+    async def process_factory(*args, **kwargs):
+        calls.append(args)
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=pulse_sink, process_factory=process_factory)
+    await bridge.play_url("10:22:33:44:55:66", "https://example.test/audio.mp3")
+
+    paplay_args = calls[1]
+    assert f"--latency-msec={PLAYER_LATENCY_MSEC}" in paplay_args
+    assert PLAYER_LATENCY_MSEC <= 500

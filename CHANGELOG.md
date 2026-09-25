@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.47
+
+- Fix "the first play does nothing, the second attempt works": stopping a previous stream could block forever. `_stop_processes` awaited `process.wait()` without a bound after `SIGKILL`, so a child stuck on a wedged A2DP sink made the *next* `play_media` never spawn its decoder/player. Every teardown wait is now bounded, and the caller always proceeds.
+- Stop/pause now react immediately: a `SIGSTOP`ped (paused) child never receives a queued `SIGTERM`, so every child is resumed with `SIGCONT` before being signalled. Previously each stopped process cost a full 5 second grace window.
+- Commands for one speaker are now serialized, so overlapping play/stop requests can no longer race on the same process pair.
+- `paplay` now runs with `--latency-msec=250`. The default buffer kept several seconds of audio queued downstream, which is why pause in particular appeared to be ignored for a while.
+
 ## 0.2.46
 
 - Fix Bluetooth discovery returning nothing: the bridge registered a D-Bus message handler but never a match rule, so the bus daemon never delivered BlueZ's `InterfacesAdded`/`InterfacesRemoved`/`PropertiesChanged` signals. Discovered devices were silently dropped, `GET /api/devices` stayed empty and the scan list never updated in the UI. The bridge now registers explicit match rules for BlueZ's ObjectManager and PropertiesChanged signals.

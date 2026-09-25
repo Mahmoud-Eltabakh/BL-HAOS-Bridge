@@ -17,6 +17,14 @@ logger = logging.getLogger("bl_haos.ha.player")
 PULSE_SOCKET = "/run/audio/pulse.sock"
 PULSE_SERVER = f"unix:{PULSE_SOCKET}"
 SINK_PROBE_TIMEOUT = 5
+# Teardown must always stay bounded: a wedged child (paused, or blocked writing
+# to a suspended A2DP sink) used to make the *next* play_media wait forever,
+# which surfaced as "the first play does nothing, the second one works".
+STOP_GRACE_SECONDS = 2.0
+KILL_GRACE_SECONDS = 1.5
+# Bound how much audio may be queued ahead of the speaker. The default
+# PulseAudio buffer is large enough that pause/stop kept playing for a while.
+PLAYER_LATENCY_MSEC = 250
 
 
 class MediaPlayerError(RuntimeError):
@@ -45,6 +53,9 @@ class MediaPlayerBridge:
         self.keepalive_interval: float = 240.0
         self.keepalive_pulse_duration: float = 1.0
         self._keepalive_task: asyncio.Task | None = None
+        # One command at a time per speaker: overlapping play/stop requests used
+        # to race on the same process pair and leave the speaker silent.
+        self._address_locks: dict[str, asyncio.Lock] = {}
         self._sink_resolver = sink_resolver or self._async_resolve_sink
         self._process_factory = process_factory or asyncio.create_subprocess_exec
         self._state_callback = state_callback
@@ -61,6 +72,14 @@ class MediaPlayerBridge:
     @staticmethod
     def _address(address: str) -> str:
         return normalize_address(address)
+
+    def _address_lock(self, address: str) -> asyncio.Lock:
+        """Return the serialization lock for one speaker's command stream."""
+        lock = self._address_locks.get(address)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._address_locks[address] = lock
+        return lock
 
     def get_state(self, address: str) -> str:
         return self.states.get(self._address(address), "idle")
@@ -196,6 +215,11 @@ class MediaPlayerBridge:
             url = validate_media_url(url)
         except ValueError as error:
             raise MediaPlayerError("Media URL must be a safe HTTP(S) URL") from error
+        async with self._address_lock(addr):
+            await self._play_url_locked(addr, url)
+
+    async def _play_url_locked(self, addr: str, url: str) -> None:
+        """Start a stream for one speaker; the caller holds that speaker's lock."""
         logger.debug("Resolving audio sink for %s...", addr)
         sink = await self._sink_resolver(addr)
         if not sink:
@@ -409,7 +433,20 @@ class MediaPlayerBridge:
         if transport == "pulse":
             # paplay reads raw PCM from standard input when no file argument is given.
             # Passing "-" causes it to attempt open("-", O_RDONLY) which fails with ENOENT.
-            return ("paplay", "--device", sink, "--raw", "--rate", "48000", "--channels", "2", "--format=s16le")
+            # --latency-msec bounds the queued audio: with the default buffer the
+            # speaker kept playing for seconds after a pause or stop.
+            return (
+                "paplay",
+                "--device",
+                sink,
+                "--raw",
+                "--rate",
+                "48000",
+                "--channels",
+                "2",
+                "--format=s16le",
+                f"--latency-msec={PLAYER_LATENCY_MSEC}",
+            )
         return ("pw-play", "--target", sink, "--raw", "--rate", "48000", "--channels", "2", "-")
 
     @staticmethod
@@ -466,17 +503,83 @@ class MediaPlayerBridge:
                     pass
 
     async def _stop_processes(self, address: str) -> None:
+        """Stop one speaker's playback pair with a hard upper bound on waiting.
+
+        Two details matter for responsiveness:
+
+        * A `SIGSTOP`ped (paused) child never sees `SIGTERM`, because queued
+          signals are only delivered once the process runs again. Every child is
+          therefore continued before it is signalled, which turns a 5 second
+          stall into milliseconds.
+        * a child blocked on a wedged A2DP sink may not exit even after
+          `SIGKILL`. Every wait here is bounded so the caller always proceeds
+          instead of hanging the next command indefinitely.
+        """
         processes = self.active_processes.pop(address, ())
+        if not processes:
+            return
+        started = asyncio.get_running_loop().time()
+        # Resume every child first: a stopped peer can block its sibling from
+        # draining, so all of them need to run before any is asked to exit.
         for process in processes:
             if process.returncode is None:
-                process.terminate()
+                self._continue_process(process)
         for process in processes:
             if process.returncode is None:
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.wait()
+                self._terminate_process(process)
+        for process in processes:
+            if process.returncode is None and not await self._async_wait_for_exit(process, STOP_GRACE_SECONDS):
+                self._kill_process(process)
+                if not await self._async_wait_for_exit(process, KILL_GRACE_SECONDS):
+                    logger.warning(
+                        "Playback process %s for %s did not exit within %.1fs; continuing without it",
+                        getattr(process, "pid", "?"),
+                        address,
+                        KILL_GRACE_SECONDS,
+                    )
+        logger.debug(
+            "Released %d playback process(es) for %s in %.2fs",
+            len(processes),
+            address,
+            asyncio.get_running_loop().time() - started,
+        )
+
+    @staticmethod
+    def _continue_process(process: asyncio.subprocess.Process) -> None:
+        """Resume a stopped child so a pending termination signal can land."""
+        pid = getattr(process, "pid", None)
+        if not pid or os.name == "nt":
+            return
+        try:
+            os.killpg(pid, signal.SIGCONT)
+        except (ProcessLookupError, PermissionError, OSError):
+            logger.debug("Playback process %s already exited before SIGCONT", pid)
+
+    @staticmethod
+    def _terminate_process(process: asyncio.subprocess.Process) -> None:
+        try:
+            process.terminate()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    @staticmethod
+    def _kill_process(process: asyncio.subprocess.Process) -> None:
+        try:
+            process.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    @staticmethod
+    async def _async_wait_for_exit(process: asyncio.subprocess.Process, timeout: float) -> bool:
+        """Wait for one child to exit without ever blocking the caller."""
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        except Exception:
+            # Already reaped or an unusable handle: nothing left to wait for.
+            return True
+        return True
 
     async def _watch_processes(self, address: str, decoder: asyncio.subprocess.Process, player: asyncio.subprocess.Process) -> None:
         await asyncio.gather(decoder.wait(), player.wait(), return_exceptions=True)
