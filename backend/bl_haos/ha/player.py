@@ -631,9 +631,14 @@ class MediaPlayerBridge:
     async def async_shutdown(self) -> None:
         logger.debug("Shutting down MediaPlayerBridge...")
         await self.stop_keepalive()
+        stopping: list[asyncio.subprocess.Process] = []
         for address in tuple(self.active_processes):
+            stopping.extend(self.active_processes[address])
             await self._stop_processes(address)
             self.states[address] = "idle"
+        # Let the children disappear before the reaper tasks are cancelled, so a
+        # wedged decoder is still escalated to SIGKILL on the way out.
+        await self._async_wait_for_exits(tuple(stopping), STOP_GRACE_SECONDS + KILL_GRACE_SECONDS)
         for task in tuple(self._background_tasks):
             task.cancel()
         if self._background_tasks:
