@@ -18,4 +18,8 @@ def test_backend_s6_service():
     content = service_path.read_text(encoding="utf-8")
     assert "uvicorn bl_haos.main:app" in content
     assert "--port 8099" in content
+    # The daemon must keep idle keep-alive sockets open longer than any client's
+    # pool holds them; otherwise a command can be written to a connection the
+    # daemon has just closed, which reaches the user as "Server disconnected".
+    assert "--timeout-keep-alive" in content
     assert not Path("rootfs/etc/services.d/bl-haos/run").exists()

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.56
+
+- Stop a `play_media` action from failing with `Failed to play_media: Server disconnected`. uvicorn closed an idle keep-alive connection after 5 seconds, while Home Assistant keeps pooled sockets in its shared aiohttp session for longer, so a command could be written to a socket the daemon had just closed. The daemon now keeps idle connections open for 75 seconds (`UVICORN_KEEP_ALIVE_SECONDS` overrides it), which is longer than any client pool holds them, so the client always retires the socket first.
+  - The paired Home Assistant integration (0.2.14) additionally retries a command once when the connection is closed before an answer arrives, which also covers an add-on restart or update landing mid-command.
+  - `tests/test_backend_s6.py` now asserts the daemon passes `--timeout-keep-alive`, so the flag cannot be dropped silently.
+
 ## 0.2.55
 
 - Stop a connected speaker from going slow on its first play. WirePlumber suspends an idle audio node after 5 seconds by default, and resuming an A2DP sink is not free: the transport is re-acquired and the codec is re-negotiated, which on this hardware costs seconds. That is the delay heard on the first play after connecting or after a quiet period - the sink had already been torn down again.

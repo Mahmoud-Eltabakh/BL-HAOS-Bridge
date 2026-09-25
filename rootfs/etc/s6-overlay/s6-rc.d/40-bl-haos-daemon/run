@@ -16,4 +16,13 @@ case "${configured_log_level,,}" in
 esac
 
 echo "[bl-haos-daemon] Starting FastAPI backend daemon on port 8099..."
-exec python3 -m uvicorn bl_haos.main:app --host 0.0.0.0 --port 8099 --log-level "${LOG_LEVEL}"
+
+# uvicorn closes an idle keep-alive connection after 5 seconds by default, while
+# Home Assistant's shared aiohttp session keeps pooled sockets for longer. The
+# client then reuses a socket this daemon has just closed, which reached the user
+# as "Failed to play_media: Server disconnected". Staying open longer than any
+# client pool means the client always retires the socket first.
+uvicorn_keep_alive_seconds="${UVICORN_KEEP_ALIVE_SECONDS:-75}"
+
+exec python3 -m uvicorn bl_haos.main:app --host 0.0.0.0 --port 8099 \
+    --timeout-keep-alive "${uvicorn_keep_alive_seconds}" --log-level "${LOG_LEVEL}"
