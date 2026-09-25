@@ -195,8 +195,18 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
         "playback": {
             "state": bridge.get_state(device.address) if bridge else "idle",
             "volume": bridge.get_volume(device.address) if bridge else None,
+            **native_playback_timeline(bridge, device.address),
         },
     }
+
+
+def native_playback_timeline(bridge: Any, address: str) -> dict[str, Any]:
+    """Add the position/duration envelope when the bridge can provide one."""
+    getter = getattr(bridge, "get_timeline", None)
+    if not callable(getter):
+        return {}
+    timeline = getter(address)
+    return timeline if isinstance(timeline, dict) else {}
 
 
 @router.get("/health")

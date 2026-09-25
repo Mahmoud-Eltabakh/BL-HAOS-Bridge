@@ -30,6 +30,10 @@ class FakeProcess:
             await asyncio.sleep(0)
         return self.returncode
 
+    async def communicate(self):
+        """Probes read stdout via communicate(); playback children never do."""
+        return b"", b""
+
 
 async def fake_sink(_address):
     return "bluez_output.10_22_33_44_55_66.1"
@@ -454,6 +458,133 @@ async def test_play_url_serializes_concurrent_commands_per_speaker():
 
     assert max(observed) == 1
     assert len(observed) == 2
+
+
+class DurationProbeProcess(FakeProcess):
+    """An ffprobe invocation that reports one fixed duration."""
+
+    def __init__(self, payload: bytes = b"240.05\n"):
+        super().__init__(returncode=0)
+        self._payload = payload
+
+    async def communicate(self):
+        return self._payload, b""
+
+
+def test_parse_duration_reads_ffprobe_output():
+    from backend.bl_haos.ha.player import MediaPlayerBridge
+
+    assert MediaPlayerBridge._parse_duration("240.05\n") == pytest.approx(240.05)
+    assert MediaPlayerBridge._parse_duration("12.5\n") == pytest.approx(12.5)
+    assert MediaPlayerBridge._parse_duration("N/A\n") is None
+    assert MediaPlayerBridge._parse_duration("0\n") is None
+    assert MediaPlayerBridge._parse_duration("") is None
+
+
+@pytest.mark.asyncio
+async def test_timeline_tracks_position_and_ignores_paused_time():
+    """HA needs a position clock that does not advance while paused."""
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+
+    assert bridge.get_timeline(address) == {
+        "position": None,
+        "duration": None,
+        "position_updated_at": None,
+    }
+
+    await bridge.play_url(address, "https://example.test/audio.mp3")
+    started = bridge.get_timeline(address)
+    assert started["position"] is not None and started["position"] >= 0
+    assert started["duration"] is None, "duration arrives later from the background probe"
+    assert started["position_updated_at"] is not None
+
+    await asyncio.sleep(0.05)
+    assert bridge.get_timeline(address)["position"] > started["position"]
+
+    await bridge.execute(address, "pause")
+    paused = bridge.get_timeline(address)["position"]
+    await asyncio.sleep(0.05)
+    assert bridge.get_timeline(address)["position"] == paused, "the clock must freeze"
+
+    await bridge.execute(address, "play")
+    await asyncio.sleep(0.05)
+    assert bridge.get_timeline(address)["position"] > paused
+
+    await bridge.execute(address, "stop")
+    assert bridge.get_timeline(address)["position"] is None
+
+
+@pytest.mark.asyncio
+async def test_timeline_position_never_exceeds_a_known_duration():
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+
+    await bridge.play_url(address, "https://example.test/audio.mp3")
+    await asyncio.sleep(0.05)
+    bridge.timelines[address]["duration"] = 0.01
+
+    assert bridge.get_timeline(address)["position"] == 0.01
+
+
+@pytest.mark.asyncio
+async def test_duration_probe_publishes_media_length():
+    """The probe must run in the background so playback is never delayed."""
+    notified = []
+
+    async def process_factory(*args, **kwargs):
+        if args[0] == "ffprobe":
+            return DurationProbeProcess()
+        return FakeProcess()
+
+    async def state_callback(address):
+        notified.append(address)
+
+    bridge = MediaPlayerBridge(
+        sink_resolver=fake_sink, process_factory=process_factory, state_callback=state_callback
+    )
+    address = "10:22:33:44:55:66"
+
+    await bridge.play_url(address, "https://example.test/audio.mp3")
+    assert bridge.get_timeline(address)["duration"] is None
+
+    await asyncio.sleep(0.01)
+
+    assert bridge.get_timeline(address)["duration"] == pytest.approx(240.05)
+    assert notified.count(address) >= 2, "HA is told again once the length is known"
+
+
+@pytest.mark.asyncio
+async def test_duration_probe_does_not_attach_to_a_superseded_stream():
+    async def process_factory(*args, **kwargs):
+        if args[0] == "ffprobe":
+            return DurationProbeProcess()
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "10:22:33:44:55:66"
+
+    await bridge.play_url(address, "https://example.test/one.mp3")
+    await bridge.execute(address, "stop")
+    await asyncio.sleep(0.01)
+
+    assert bridge.get_timeline(address)["duration"] is None
+
+
+@pytest.mark.asyncio
+async def test_playback_end_clears_the_timeline():
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+
+    await bridge.play_url(address, "https://example.test/audio.mp3")
+    processes = bridge.active_processes[address]
+    for process in processes:
+        process.returncode = 0
+
+    await bridge._watch_processes(address, *processes)
+
+    assert bridge.get_state(address) == "idle"
+    assert bridge.get_timeline(address)["position"] is None
 
 
 @pytest.mark.asyncio

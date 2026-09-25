@@ -40,6 +40,23 @@ class SpeakerSettings(BaseModel):
         return value
 
 
+class PlayerSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pulse_socket: str = "/run/audio/pulse.sock"
+    sink_probe_timeout: float = Field(default=5, gt=0)
+    stop_grace_seconds: float = Field(default=2, gt=0)
+    kill_grace_seconds: float = Field(default=1.5, gt=0)
+    command_stop_budget_seconds: float = Field(default=0.25, gt=0)
+    latency_msec: int = Field(default=250, gt=0)
+    sample_rate_hz: int = Field(default=48000, gt=0)
+    channels: int = Field(default=2, gt=0)
+    default_volume: float = Field(default=0.70, ge=0, le=1)
+    keepalive_interval_seconds: float = Field(default=240, gt=0)
+    keepalive_pulse_duration_seconds: float = Field(default=1, gt=0)
+    pipe_chunk_size: int = Field(default=64 * 1024, gt=0)
+
+
 class SystemSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -50,6 +67,7 @@ class SystemSettings(BaseModel):
     native_token: str = Field(default="", exclude=True, repr=False)
     demo_mode: bool = False
     demo_scenario: str = "healthy"
+    player: PlayerSettings = Field(default_factory=PlayerSettings)
     speakers: dict[str, SpeakerSettings] = Field(default_factory=dict)
 
 

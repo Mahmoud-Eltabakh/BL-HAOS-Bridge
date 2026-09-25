@@ -6,29 +6,32 @@ import logging
 import os
 import signal
 import subprocess
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..config import ConfigStore
+from ..config import ConfigStore, PlayerSettings
 from ..health import FailureClass, HealthRegistry, HealthState, normalize_address, validate_identifier, validate_media_url
 
 logger = logging.getLogger("bl_haos.ha.player")
-PULSE_SOCKET = "/run/audio/pulse.sock"
+PULSE_SOCKET = PlayerSettings.model_fields["pulse_socket"].default
 PULSE_SERVER = f"unix:{PULSE_SOCKET}"
-SINK_PROBE_TIMEOUT = 5
+SINK_PROBE_TIMEOUT = PlayerSettings.model_fields["sink_probe_timeout"].default
 # Teardown must always stay bounded: a wedged child (paused, or blocked writing
 # to a suspended A2DP sink) used to make the *next* play_media wait forever,
 # which surfaced as "the first play does nothing, the second one works".
-STOP_GRACE_SECONDS = 2.0
-KILL_GRACE_SECONDS = 1.5
+STOP_GRACE_SECONDS = PlayerSettings.model_fields["stop_grace_seconds"].default
+KILL_GRACE_SECONDS = PlayerSettings.model_fields["kill_grace_seconds"].default
 # How long a command waits for a previous stream's children to disappear. The
 # player releases the A2DP sink immediately, so a short window avoids audible
 # overlap while keeping play/stop snappy even when the decoder is wedged.
-COMMAND_STOP_BUDGET_SECONDS = 0.25
+COMMAND_STOP_BUDGET_SECONDS = PlayerSettings.model_fields["command_stop_budget_seconds"].default
+# Bound the background duration probe; a stalled URL must not leak a child.
+DURATION_PROBE_TIMEOUT = 10
 # Bound how much audio may be queued ahead of the speaker. The default
 # PulseAudio buffer is large enough that pause/stop kept playing for a while.
-PLAYER_LATENCY_MSEC = 250
+PLAYER_LATENCY_MSEC = PlayerSettings.model_fields["latency_msec"].default
 
 
 class MediaPlayerError(RuntimeError):
@@ -45,17 +48,29 @@ class MediaPlayerBridge:
         health_registry: HealthRegistry | None = None,
     ):
         self.config_store = config_store
+        self.player_settings = config_store.settings.player if config_store else PlayerSettings(
+            pulse_socket=PULSE_SOCKET,
+            sink_probe_timeout=SINK_PROBE_TIMEOUT,
+            stop_grace_seconds=STOP_GRACE_SECONDS,
+            kill_grace_seconds=KILL_GRACE_SECONDS,
+            command_stop_budget_seconds=COMMAND_STOP_BUDGET_SECONDS,
+            latency_msec=PLAYER_LATENCY_MSEC,
+        )
         self.states: dict[str, str] = {}
         self.volumes: dict[str, float] = {}
         self.active_processes: dict[str, tuple[asyncio.subprocess.Process, asyncio.subprocess.Process]] = {}
         self.last_urls: dict[str, str] = {}
+        # Playback clock per speaker so Home Assistant can draw a progress bar.
+        # Home Assistant extrapolates from position + position_updated_at, so the
+        # timeline only has to be published when something actually changes.
+        self.timelines: dict[str, dict[str, Any]] = {}
         # Strong references to fire-and-forget tasks. The event loop only holds
         # weak references to tasks; without this set, _pipe_audio/_watch_processes
         # can be garbage-collected mid-stream which silently stops audio output.
         self._background_tasks: set[asyncio.Task] = set()
         self.keepalive_addresses: set[str] = set()
-        self.keepalive_interval: float = 240.0
-        self.keepalive_pulse_duration: float = 1.0
+        self.keepalive_interval = self.player_settings.keepalive_interval_seconds
+        self.keepalive_pulse_duration = self.player_settings.keepalive_pulse_duration_seconds
         self._keepalive_task: asyncio.Task | None = None
         # One command at a time per speaker: overlapping play/stop requests used
         # to race on the same process pair and leave the speaker silent.
@@ -88,8 +103,52 @@ class MediaPlayerBridge:
     def get_state(self, address: str) -> str:
         return self.states.get(self._address(address), "idle")
 
+    def get_timeline(self, address: str) -> dict[str, Any]:
+        """Return the position/duration envelope Home Assistant renders as a bar."""
+        entry = self.timelines.get(self._address(address))
+        if not entry:
+            return {"position": None, "duration": None, "position_updated_at": None}
+        position = self._timeline_position(entry)
+        duration = entry.get("duration")
+        if isinstance(duration, (int, float)):
+            position = min(position, float(duration))
+        return {
+            "position": round(position, 3),
+            "duration": duration if isinstance(duration, (int, float)) else None,
+            # Stamped with the position it belongs to so HA can extrapolate.
+            "position_updated_at": time.time(),
+        }
+
+    @staticmethod
+    def _timeline_position(entry: dict[str, Any]) -> float:
+        """Elapsed playing time, ignoring time spent paused."""
+        position = float(entry.get("position") or 0.0)
+        clock_started_at = entry.get("clock_started_at")
+        if isinstance(clock_started_at, (int, float)):
+            position += time.time() - clock_started_at
+        return max(position, 0.0)
+
+    def _start_timeline(self, address: str, url: str) -> None:
+        self.timelines[address] = {"position": 0.0, "clock_started_at": time.time(), "duration": None, "url": url}
+
+    def _pause_timeline(self, address: str) -> None:
+        entry = self.timelines.get(address)
+        if not entry or not isinstance(entry.get("clock_started_at"), (int, float)):
+            return
+        entry["position"] = self._timeline_position(entry)
+        entry["clock_started_at"] = None
+
+    def _resume_timeline(self, address: str) -> None:
+        entry = self.timelines.get(address)
+        if not entry or isinstance(entry.get("clock_started_at"), (int, float)):
+            return
+        entry["clock_started_at"] = time.time()
+
+    def _clear_timeline(self, address: str) -> None:
+        self.timelines.pop(address, None)
+
     def get_volume(self, address: str) -> float:
-        return self.volumes.get(self._address(address), 0.70)
+        return self.volumes.get(self._address(address), self.player_settings.default_volume)
 
     async def _notify(self, address: str) -> None:
         if self._state_callback:
@@ -163,6 +222,7 @@ class MediaPlayerBridge:
                 return
             logger.debug("Resuming playback processes for %s (SIGCONT)", address)
             await self._signal_processes(address, getattr(signal, "SIGCONT", signal.SIGTERM))
+            self._resume_timeline(address)
             self.states[address] = "playing"
         elif operation == "pause":
             if address not in self.active_processes:
@@ -170,10 +230,12 @@ class MediaPlayerBridge:
                 raise MediaPlayerError("No active playback to pause")
             logger.debug("Pausing playback processes for %s (SIGSTOP)", address)
             await self._signal_processes(address, getattr(signal, "SIGSTOP", signal.SIGTERM))
+            self._pause_timeline(address)
             self.states[address] = "paused"
         elif operation == "stop":
             logger.debug("Stopping playback processes for %s", address)
             await self._stop_processes(address)
+            self._clear_timeline(address)
             self.states[address] = "idle"
         elif operation == "set_volume":
             if volume is None or not 0 <= volume <= 1:
@@ -253,7 +315,8 @@ class MediaPlayerBridge:
             logger.debug("Spawning ffmpeg decoder and %s player for %s", transport, addr)
             decoder = await self._process_factory(
                 "ffmpeg", "-nostdin", "-loglevel", "error", "-i", url,
-                "-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1",
+                "-f", "s16le", "-ar", str(self.player_settings.sample_rate_hz),
+                "-ac", str(self.player_settings.channels), "pipe:1",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
@@ -267,6 +330,7 @@ class MediaPlayerBridge:
             raise MediaPlayerError("Unable to start media playback") from error
         self.active_processes[addr] = (decoder, player)
         self.last_urls[addr] = url
+        self._start_timeline(addr, url)
         self.states[addr] = "playing"
         logger.debug(
             "Playback started for %s (decoder PID=%s, player PID=%s)",
@@ -274,6 +338,7 @@ class MediaPlayerBridge:
             getattr(decoder, "pid", None),
             getattr(player, "pid", None),
         )
+        self._track_task(self._async_probe_duration(addr, url), f"duration probe {addr}")
         self._track_task(self._drain_process_output(decoder, "ffmpeg", addr), f"ffmpeg stderr drain {addr}")
         self._track_task(self._drain_process_output(player, transport, addr), f"{transport} stderr drain {addr}")
         if hasattr(decoder.stdout, "read") and hasattr(player.stdin, "write"):
@@ -334,7 +399,8 @@ class MediaPlayerBridge:
         try:
             source = await self._process_factory(
                 "ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi",
-                "-i", "anullsrc=r=48000:cl=stereo", "-t", str(self.keepalive_pulse_duration),
+                "-i", f"anullsrc=r={self.player_settings.sample_rate_hz}:cl=stereo",
+                "-t", str(self.keepalive_pulse_duration),
                 "-f", "s16le", "pipe:1",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
@@ -361,12 +427,55 @@ class MediaPlayerBridge:
                     process.kill()
                     await process.wait()
 
+    async def _async_probe_duration(self, address: str, url: str) -> None:
+        """Resolve the media duration in the background so playback starts at once."""
+        try:
+            process = await self._process_factory(
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", url,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            logger.debug("Duration probe unavailable for %s", address)
+            return
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=DURATION_PROBE_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.debug("Duration probe timed out for %s", address)
+            self._kill_process(process)
+            await self._async_wait_for_exit(process, KILL_GRACE_SECONDS)
+            return
+        duration = self._parse_duration(self._decode_output(stdout))
+        if duration is None:
+            return
+        entry = self.timelines.get(address)
+        if entry is None or entry.get("url") != url:
+            # Playback already moved on; this duration belongs to a dead stream.
+            return
+        entry["duration"] = duration
+        logger.debug("Resolved media duration for %s: %.2fs", address, duration)
+        await self._notify(address)
+
+    @staticmethod
+    def _parse_duration(output: str) -> float | None:
+        """Read the single numeric duration line emitted by ffprobe."""
+        for line in output.splitlines():
+            try:
+                duration = float(line.strip())
+            except ValueError:
+                continue
+            if duration > 0:
+                return duration
+        return None
+
     async def _async_resolve_sink(self, address: str) -> str | None:
         graph = []
         try:
             process = await self._process_factory("pw-dump", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             try:
-                stdout, _ = await asyncio.wait_for(process.communicate(), timeout=SINK_PROBE_TIMEOUT)
+                stdout, _ = await asyncio.wait_for(
+                    process.communicate(), timeout=self.player_settings.sink_probe_timeout
+                )
             except asyncio.TimeoutError:
                 logger.warning("PipeWire sink probe timed out for %s", address)
                 if process.returncode is None:
@@ -398,14 +507,17 @@ class MediaPlayerBridge:
             if media_class == "Audio/Sink" or "sink" in media_class.lower():
                 if address_clean in values or address_key in values:
                     return props.get("node.name") or str(node.get("id"))
-        if os.path.exists(PULSE_SOCKET):
+        pulse_socket = self.player_settings.pulse_socket
+        if os.path.exists(pulse_socket):
             try:
                 process = await self._process_factory(
-                    "pactl", "-s", PULSE_SERVER, "list", "sinks", "short",
+                    "pactl", "-s", f"unix:{pulse_socket}", "list", "sinks", "short",
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
                 try:
-                    stdout, _ = await asyncio.wait_for(process.communicate(), timeout=SINK_PROBE_TIMEOUT)
+                    stdout, _ = await asyncio.wait_for(
+                        process.communicate(), timeout=self.player_settings.sink_probe_timeout
+                    )
                 except asyncio.TimeoutError:
                     logger.warning("PulseAudio sink probe timed out for %s", address)
                     if process.returncode is None:
@@ -432,8 +544,7 @@ class MediaPlayerBridge:
             return "pulse", validate_identifier(sink.removeprefix("pulse:"), "PulseAudio sink")
         return "pipewire", validate_identifier(sink, "PipeWire sink")
 
-    @staticmethod
-    def _player_command(transport: str, sink: str) -> tuple[str, ...]:
+    def _player_command(self, transport: str, sink: str) -> tuple[str, ...]:
         if transport == "pulse":
             # paplay reads raw PCM from standard input when no file argument is given.
             # Passing "-" causes it to attempt open("-", O_RDONLY) which fails with ENOENT.
@@ -445,17 +556,20 @@ class MediaPlayerBridge:
                 sink,
                 "--raw",
                 "--rate",
-                "48000",
+                str(self.player_settings.sample_rate_hz),
                 "--channels",
-                "2",
+                str(self.player_settings.channels),
                 "--format=s16le",
-                f"--latency-msec={PLAYER_LATENCY_MSEC}",
+                f"--latency-msec={self.player_settings.latency_msec}",
             )
-        return ("pw-play", "--target", sink, "--raw", "--rate", "48000", "--channels", "2", "-")
+        return (
+            "pw-play", "--target", sink, "--raw", "--rate", str(self.player_settings.sample_rate_hz),
+            "--channels", str(self.player_settings.channels), "-",
+        )
 
-    @staticmethod
-    def _player_environment(transport: str) -> dict[str, Any]:
-        return {"env": {**os.environ, "PULSE_SERVER": PULSE_SERVER}} if transport == "pulse" else {}
+    def _player_environment(self, transport: str) -> dict[str, Any]:
+        pulse_server = f"unix:{self.player_settings.pulse_socket}"
+        return {"env": {**os.environ, "PULSE_SERVER": pulse_server}} if transport == "pulse" else {}
 
     async def _apply_volume(self, address: str, volume: float) -> None:
         sink = await self._sink_resolver(address)
@@ -468,7 +582,8 @@ class MediaPlayerBridge:
             try:
                 if transport == "pulse":
                     process = await self._process_factory(
-                        "pactl", "-s", PULSE_SERVER, "set-sink-volume", sink_name, f"{round(volume * 100)}%"
+                        "pactl", "-s", f"unix:{self.player_settings.pulse_socket}",
+                        "set-sink-volume", sink_name, f"{round(volume * 100)}%"
                     )
                 else:
                     process = await self._process_factory("wpctl", "set-volume", sink_name, str(volume))
@@ -492,7 +607,7 @@ class MediaPlayerBridge:
     async def _pipe_audio(self, decoder: asyncio.subprocess.Process, player: asyncio.subprocess.Process) -> None:
         """Copy decoded PCM without introducing a shell pipeline."""
         try:
-            while chunk := await decoder.stdout.read(64 * 1024):
+            while chunk := await decoder.stdout.read(self.player_settings.pipe_chunk_size):
                 player.stdin.write(chunk)
                 await player.stdin.drain()
         except (BrokenPipeError, ConnectionError):
@@ -534,7 +649,7 @@ class MediaPlayerBridge:
         # Give the player a moment to release the sink, then hand whatever is
         # left to a background reaper. A decoder stuck in uninterruptible I/O
         # can survive SIGKILL, and the command path must never wait for that.
-        await self._async_wait_for_exits(processes, COMMAND_STOP_BUDGET_SECONDS)
+        await self._async_wait_for_exits(processes, self.player_settings.command_stop_budget_seconds)
         self._track_task(
             self._async_reap_processes(address, processes),
             f"reap playback processes {address}",
@@ -565,15 +680,15 @@ class MediaPlayerBridge:
         for process in processes:
             if process.returncode is not None:
                 continue
-            if await self._async_wait_for_exit(process, STOP_GRACE_SECONDS):
+            if await self._async_wait_for_exit(process, self.player_settings.stop_grace_seconds):
                 continue
             self._kill_process(process)
-            if not await self._async_wait_for_exit(process, KILL_GRACE_SECONDS):
+            if not await self._async_wait_for_exit(process, self.player_settings.kill_grace_seconds):
                 logger.warning(
                     "Playback process %s for %s did not exit within %.1fs; continuing without it",
                     getattr(process, "pid", "?"),
                     address,
-                    KILL_GRACE_SECONDS,
+                    self.player_settings.kill_grace_seconds,
                 )
 
     @staticmethod
@@ -626,6 +741,7 @@ class MediaPlayerBridge:
             )
             self.active_processes.pop(address, None)
             self.states[address] = "idle"
+            self._clear_timeline(address)
             await self._notify(address)
 
     async def async_shutdown(self) -> None:
@@ -638,7 +754,9 @@ class MediaPlayerBridge:
             self.states[address] = "idle"
         # Let the children disappear before the reaper tasks are cancelled, so a
         # wedged decoder is still escalated to SIGKILL on the way out.
-        await self._async_wait_for_exits(tuple(stopping), STOP_GRACE_SECONDS + KILL_GRACE_SECONDS)
+        await self._async_wait_for_exits(
+            tuple(stopping), self.player_settings.stop_grace_seconds + self.player_settings.kill_grace_seconds
+        )
         for task in tuple(self._background_tasks):
             task.cancel()
         if self._background_tasks:

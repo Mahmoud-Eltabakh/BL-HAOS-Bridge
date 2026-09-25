@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.49
+
+- Report a playback timeline so Home Assistant can draw a progress bar. The bridge now tracks elapsed playing time per speaker (pausing the clock while paused, clearing it on stop or when the stream ends) and probes the media duration in the background with `ffprobe`, so playback is never delayed while the length is resolved. The position/duration envelope is published in the native `playback` payload and mapped to `media_position`, `media_position_updated_at` and `media_duration`.
+
 ## 0.2.48
 
 - Playback commands no longer wait for a previous stream's decoder to disappear. On this hardware `ffmpeg` can survive even `SIGKILL` while blocked in uninterruptible I/O, so `play_media`/`stop` were spending the whole teardown window (about 3s) before answering. The player is still given a short window to release the A2DP sink, then any leftover child is escalated and collected in the background, which keeps repeated play/pause/stop snappy.

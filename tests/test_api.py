@@ -216,6 +216,34 @@ def test_pair_publishes_native_speaker():
         assert published == [dev_addr]
 
 
+def test_native_speaker_record_includes_the_playback_timeline():
+    """HA draws the progress bar from position/duration in the native payload."""
+    from backend.bl_haos.api.routes import native_speaker_record
+    from backend.bl_haos.bluetooth.constants import A2DP_SINK_UUID, DEVICE_INTERFACE
+
+    dev_addr = "aa:bb:cc:dd:ee:11"
+    with TestClient(app) as client:
+        app.state.bt_manager._on_interfaces_added(
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_11",
+            {
+                DEVICE_INTERFACE: {
+                    "Address": "AA:BB:CC:DD:EE:11",
+                    "Name": "Timeline Speaker",
+                    "Adapter": "/org/bluez/hci0",
+                    "UUIDs": [A2DP_SINK_UUID],
+                    "Class": 0x240414,
+                    "Paired": True,
+                    "Trusted": True,
+                    "Connected": True,
+                }
+            },
+        )
+        device = app.state.bt_manager.get_device_by_address(dev_addr).to_info()
+        record = native_speaker_record(app, device)
+
+    assert {"state", "volume", "position", "duration", "position_updated_at"} <= set(record["playback"])
+
+
 def test_pairing_failure_surfaces_a_bounded_bluez_reason():
     """Operators need the real BlueZ reason instead of a generic failure string."""
     dev_addr = "aa:bb:cc:dd:ee:09"
