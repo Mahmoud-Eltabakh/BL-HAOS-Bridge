@@ -216,6 +216,11 @@ class ProbeProcess(FakeProcess):
         return self.output, b""
 
 
+class HangingProbeProcess(FakeProcess):
+    async def communicate(self):
+        await asyncio.sleep(60)
+
+
 @pytest.mark.asyncio
 async def test_resolve_sink_prefers_matching_pipewire_sink():
     graph = [{"id": 42, "props": {"media.class": "Audio/Sink", "node.name": "bluez_output.10_22_33_44_55_66.1", "device.description": "10:22:33:44:55:66"}}]
@@ -226,6 +231,20 @@ async def test_resolve_sink_prefers_matching_pipewire_sink():
 
     bridge = MediaPlayerBridge(process_factory=process_factory)
     assert await bridge._async_resolve_sink("10:22:33:44:55:66") == "bluez_output.10_22_33_44_55_66.1"
+
+
+@pytest.mark.asyncio
+async def test_resolve_sink_stops_when_pipewire_probe_hangs(monkeypatch):
+    process = HangingProbeProcess()
+
+    async def process_factory(*args, **_kwargs):
+        return process
+
+    monkeypatch.setattr("backend.bl_haos.ha.player.SINK_PROBE_TIMEOUT", 0.01)
+    bridge = MediaPlayerBridge(process_factory=process_factory)
+
+    assert await bridge._async_resolve_sink("10:22:33:44:55:66") is None
+    assert process.returncode == -9
 
 
 @pytest.mark.asyncio

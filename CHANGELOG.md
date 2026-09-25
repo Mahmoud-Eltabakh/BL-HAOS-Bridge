@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.44
+
+- Fail fast when PipeWire or PulseAudio sink discovery stalls, preventing Home Assistant media commands from timing out while waiting for the speaker.
+
 ## 0.2.43
 
 - Fix PulseAudio paplay raw PCM invocation: omit '-' filename argument which caused paplay/pacat to fail with 'open(): No such file or directory' instead of streaming from stdin.

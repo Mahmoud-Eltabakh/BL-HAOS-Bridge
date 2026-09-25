@@ -16,6 +16,7 @@ from ..health import FailureClass, HealthRegistry, HealthState, normalize_addres
 logger = logging.getLogger("bl_haos.ha.player")
 PULSE_SOCKET = "/run/audio/pulse.sock"
 PULSE_SERVER = f"unix:{PULSE_SOCKET}"
+SINK_PROBE_TIMEOUT = 5
 
 
 class MediaPlayerError(RuntimeError):
@@ -336,7 +337,14 @@ class MediaPlayerBridge:
         graph = []
         try:
             process = await self._process_factory("pw-dump", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            stdout, _ = await process.communicate()
+            try:
+                stdout, _ = await asyncio.wait_for(process.communicate(), timeout=SINK_PROBE_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning("PipeWire sink probe timed out for %s", address)
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+                stdout = b""
             if process.returncode:
                 if self.health:
                     self.health.observe_component(
@@ -368,7 +376,14 @@ class MediaPlayerBridge:
                     "pactl", "-s", PULSE_SERVER, "list", "sinks", "short",
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, _ = await process.communicate()
+                try:
+                    stdout, _ = await asyncio.wait_for(process.communicate(), timeout=SINK_PROBE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.warning("PulseAudio sink probe timed out for %s", address)
+                    if process.returncode is None:
+                        process.kill()
+                    await process.wait()
+                    stdout = b""
                 expected = f"bluez_sink.{address_key}.a2dp_sink"
                 if not process.returncode:
                     for line in self._decode_output(stdout).splitlines():
