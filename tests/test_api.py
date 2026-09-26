@@ -201,6 +201,51 @@ def test_native_speaker_record_includes_the_playback_timeline():
 
     assert {"state", "volume", "position", "duration", "position_updated_at"} <= set(record["playback"])
 
+def test_offline_speaker_stays_published_as_unavailable():
+    """A trusted speaker that goes offline stays in the snapshot, unavailable.
+
+    The integration turns that into "entity unavailable". Dropping the record
+    instead (which the bridge used to do) removed the address from the snapshot,
+    so the entity was deleted from Home Assistant rather than marked unavailable.
+    """
+    from backend.bl_haos.api.routes import native_speaker_record
+    from backend.bl_haos.bluetooth.constants import A2DP_SINK_UUID, DEVICE_INTERFACE
+    from backend.bl_haos.constants import BEARER_PREFIX
+
+    dev_addr = "aa:bb:cc:dd:ee:21"
+    dev_path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_21"
+    with TestClient(app) as client:
+        app.state.bt_manager._on_interfaces_added(
+            dev_path,
+            {
+                DEVICE_INTERFACE: {
+                    "Address": "AA:BB:CC:DD:EE:21",
+                    "Name": "Offline Speaker",
+                    "Adapter": "/org/bluez/hci0",
+                    "UUIDs": [A2DP_SINK_UUID],
+                    "Class": 0x240414,
+                    "Paired": True,
+                    "Trusted": True,
+                    "Connected": True,
+                }
+            },
+        )
+        # BlueZ withdraws the object: the speaker is switched off.
+        app.state.bt_manager._on_interfaces_removed(dev_path, [DEVICE_INTERFACE])
+        device = app.state.bt_manager.get_device_by_address(dev_addr).to_info()
+        record = native_speaker_record(app, device)
+        token = app.state.config_store.settings.native_token
+        headers = {"Authorization": f"{BEARER_PREFIX}{token}"}
+        snapshot = client.get("/api/native/speakers", headers=headers).json()
+
+    assert device.detached is True
+    assert record["available"] is False
+    assert record["trusted"] is True
+    assert dev_addr in snapshot["speakers"]
+    assert snapshot["speakers"][dev_addr]["available"] is False
+
+
+
 
 def test_pairing_failure_surfaces_a_bounded_bluez_reason():
     """Operators need the real BlueZ reason instead of a generic failure string."""

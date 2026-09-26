@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.58
+
+- Keep a trusted speaker visible while it is switched off. BlueZ withdraws the device object of anything it treats as temporary - every device that is not paired, including a speaker the operator trusted - and the bridge deleted its own record along with it, which emptied the paired list and made the Home Assistant entity disappear. The record now survives the BlueZ object as an offline speaker: `/api/devices` keeps listing it (`connected: false`, `detached: true`), the dashboard keeps the card with an **Offline** badge, and the native snapshot keeps publishing it with `available: false`, so the integration (0.2.15) marks the entity unavailable instead of removing it. A device that is neither paired nor trusted is still dropped with its BlueZ object, connecting re-resolves a live proxy, and **Remove** forgets the record for good - including while the speaker is offline.
+
 ## 0.2.57
 
 - Require explicit consent for Bluetooth pairing. The BlueZ agent answered every prompt with the fixed PIN `0000`, passkey `0` and an unconditional confirmation while the adapter stayed pairable, so any device in radio range could pair — and, once paired, it was published to Home Assistant as a trusted speaker and accepted commands. Pairing now opens a 90-second window for exactly one address (`POST /api/devices/pair`, opened before the attempt and closed in `finally`), every prompt from any other device is refused with `org.bluez.Error.Rejected`, and the adapter is set `Pairable=false` at boot and whenever no window is open. The route no longer rewrites the agent's PIN callback permanently — which is what made a single pairing's PIN apply to every later device. (THREAT-MODEL.md, T3)

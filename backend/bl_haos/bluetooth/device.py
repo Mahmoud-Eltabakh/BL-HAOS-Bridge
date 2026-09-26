@@ -44,6 +44,12 @@ class BluetoothDevice:
         self.path = path
         self._properties = properties
         self.last_seen = time.time()
+        # BlueZ withdraws the object of a device it treats as temporary, which is
+        # every device that is not paired - including a speaker the operator has
+        # trusted. The bridge keeps the last known record and flags it, so the
+        # device stays visible as offline instead of disappearing from the API,
+        # the dashboard and Home Assistant.
+        self.detached = False
 
     def _get_prop(self, key: str, default: Any = None) -> Any:
         val = self._properties.get(key, default)
@@ -81,7 +87,11 @@ class BluetoothDevice:
 
     @property
     def connected(self) -> bool:
-        return bool(self._get_prop("Connected", False))
+        # A detached record keeps its last known properties, so ``Connected`` can
+        # still read True after BlueZ withdrew the object. The device is offline
+        # either way, and every consumer (available flags, UI badges, reconnect
+        # engine) must see that.
+        return bool(self._get_prop("Connected", False)) and not self.detached
 
     @property
     def blocked(self) -> bool:
@@ -159,6 +169,11 @@ class BluetoothDevice:
             self._properties[k] = v.value if isinstance(v, Variant) else v
         self.last_seen = time.time()
 
+    def mark_detached(self) -> None:
+        """Keep the last known record after BlueZ withdrew the device object."""
+        self.detached = True
+        self._properties["Connected"] = False
+
     def to_info(self) -> DeviceInfo:
         return DeviceInfo(
             path=self.path,
@@ -181,6 +196,7 @@ class BluetoothDevice:
             device_type=self.device_type,
             battery_percentage=self._get_prop("Percentage"),
             last_seen=self.last_seen,
+            detached=self.detached,
         )
 
     async def connect(self) -> None:

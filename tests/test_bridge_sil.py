@@ -61,6 +61,7 @@ def test_websocket_device_discovery():
         "paired": True,
         "trusted": True,
         "connected": False,
+        "detached": False,
         "blocked": False,
         "legacy_pairing": False,
         "rssi": -38,

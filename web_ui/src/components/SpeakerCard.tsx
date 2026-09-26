@@ -88,8 +88,13 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
               </p>
             </div>
           </div>
-          <span className={`neu-inset px-2.5 py-1 text-xs font-medium rounded-full ${device.connected ? 'text-emerald-300' : 'text-slate-300'}`}>
-            {device.connected ? 'Connected' : 'Disconnected'}
+          <span
+            className={`neu-inset px-2.5 py-1 text-xs font-medium rounded-full ${
+              device.connected ? 'text-emerald-300' : device.detached ? 'text-amber-300' : 'text-slate-300'
+            }`}
+            title={device.detached ? 'BlueZ no longer reports this speaker; it is switched off or out of range' : undefined}
+          >
+            {device.connected ? 'Connected' : device.detached ? 'Offline' : 'Disconnected'}
           </span>
         </div>
 

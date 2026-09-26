@@ -225,6 +225,7 @@ class BluetoothManager:
             self._notify("adapter_added", adapter.to_info())
         if DEVICE_INTERFACE in interfaces:
             device = BluetoothDevice(self.bus, path, interfaces[DEVICE_INTERFACE])
+            self._drop_detached_duplicates(device)
             self.devices[path] = device
             logger.debug(
                 "BlueZ device discovered: %s (%s) [audio_sink=%s, connected=%s]",
@@ -241,6 +242,18 @@ class BluetoothManager:
             del self.adapters[path]
             self._notify("adapter_removed", path)
         if DEVICE_INTERFACE in interfaces and path in self.devices:
+            device = self.devices[path]
+            if self._is_known_speaker(device):
+                # BlueZ withdrew the object, but the operator still owns this
+                # speaker. Keep the last known record as an offline speaker so the
+                # API, the dashboard and the integration keep seeing it - deleting
+                # it here is what made a switched-off speaker vanish from the
+                # paired list and removed its Home Assistant entity.
+                device.mark_detached()
+                logger.debug("BlueZ device went offline: %s (%s)", device.address, path)
+                self._observe_speaker_offline(device)
+                self._notify(EVENT_DEVICE_UPDATED, device.to_info())
+                return
             logger.debug("BlueZ device removed: %s", path)
             del self.devices[path]
             self._notify("device_removed", path)
@@ -257,9 +270,43 @@ class BluetoothManager:
                 self._notify(EVENT_DEVICE_UPDATED, self.devices[path].to_info())
             else:
                 dev = BluetoothDevice(self.bus, path, changed)
+                self._drop_detached_duplicates(dev)
                 self.devices[path] = dev
                 logger.debug("BlueZ new device from property change: %s (%s)", dev.address, path)
                 self._notify(EVENT_DEVICE_DISCOVERED, dev.to_info())
+
+    @staticmethod
+    def _is_known_speaker(device: BluetoothDevice) -> bool:
+        """Is this record worth keeping after BlueZ withdraws the object?
+
+        ``Trusted`` is the operator's explicit "this speaker is mine" and
+        ``Paired`` means BlueZ itself persists the bond, so either one describes a
+        speaker the operator expects to still see while it is switched off.
+        Untrusted, unpaired devices are radio noise and keep the old behavior:
+        they are dropped together with their BlueZ object.
+        """
+        return bool(device.trusted or device.paired)
+
+    def _drop_detached_duplicates(self, device: BluetoothDevice) -> None:
+        """Forget offline records for the same address at another object path.
+
+        BlueZ can recreate a device object under a new path; keeping both would
+        show the operator the same speaker twice, one of them offline.
+        """
+        for other_path, other in list(self.devices.items()):
+            if other_path != device.path and other.detached and other.address == device.address:
+                logger.debug("Dropping superseded offline record for %s (%s)", device.address, other_path)
+                del self.devices[other_path]
+
+    def _observe_speaker_offline(self, device: BluetoothDevice) -> None:
+        """Record the transition to offline for the health snapshot."""
+        if not self.health:
+            return
+        try:
+            self.health.observe_speaker(normalize_address(device.address), SpeakerState.DISCONNECTED)
+        except ValueError:
+            # A malformed address cannot be observed; it is already unusable.
+            return
 
     async def _load_managed_objects(self):
         if not self.bus:
@@ -297,6 +344,13 @@ class BluetoothManager:
     async def ensure_device(self, address: str) -> BluetoothDevice | None:
         """Look up device in local cache or query BlueZ D-Bus directly by MAC."""
         dev = self.get_device_by_address(address)
+        if dev and dev.detached:
+            # The BlueZ object is gone, so this proxy can neither pair nor connect.
+            # Keep the offline record (the operator still sees the speaker) but
+            # resolve a live proxy through D-Bus below; a live object supersedes
+            # the record.
+            logger.debug("Offline record for %s needs a live BlueZ proxy", address)
+            dev = None
         if dev:
             return dev
         if not self.bus:
@@ -311,6 +365,7 @@ class BluetoothManager:
                 props_iface = proxy.get_interface(DBUS_PROPERTIES_IFACE)
                 props = await props_iface.call_get_all(DEVICE_INTERFACE)
                 dev = BluetoothDevice(self.bus, dev_path, props)
+                self._drop_detached_duplicates(dev)
                 self.devices[dev_path] = dev
                 return dev
             except Exception:
@@ -612,7 +667,13 @@ class BluetoothManager:
     async def remove_device(self, address: str) -> bool:
         """Untrust, unpair, disconnect, and completely remove device from adapter cache."""
         address = normalize_address(address)
-        dev = await self.ensure_device(address)
+        # Look in the cache first so an offline speaker can still be forgotten:
+        # ``ensure_device`` deliberately refuses a detached record, whose BlueZ
+        # proxy is gone.
+        dev = self.get_device_by_address(address)
+        detached = bool(dev and dev.detached)
+        if dev is None:
+            dev = await self.ensure_device(address)
         if not dev:
             return False
 
@@ -630,9 +691,10 @@ class BluetoothManager:
                 logger.debug("Failed to disconnect %s during removal: %s", address, e)
 
         adapter_path = dev.adapter_path
-        if not self.bus:
-            if dev.path in self.devices:
-                del self.devices[dev.path]
+        if not self.bus or detached:
+            # Either there is no bus to ask or BlueZ already withdrew the object:
+            # there is nothing left to unpair, so forgetting the record is enough.
+            self.devices.pop(dev.path, None)
             return True
 
         # 3. Call adapter RemoveDevice D-Bus method to remove pairing & BlueZ cache completely

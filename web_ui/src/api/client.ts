@@ -65,6 +65,12 @@ export interface DeviceInfo {
   paired: boolean;
   trusted: boolean;
   connected: boolean;
+  /**
+   * The record outlived its BlueZ object: the speaker is still the operator's,
+   * but BlueZ no longer exposes it (typically switched off). The card stays and
+   * shows "Offline" instead of vanishing.
+   */
+  detached?: boolean;
   rssi?: number | null;
   is_audio_sink: boolean;
   device_type: string;

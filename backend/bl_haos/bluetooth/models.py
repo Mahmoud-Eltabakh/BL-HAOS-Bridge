@@ -51,6 +51,10 @@ class DeviceInfo(BaseModel):
     paired: bool = False
     trusted: bool = False
     connected: bool = False
+    # True when this record outlives its BlueZ object: the operator still owns the
+    # speaker, but BlueZ no longer exposes it (a device that is trusted but not
+    # paired is temporary to BlueZ and is dropped the moment it goes offline).
+    detached: bool = False
     blocked: bool = False
     legacy_pairing: bool = False
     rssi: int | None = None

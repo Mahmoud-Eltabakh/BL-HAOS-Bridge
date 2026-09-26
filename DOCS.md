@@ -49,6 +49,16 @@ A speaker becomes a Home Assistant entity only once it is **Trusted** (what
 **Pair & Trust** records). A device that merely pairs or connects — which any
 device in radio range can arrange — is not published and is refused commands.
 
+### A Speaker That Is Switched Off
+A trusted speaker that is switched off or out of range stays where you left it:
+its card remains on the dashboard with an **Offline** badge and its Home
+Assistant entity reads *unavailable* instead of disappearing. BlueZ stops
+reporting the device when it goes away, but the bridge keeps the last known
+record — name, alias, adapter and trust — for exactly this reason, and the same
+entity comes back by itself (with its history and automations intact) when the
+speaker returns. **Remove** is what forgets a speaker for good, and it works
+while the speaker is offline too.
+
 ### Playing Audio from Home Assistant
 - Each connected trusted speaker appears as a native `media_player` entity after the BL-HAOS integration is configured.
 - Use standard Home Assistant Lovelace media cards, automation actions (`media_player.play_media`, `tts.speak`), or Music Assistant to send audio directly to your speaker.

@@ -452,3 +452,103 @@ def test_bluetooth_manager_device_lookup_tolerates_invalid_cached_device_address
     found = mgr.get_device_by_address("ec:81:93:53:a9:16")
     assert found is not None
     assert found.name == "Logitech BT Adapter"
+
+
+def _device_properties(address: str, *, paired: bool, trusted: bool, connected: bool = True) -> dict:
+    """A speaker-shaped BlueZ device record."""
+    return {
+        "Address": address,
+        "Name": "Bluetooth Speaker",
+        "Adapter": "/org/bluez/hci0",
+        "UUIDs": [A2DP_SINK_UUID],
+        "Class": 0x240414,
+        "Paired": paired,
+        "Trusted": trusted,
+        "Connected": connected,
+    }
+
+
+def test_trusted_speaker_stays_visible_when_bluez_withdraws_the_object():
+    """A switched-off speaker must stay visible instead of disappearing.
+
+    BlueZ drops the object of any device it treats as temporary, and a device that
+    is trusted but not paired is exactly that. The bridge used to delete its own
+    record together with it, which emptied the paired list and made the
+    integration remove the Home Assistant entity rather than mark it unavailable.
+    """
+    mgr = BluetoothManager()
+    events: list[tuple[str, object]] = []
+    mgr.add_event_listener(lambda event, data: events.append((event, data)))
+    dev_path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+    dev_addr = "AA:BB:CC:11:22:33"
+    mgr._on_interfaces_added(dev_path, {DEVICE_INTERFACE: _device_properties(dev_addr, paired=False, trusted=True)})
+    events.clear()
+
+    mgr._on_interfaces_removed(dev_path, [DEVICE_INTERFACE])
+
+    devices = mgr.get_devices(audio_only=True)
+    assert [device.address for device in devices] == [dev_addr]
+    assert devices[0].trusted is True
+    assert devices[0].connected is False
+    assert devices[0].detached is True
+    # The dashboard keeps the card because the record is updated, not removed.
+    assert [event for event, _ in events] == ["device_updated"]
+
+
+def test_untrusted_device_is_still_dropped_with_its_bluez_object():
+    """Radio noise keeps the old behavior: no record once BlueZ forgets it."""
+    mgr = BluetoothManager()
+    events: list[tuple[str, object]] = []
+    mgr.add_event_listener(lambda event, data: events.append((event, data)))
+    dev_path = "/org/bluez/hci0/dev_10_22_33_44_55_66"
+    mgr._on_interfaces_added(
+        dev_path, {DEVICE_INTERFACE: _device_properties("10:22:33:44:55:66", paired=False, trusted=False)}
+    )
+    events.clear()
+
+    mgr._on_interfaces_removed(dev_path, [DEVICE_INTERFACE])
+
+    assert mgr.get_devices(audio_only=False) == []
+    assert [event for event, _ in events] == ["device_removed"]
+
+
+def test_reappearing_speaker_reattaches_and_drops_the_offline_record():
+    """A speaker seen again at a new object path must not be listed twice."""
+    mgr = BluetoothManager()
+    old_path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+    new_path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33_recreated"
+    mgr._on_interfaces_added(
+        old_path, {DEVICE_INTERFACE: _device_properties("AA:BB:CC:11:22:33", paired=True, trusted=True)}
+    )
+    mgr._on_interfaces_removed(old_path, [DEVICE_INTERFACE])
+    assert mgr.get_devices(audio_only=True)[0].detached is True
+
+    # BlueZ recreated the object under a different path: a fresh payload, as D-Bus
+    # would deliver it (marking a record detached clears its stale Connected flag).
+    mgr._on_interfaces_added(
+        new_path, {DEVICE_INTERFACE: _device_properties("AA:BB:CC:11:22:33", paired=True, trusted=True)}
+    )
+
+    devices = mgr.get_devices(audio_only=True)
+    assert len(devices) == 1
+    assert devices[0].detached is False
+    assert devices[0].connected is True
+
+
+@pytest.mark.asyncio
+async def test_offline_speaker_can_still_be_forgotten_and_never_connects_through_a_dead_proxy():
+    """The offline record survives a failed resolve, and ``remove`` still works."""
+    mgr = BluetoothManager()
+    dev_path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+    dev_addr = "AA:BB:CC:11:22:33"
+    mgr._on_interfaces_added(dev_path, {DEVICE_INTERFACE: _device_properties(dev_addr, paired=True, trusted=True)})
+    mgr._on_interfaces_removed(dev_path, [DEVICE_INTERFACE])
+
+    # There is no BlueZ object to connect through, and the offline record must
+    # survive that failure so the operator still sees the speaker.
+    assert await mgr.ensure_device(dev_addr) is None
+    assert mgr.get_devices(audio_only=True)[0].detached is True
+
+    assert await mgr.remove_device(dev_addr) is True
+    assert mgr.get_devices(audio_only=False) == []
+

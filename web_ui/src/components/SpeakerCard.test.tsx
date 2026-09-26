@@ -46,6 +46,21 @@ describe('SpeakerCard', () => {
     expect(screen.getByText('Connected')).toBeInTheDocument();
   });
 
+  it('keeps a switched-off speaker visible with an offline badge', () => {
+    // The bridge keeps a trusted speaker that BlueZ no longer reports, marked
+    // detached: the card must stay (with an offline badge) instead of vanishing.
+    render(
+      <SpeakerCard
+        device={{ ...connectedDevice, connected: false, detached: true }}
+        onSettingsClick={() => {}}
+        onRefresh={() => {}}
+      />
+    );
+    expect(screen.getByText('Kitchen Speaker')).toBeInTheDocument();
+    expect(screen.getByText('Offline')).toBeInTheDocument();
+    expect(screen.queryByText('Disconnected')).not.toBeInTheDocument();
+  });
+
   it('commits volume to the bridge on pointer release', async () => {
     render(<SpeakerCard device={connectedDevice} onSettingsClick={() => {}} onRefresh={() => {}} />);
     const slider = screen.getByRole('slider', { name: 'Speaker volume' });
