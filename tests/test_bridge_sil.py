@@ -253,7 +253,7 @@ def test_auto_reconnect_reports_bluez_failure_distinctly(monkeypatch):
 
     assert response.status_code == 409
     assert "could not re-establish the Bluetooth connection" in response.json()["detail"]
-    connect.assert_awaited_once_with("aa:bb:cc:dd:ee:02")
+    connect.assert_awaited_once_with("aa:bb:cc:dd:ee:02", reset_existing=True)
     execute.assert_awaited_once()
 
 
@@ -286,7 +286,7 @@ def test_auto_reconnect_reports_sink_still_missing_distinctly(monkeypatch):
 
     assert response.status_code == 409
     assert "no audio sink appeared" in response.json()["detail"]
-    connect.assert_awaited_once_with("aa:bb:cc:dd:ee:03")
+    connect.assert_awaited_once_with("aa:bb:cc:dd:ee:03", reset_existing=True)
     assert execute.await_count == A2DP_SINK_RETRY_ATTEMPTS + 1
     assert sleep.await_count == A2DP_SINK_RETRY_ATTEMPTS
 

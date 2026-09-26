@@ -573,10 +573,19 @@ class BluetoothManager:
         logger.info("Device %s successfully paired, connected, and trusted", address)
         return True
 
-    async def connect_device(self, address: str) -> bool:
-        """Connect to device."""
+    async def connect_device(self, address: str, *, reset_existing: bool = False) -> bool:
+        """Connect to a device.
+
+        ``reset_existing`` is for the operator path only. Connecting used to always
+        drop an existing link first to clear a stale A2DP transport; when the
+        auto-reconnect engine did the same thing, its own retry tore down a link
+        that was fine (or still coming up) and re-negotiated the codec, which is
+        heard as continuous disconnects and quality drops. An already-connected
+        device is now reported as success, and only an explicit operator request
+        resets the link.
+        """
         address = normalize_address(address)
-        logger.debug("Initiating connect_device for %s", address)
+        logger.debug("Initiating connect_device for %s (reset_existing=%s)", address, reset_existing)
         try:
             await self.stop_scan()
         except Exception as e:
@@ -596,9 +605,14 @@ class BluetoothManager:
                 logger.debug("Device %s not found on any adapter for connect", address)
                 raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
         try:
-            # A connected BlueZ ACL can retain a stale A2DP transport in
-            # PipeWire. Force a clean link before reconnecting the profile.
             if getattr(dev, "connected", False):
+                if not reset_existing:
+                    # Already up: connecting again would only risk breaking it, and
+                    # BlueZ would answer AlreadyConnected anyway.
+                    logger.debug("Device %s is already connected; nothing to do", address)
+                    return True
+                # A connected BlueZ ACL can retain a stale A2DP transport in
+                # PipeWire. Force a clean link before reconnecting the profile.
                 logger.debug("Resetting existing connection for %s before reconnecting", address)
                 await dev.disconnect()
                 await asyncio.sleep(1.0)

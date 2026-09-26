@@ -552,3 +552,46 @@ async def test_offline_speaker_can_still_be_forgotten_and_never_connects_through
     assert await mgr.remove_device(dev_addr) is True
     assert mgr.get_devices(audio_only=False) == []
 
+
+
+@pytest.mark.asyncio
+async def test_already_connected_speaker_is_not_torn_down():
+    """An auto-reconnect must not disconnect a link that is already up."""
+    mgr = BluetoothManager()
+    dev_path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+    dev_addr = "AA:BB:CC:11:22:33"
+    mgr._on_interfaces_added(
+        dev_path, {DEVICE_INTERFACE: _device_properties(dev_addr, paired=True, trusted=True, connected=True)}
+    )
+    dev = mgr.get_device_by_address(dev_addr)
+
+    assert await mgr.connect_device(dev_addr) is True
+
+    # The same live record, still connected: nothing was reset or re-created.
+    assert mgr.get_device_by_address(dev_addr) is dev
+    assert dev.connected is True
+
+
+@pytest.mark.asyncio
+async def test_operator_connect_still_resets_an_existing_link():
+    """The operator path keeps the stale-transport reset it exists for."""
+    mgr = BluetoothManager()
+    dev_path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+    dev_addr = "AA:BB:CC:11:22:33"
+    mgr._on_interfaces_added(
+        dev_path, {DEVICE_INTERFACE: _device_properties(dev_addr, paired=True, trusted=True, connected=True)}
+    )
+    dev = mgr.get_device_by_address(dev_addr)
+    resets: list[str] = []
+    original_disconnect = dev.disconnect
+
+    async def _record_disconnect():
+        resets.append(dev.address)
+        await original_disconnect()
+
+    dev.disconnect = _record_disconnect
+
+    assert await mgr.connect_device(dev_addr, reset_existing=True) is True
+    assert resets == [dev_addr], "the operator reset must drop the stale link first"
+    assert dev.connected is True
+

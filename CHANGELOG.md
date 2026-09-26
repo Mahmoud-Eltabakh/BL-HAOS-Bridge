@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.59
+
+- Stop the bridge from tearing down a link that is fine. Four changes target the churn behind "it disconnects and reconnects by itself":
+  - A dropout is believed only once it survives a 5-second grace window, and a link that comes back inside it is counted as a flap instead of arming a reconnect.
+  - A link that has just come up is left alone for 15 seconds: a presence advertisement can no longer fast-track a reconnect while the A2DP transport is still being negotiated, and never while an attempt is already in flight.
+  - Connecting no longer disconnects an existing link first. `POST /api/devices/{address}/connect` and the recovery that runs after a failed play still reset a stale A2DP transport on purpose; the auto-reconnect engine reports an already-connected speaker as success instead, so BlueZ's `AlreadyConnected`/`InProgress` no longer count as failures that re-arm the backoff and retry again.
+  - A speaker that drops 6 times within 120 seconds earns a 60-second cooldown instead of a retry loop, with a warning naming the speaker and the window.
+- Report what the link is actually running. The negotiated A2DP codec is read from the PipeWire graph, logged once per playback (`Streaming to <addr> over <transport> using A2DP codec <codec>`) and kept per speaker in the health snapshot. Every reconnect re-negotiates the codec, so a "quality drop" is now visible as a codec change instead of a guess.
+- Count link churn per speaker in `/api/health`: `connects`, `disconnects`, `suppressed_flaps`, `codec` and `link_reason`, counted on state edges so repeated observations cannot inflate them. A rising `suppressed_flaps` beside a flat `disconnects` is the signature of a marginal link, which is how to separate this class of software churn from a radio dropout.
+- Honour `codec_override`. It was stored and never read, so pinning a codec (for example `sbc_xq` where LDAC stutters) appeared to do nothing. The bridge now switches the BlueZ card to the profile that carries the requested codec, discovered from the audio server's own profile list rather than guessed, and logs a warning when the speaker does not offer it. Playback never depends on it.
+
 ## 0.2.58
 
 - Keep a trusted speaker visible while it is switched off. BlueZ withdraws the device object of anything it treats as temporary - every device that is not paired, including a speaker the operator trusted - and the bridge deleted its own record along with it, which emptied the paired list and made the Home Assistant entity disappear. The record now survives the BlueZ object as an offline speaker: `/api/devices` keeps listing it (`connected: false`, `detached: true`), the dashboard keeps the card with an **Offline** badge, and the native snapshot keeps publishing it with `available: false`, so the integration (0.2.15) marks the entity unavailable instead of removing it. A device that is neither paired nor trusted is still dropped with its BlueZ object, connecting re-resolves a live proxy, and **Remove** forgets the record for good - including while the speaker is offline.

@@ -5,11 +5,30 @@ import pytest
 from backend.bl_haos.bluetooth.manager import BluetoothManager
 from backend.bl_haos.bluetooth.models import DeviceInfo
 from backend.bl_haos.bluetooth.reconnect import AutoReconnectEngine, ReconnectState
+from backend.bl_haos.constants import (
+    RECONNECT_DISCONNECT_GRACE_SECONDS,
+    RECONNECT_FLAP_LIMIT,
+    RECONNECT_POST_CONNECT_SETTLE_SECONDS,
+)
 from backend.bl_haos.health import HealthRegistry, SpeakerState
+
+
+def _device_info(address: str, *, connected: bool, rssi: int | None = None) -> DeviceInfo:
+    """A BlueZ-shaped device record for the engine's event handler."""
+    return DeviceInfo(
+        path=f"/org/bluez/hci0/dev_{address.replace(':', '_')}",
+        adapter_path="/org/bluez/hci0",
+        address=address,
+        connected=connected,
+        trusted=True,
+        is_audio_sink=True,
+        rssi=rssi,
+    )
 
 
 @pytest.mark.asyncio
 async def test_reconnect_state_machine():
+    """A dropout is acted on only after the grace window; a flap is not acted on."""
     mgr = BluetoothManager()
     await mgr.initialize()
 
@@ -20,45 +39,94 @@ async def test_reconnect_state_machine():
     profile = engine.profiles[dev_addr.lower()]
     assert profile.state == ReconnectState.IDLE
 
-    # Simulate device connected
-    dev_info_connected = DeviceInfo(
-        path="/org/bluez/hci0/dev_AA_BB_CC_11_22_33",
-        adapter_path="/org/bluez/hci0",
-        address=dev_addr,
-        connected=True,
-        trusted=True,
-        is_audio_sink=True,
-    )
     engine._running = True
-    engine._on_device_event(dev_info_connected)
+    engine._on_device_event(_device_info(dev_addr, connected=True))
     assert profile.state == ReconnectState.CONNECTED
 
-    # Simulate device disconnected
-    dev_info_disconnected = DeviceInfo(
-        path="/org/bluez/hci0/dev_AA_BB_CC_11_22_33",
-        adapter_path="/org/bluez/hci0",
-        address=dev_addr,
-        connected=False,
-        trusted=True,
-        is_audio_sink=True,
-    )
-    engine._on_device_event(dev_info_disconnected)
+    # A dropout is not believed immediately: acting on one mis-reported flag is what
+    # used to start a reconnect cycle against a link that was fine.
+    engine._on_device_event(_device_info(dev_addr, connected=False))
+    assert profile.state == ReconnectState.CONNECTED
+    assert profile.disconnected_since is not None
+    await engine._tick()
+    assert profile.state == ReconnectState.CONNECTED, "the grace window has not elapsed yet"
+
+    # It is back inside the window, so the drop was a flap: nothing to reconnect, and
+    # the counter is what makes it visible to an operator.
+    engine._on_device_event(_device_info(dev_addr, connected=True))
+    assert profile.disconnected_since is None
+    assert profile.suppressed_flaps == 1
+    assert profile.state == ReconnectState.CONNECTED
+
+    # This dropout survives the window, so the backoff is armed.
+    engine._on_device_event(_device_info(dev_addr, connected=False))
+    profile.disconnected_since = time.time() - RECONNECT_DISCONNECT_GRACE_SECONDS - 1
+    profile.connected_at = time.time() - RECONNECT_POST_CONNECT_SETTLE_SECONDS - 1
+    await engine._tick()
     assert profile.state == ReconnectState.BACKOFF
     assert profile.next_retry_time > time.time()
 
-    # Fast-track check when RSSI presence is advertised
-    old_retry_time = profile.next_retry_time
-    dev_info_advertised = DeviceInfo(
-        path="/org/bluez/hci0/dev_AA_BB_CC_11_22_33",
-        adapter_path="/org/bluez/hci0",
-        address=dev_addr,
-        connected=False,
-        trusted=True,
-        is_audio_sink=True,
-        rssi=-58,
-    )
-    engine._on_device_event(dev_info_advertised)
+    # An advertised RSSI pulls a pending retry forward, once the link has settled.
+    engine._on_device_event(_device_info(dev_addr, connected=False, rssi=-58))
     assert profile.next_retry_time <= time.time()
+
+
+@pytest.mark.asyncio
+async def test_presence_does_not_fast_track_while_the_link_settles():
+    """A reconnect is not pulled forward while a link is still coming up."""
+    mgr = BluetoothManager()
+    await mgr.initialize()
+    engine = AutoReconnectEngine(mgr, initial_backoff=30.0, backoff_multiplier=2.0)
+    dev_addr = "AA:BB:CC:11:22:33"
+    engine.register_speaker(dev_addr)
+    profile = engine.profiles[dev_addr.lower()]
+    engine._running = True
+
+    engine._on_device_event(_device_info(dev_addr, connected=True, rssi=-55))
+    engine._on_device_event(_device_info(dev_addr, connected=False))
+    profile.disconnected_since = time.time() - RECONNECT_DISCONNECT_GRACE_SECONDS - 1
+    await engine._tick()
+    assert profile.state == ReconnectState.BACKOFF
+    retry_time = profile.next_retry_time
+
+    # The speaker advertises while the link has only just come up: the retry stays
+    # where it was instead of hammering Connect during the A2DP negotiation.
+    engine._on_device_event(_device_info(dev_addr, connected=False, rssi=-58))
+    assert profile.next_retry_time == retry_time
+
+
+@pytest.mark.asyncio
+async def test_repeated_flaps_earn_a_cooldown_instead_of_a_retry_loop(monkeypatch):
+    """A marginal link is left alone instead of being reconnected in a loop."""
+    mgr = BluetoothManager()
+    await mgr.initialize()
+    health = HealthRegistry()
+    engine = AutoReconnectEngine(mgr, initial_backoff=0.1, health_registry=health)
+    dev_addr = "AA:BB:CC:11:22:33"
+    engine.register_speaker(dev_addr)
+    profile = engine.profiles[dev_addr.lower()]
+    engine._running = True
+
+    attempts: list[str] = []
+
+    async def _record_attempt(target):
+        attempts.append(target.address)
+
+    monkeypatch.setattr(engine, "_attempt_reconnect", _record_attempt)
+
+    for _ in range(RECONNECT_FLAP_LIMIT):
+        # One flap cycle: the dropout survives the grace window (so it counts), the
+        # speaker comes back, and the next dropout starts a fresh window.
+        engine._on_device_event(_device_info(dev_addr, connected=False))
+        profile.disconnected_since = time.time() - RECONNECT_DISCONNECT_GRACE_SECONDS - 1
+        await engine._tick()
+        engine._on_device_event(_device_info(dev_addr, connected=True))
+
+    assert profile.cooldown_until > time.time(), "the flap limit must set a cooldown"
+    attempts_before = len(attempts)
+    await engine._tick()
+    assert len(attempts) == attempts_before, "the cooldown must hold reconnects"
+    assert health.speakers[dev_addr.lower()].suppressed_flaps >= 1
 
 @pytest.mark.asyncio
 async def test_circuit_breaker_and_locking():

@@ -300,7 +300,7 @@ async def command_native_speaker(
         if is_sink_unavailable:
             logger.info("A2DP sink unavailable for %s, attempting auto-reconnect", normalized)
             try:
-                reconnected = await request.app.state.bt_manager.connect_device(normalized)
+                reconnected = await request.app.state.bt_manager.connect_device(normalized, reset_existing=True)
             except Exception as connect_error:
                 logger.warning("Auto-reconnect BlueZ step failed for %s: %s", normalized, safe_detail(connect_error))
                 raise HTTPException(
@@ -438,7 +438,9 @@ async def connect_device(address: str, request: Request):
     try:
         address = normalize_address(address)
         logger.debug("Connect request received for %s", address)
-        success = await request.app.state.bt_manager.connect_device(address)
+        # The operator asked for a connection, so a stale A2DP transport is reset
+        # here on purpose; the auto-reconnect engine deliberately does not.
+        success = await request.app.state.bt_manager.connect_device(address, reset_existing=True)
         publish = getattr(request.app.state, "publish_native_speaker", None)
         if publish:
             await publish(address)

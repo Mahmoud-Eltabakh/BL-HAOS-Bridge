@@ -7,8 +7,9 @@ import time
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from .device import BluetoothOperationInProgress
 from .manager import BluetoothManager
 from .models import DeviceInfo
 from ..constants import (
@@ -17,12 +18,17 @@ from ..constants import (
     RECONNECT_BACKOFF_JITTER,
     RECONNECT_BACKOFF_MULTIPLIER,
     RECONNECT_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+    RECONNECT_DISCONNECT_GRACE_SECONDS,
+    RECONNECT_FLAP_COOLDOWN_SECONDS,
+    RECONNECT_FLAP_LIMIT,
+    RECONNECT_FLAP_WINDOW_SECONDS,
     RECONNECT_INITIAL_BACKOFF_SECONDS,
     RECONNECT_MAX_BACKOFF_SECONDS,
     RECONNECT_MAX_FAILURES_BEFORE_BREAKER,
     RECONNECT_MIN_BACKOFF_SECONDS,
     RECONNECT_MIN_FAILURES_AFTER_HEAL,
     RECONNECT_POLL_INTERVAL_SECONDS,
+    RECONNECT_POST_CONNECT_SETTLE_SECONDS,
     RECONNECT_SELF_HEAL_FAILURE_THRESHOLD,
 )
 from ..health import FailureClass, HealthRegistry, SpeakerState, normalize_address
@@ -47,6 +53,14 @@ class SpeakerReconnectProfile(BaseModel):
     next_retry_time: float = 0.0
     circuit_broken_until: float = 0.0
     preferred_adapter: str | None = None
+    # Stability bookkeeping, all wall-clock seconds. A dropout is only acted on
+    # once it survives the grace window, a link that just came up is left alone for
+    # the settle window, and repeated flaps earn a cooldown instead of a retry loop.
+    disconnected_since: float | None = None
+    connected_at: float = 0.0
+    suppressed_flaps: int = 0
+    flap_times: list[float] = Field(default_factory=list)
+    cooldown_until: float = 0.0
 
 
 class AutoReconnectEngine:
@@ -145,8 +159,25 @@ class AutoReconnectEngine:
 
         now = time.time()
         if device.connected:
-            if self.health:
-                self.health.observe_speaker(addr, SpeakerState.CONNECTED)
+            if profile.disconnected_since is not None:
+                # The link came back before the grace window expired, so whatever
+                # reported the drop was a flap - not a failure, and nothing to
+                # reconnect. Acting on it is what made a single bad flag look like a
+                # disconnect/reconnect loop.
+                profile.disconnected_since = None
+                profile.suppressed_flaps += 1
+                if self.health:
+                    self.health.record_suppressed_flap(addr, "reconnected inside the grace window")
+                logger.info(
+                    "Speaker %s reconnected inside the %ss grace window; flap suppressed (%d so far).",
+                    addr,
+                    int(RECONNECT_DISCONNECT_GRACE_SECONDS),
+                    profile.suppressed_flaps,
+                )
+            if profile.state != ReconnectState.CONNECTED:
+                profile.connected_at = now
+                if self.health:
+                    self.health.observe_speaker(addr, SpeakerState.CONNECTED)
             profile.state = ReconnectState.CONNECTED
             profile.consecutive_failures = 0
             profile.backoff_step = 0
@@ -154,17 +185,31 @@ class AutoReconnectEngine:
             profile.circuit_broken_until = 0.0
         else:
             # Device is disconnected
-            if profile.state == ReconnectState.CONNECTED or profile.state == ReconnectState.IDLE:
-                logger.info("Speaker %s disconnected. Arming auto-reconnect backoff.", addr)
-                profile.state = ReconnectState.BACKOFF
-                if self.health:
-                    self.health.observe_speaker(addr, SpeakerState.DISCONNECTED)
-                delay = self._calculate_backoff_delay(profile.backoff_step)
-                profile.next_retry_time = now + delay
-
+            if profile.disconnected_since is None and profile.state in (
+                ReconnectState.CONNECTED,
+                ReconnectState.IDLE,
+            ):
+                # Do not act yet: _tick arms the backoff only once the dropout has
+                # survived the grace window, so a single mis-reported flag cannot
+                # start a reconnect cycle.
+                profile.disconnected_since = now
+                logger.debug(
+                    "Speaker %s reports disconnected; waiting %ss before acting.",
+                    addr,
+                    int(RECONNECT_DISCONNECT_GRACE_SECONDS),
+                )
             elif profile.state == ReconnectState.BACKOFF:
-                # Fast-track wake-up: if RSSI packet or device advertisement seen, attempt immediate connection
-                if device.rssi is not None and now < profile.next_retry_time:
+                # Fast-track wake-up: an advertisement or RSSI sample means the
+                # speaker is in range, so a pending retry can be pulled forward -
+                # but never while an attempt is in flight, while the link is still
+                # settling, or during a flap cooldown.
+                if (
+                    device.rssi is not None
+                    and now < profile.next_retry_time
+                    and now >= profile.cooldown_until
+                    and now - profile.connected_at >= RECONNECT_POST_CONNECT_SETTLE_SECONDS
+                    and not self._attempt_in_progress(addr)
+                ):
                     logger.info("Presence advertisement detected for %s (RSSI %d). Fast-tracking reconnect.", addr, device.rssi)
                     profile.next_retry_time = now
 
@@ -218,8 +263,21 @@ class AutoReconnectEngine:
                 else:
                     continue
 
+            # A dropout is acted on only after it has survived the grace window.
+            if profile.disconnected_since is not None and profile.state in (
+                ReconnectState.CONNECTED,
+                ReconnectState.IDLE,
+            ):
+                if now - profile.disconnected_since < RECONNECT_DISCONNECT_GRACE_SECONDS:
+                    continue
+                self._arm_backoff(profile, now)
+
             # Check scheduled retry
-            if profile.state == ReconnectState.BACKOFF and now >= profile.next_retry_time:
+            if (
+                profile.state == ReconnectState.BACKOFF
+                and now >= profile.next_retry_time
+                and now >= profile.cooldown_until
+            ):
                 current = self._inflight.get(addr)
                 if current is None or current.done():
                     task = asyncio.create_task(self._attempt_reconnect(profile))
@@ -227,6 +285,50 @@ class AutoReconnectEngine:
                     task.add_done_callback(
                         lambda completed, address=addr: self._release_inflight(address, completed)
                     )
+
+    def _attempt_in_progress(self, address: str) -> bool:
+        """Is a connect attempt already running for this speaker?"""
+        task = self._inflight.get(address)
+        return task is not None and not task.done()
+
+    def _arm_backoff(self, profile: SpeakerReconnectProfile, now: float) -> None:
+        """Start reconnect handling for a dropout that survived the grace window."""
+        addr = profile.address
+        self._record_flap(profile, now)
+        profile.disconnected_since = None
+        logger.info("Speaker %s disconnected. Arming auto-reconnect backoff.", addr)
+        profile.state = ReconnectState.BACKOFF
+        if self.health:
+            self.health.observe_speaker(addr, SpeakerState.DISCONNECTED)
+        delay = self._calculate_backoff_delay(profile.backoff_step)
+        if profile.cooldown_until > now:
+            delay = max(delay, profile.cooldown_until - now)
+        profile.next_retry_time = now + delay
+
+    def _record_flap(self, profile: SpeakerReconnectProfile, now: float) -> None:
+        """Count dropouts in a sliding window and cool down a flapping link.
+
+        A speaker that drops and returns several times inside the window is a
+        marginal link: the bridge holds its reconnects for a cooldown instead of
+        reconnecting in a loop. That loop used to be self-sustaining - each retry
+        tore the link down again and re-negotiated the A2DP codec - which is heard
+        as constant disconnects and drops in quality.
+        """
+        profile.flap_times = [seen for seen in profile.flap_times if now - seen <= RECONNECT_FLAP_WINDOW_SECONDS]
+        profile.flap_times.append(now)
+        if len(profile.flap_times) < RECONNECT_FLAP_LIMIT:
+            return
+        profile.flap_times.clear()
+        profile.cooldown_until = now + RECONNECT_FLAP_COOLDOWN_SECONDS
+        if self.health:
+            self.health.record_suppressed_flap(profile.address, "flap limit reached; holding reconnects")
+        logger.warning(
+            "Speaker %s dropped %d times within %ss. Holding reconnects for %ss to let the link settle.",
+            profile.address,
+            RECONNECT_FLAP_LIMIT,
+            int(RECONNECT_FLAP_WINDOW_SECONDS),
+            int(RECONNECT_FLAP_COOLDOWN_SECONDS),
+        )
 
     async def _recover_stale_device(self, profile: SpeakerReconnectProfile) -> bool:
         """Clear stale BlueZ state and re-establish pairing for a blocked speaker."""
@@ -282,11 +384,30 @@ class AutoReconnectEngine:
                 logger.info("Successfully reconnected to speaker %s", addr)
                 logger.debug("Auto-reconnect succeeded for %s, resetting failure counters", addr)
                 profile.state = ReconnectState.CONNECTED
+                # Start the settle window: the link is up, so nothing may touch it
+                # (including a fast-tracked retry) while BlueZ finishes the A2DP
+                # transport.
+                profile.connected_at = time.time()
+                profile.disconnected_since = None
                 if self.health:
                     self.health.observe_speaker(addr, SpeakerState.CONNECTED)
                 profile.consecutive_failures = 0
                 profile.backoff_step = 0
                 profile.next_retry_time = 0.0
+            except BluetoothOperationInProgress as busy:
+                # BlueZ - or another client - is already bringing this link up.
+                # Retrying now is exactly what made the two connect requests race,
+                # so wait for the outcome instead of counting a failure.
+                logger.info(
+                    "Speaker %s already has a connection in progress (%s); leaving it to settle.",
+                    addr,
+                    busy,
+                )
+                profile.disconnected_since = None
+                profile.state = ReconnectState.BACKOFF
+                profile.consecutive_failures = 0
+                profile.backoff_step = 0
+                profile.next_retry_time = time.time() + RECONNECT_POST_CONNECT_SETTLE_SECONDS
             except Exception as e:
                 profile.consecutive_failures += 1
                 profile.backoff_step += 1

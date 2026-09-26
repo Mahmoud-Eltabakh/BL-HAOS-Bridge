@@ -193,3 +193,54 @@ async def test_reconnect_exhaustion_publishes_unavailable_and_holds_breaker():
 
     await engine._tick()
     assert profile.address not in engine._inflight
+
+
+def test_link_churn_counters_only_move_on_state_edges():
+    """These counters are how an operator tells a flapping link from a dropout."""
+    registry = HealthRegistry()
+    address = "AA:BB:CC:DD:EE:01"
+    registry.observe_speaker(address, SpeakerState.DISCONNECTED)
+    registry.observe_speaker(address, SpeakerState.CONNECTED)
+    registry.observe_speaker(address, SpeakerState.CONNECTED)
+    registry.observe_speaker(address, SpeakerState.DISCONNECTED)
+    assert registry.speakers[address.lower()].transition == "connected->disconnected"
+
+    # A repeated observation is the same state, not another event.
+    registry.observe_speaker(address, SpeakerState.DISCONNECTED)
+
+    speaker = registry.speakers[address.lower()]
+    assert speaker.connects == 1, "a repeated observation is not a new connection"
+    assert speaker.disconnects == 1, "a first sighting of 'disconnected' is not a dropout"
+    assert speaker.state == SpeakerState.DISCONNECTED
+
+
+def test_suppressed_flaps_and_the_negotiated_codec_are_reported():
+    registry = HealthRegistry()
+    address = "AA:BB:CC:DD:EE:01"
+    registry.observe_speaker(address, SpeakerState.CONNECTED)
+    registry.record_suppressed_flap(address, "reconnected inside the grace window")
+    registry.record_suppressed_flap(address, "flap limit reached; holding reconnects")
+    registry.record_speaker_codec(address, "SBC")
+
+    speaker = registry.speakers[address.lower()]
+    assert speaker.suppressed_flaps == 2
+    assert speaker.codec == "sbc"
+    # The reason is the most recent one, so a cooldown reports itself last.
+    assert "holding reconnects" in speaker.link_reason
+    # Reporting a codec must not disturb the link counters.
+    assert speaker.connects == 1
+    assert speaker.disconnects == 0
+
+
+def test_codec_from_the_audio_graph_is_bounded_before_it_is_reported():
+    """The codec is read from a local process, so it is not trusted verbatim."""
+    registry = HealthRegistry()
+    address = "AA:BB:CC:DD:EE:01"
+    registry.observe_speaker(address, SpeakerState.CONNECTED)
+
+    registry.record_speaker_codec(address, "../../etc/passwd; rm -rf /")
+    assert registry.speakers[address.lower()].codec is None
+
+    registry.record_speaker_codec(address, "AptX-HD")
+    assert registry.speakers[address.lower()].codec == "aptx-hd"
+

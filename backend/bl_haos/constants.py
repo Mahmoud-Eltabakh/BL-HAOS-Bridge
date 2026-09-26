@@ -17,7 +17,7 @@ ADDON_SLUG = "bl-haos"
 # Single source of truth for the runtime version. ``backend/tests/test_addon_config.py``
 # asserts it matches ``config.yaml`` so the add-on manifest and the daemon cannot
 # drift apart.
-VERSION = "0.2.58"
+VERSION = "0.2.59"
 
 # Logger namespace shared by every bridge module and the log format the daemon
 # installs at startup.
@@ -182,6 +182,26 @@ RECONNECT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 10.0
 RECONNECT_SELF_HEAL_FAILURE_THRESHOLD = 2
 RECONNECT_MIN_FAILURES_AFTER_HEAL = 3
 RECONNECT_BACKOFF_JITTER = 0.15
+# Stability guard rails. A "disconnected" event is believed only once it has
+# survived this long, and a link that has just come up is left alone while BlueZ
+# and the speaker finish settling the A2DP transport. Both exist because the
+# bridge used to act on a single mis-reported flag - and its own retry then tore
+# down a link that was either fine or still coming up.
+RECONNECT_DISCONNECT_GRACE_SECONDS = 5.0
+RECONNECT_POST_CONNECT_SETTLE_SECONDS = 15.0
+# Dropouts counted in a sliding window; at the limit the speaker is a marginal
+# link and is left alone for a cooldown instead of being reconnected in a loop
+# (every one of those attempts also re-negotiated the A2DP codec).
+RECONNECT_FLAP_WINDOW_SECONDS = 120.0
+RECONNECT_FLAP_LIMIT = 6
+RECONNECT_FLAP_COOLDOWN_SECONDS = 60.0
+# The negotiated codec is read from the BlueZ card in the PipeWire graph, and the
+# active profile is used as a fallback on builds that do not expose the property.
+BLUEZ_CODEC_PROPERTY = "api.bluez5.codec"
+BLUEZ_PROFILE_PROPERTY = "api.bluez5.profile"
+A2DP_SINK_PROFILE_PREFIX = "a2dp-sink"
+CARD_PATH_PREFIX = "bluez_card."
+PACTL_CARD_PROFILE_PATTERN = r"^\s*([A-Za-z0-9_.:-]+):\s"
 
 # ---------------------------------------------------------------------------
 # Redaction vocabulary

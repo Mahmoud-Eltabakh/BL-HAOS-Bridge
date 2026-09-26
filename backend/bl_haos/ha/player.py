@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import time
@@ -13,6 +14,10 @@ from urllib.parse import unquote, urlsplit
 
 from ..config import ConfigStore, PlayerSettings
 from ..constants import (
+    A2DP_SINK_PROFILE_PREFIX,
+    BLUEZ_CODEC_PROPERTY,
+    BLUEZ_PROFILE_PROPERTY,
+    CARD_PATH_PREFIX,
     COMMAND_PAUSE,
     COMMAND_PLAY,
     COMMAND_PLAY_MEDIA,
@@ -23,6 +28,7 @@ from ..constants import (
     HA_COMMAND_PLAY_MEDIA_PREFIX,
     HA_COMMAND_STOP,
     HA_COMMAND_VOLUME_PREFIX,
+    PACTL_CARD_PROFILE_PATTERN,
     PLAYBACK_IDLE,
     PLAYBACK_PAUSED,
     PLAYBACK_PLAYING,
@@ -31,11 +37,73 @@ from ..constants import (
     VOLUME_MAX_RATIO,
     VOLUME_MIN_RATIO,
 )
-from ..health import FailureClass, HealthRegistry, HealthState, normalize_address, validate_identifier, validate_media_url
+from ..health import (
+    FailureClass,
+    HealthRegistry,
+    HealthState,
+    normalize_address,
+    safe_detail,
+    validate_identifier,
+    validate_media_url,
+)
 
 logger = logging.getLogger("bl_haos.ha.player")
 PULSE_SOCKET = PlayerSettings.model_fields["pulse_socket"].default
 PULSE_SERVER = f"unix:{PULSE_SOCKET}"
+# Codec names as the settings schema spells them (``sbc_xq``, ``aptx_hd``, ``ldac``).
+_CODEC_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
+
+
+def _codec_token(value: Any) -> str | None:
+    """A codec name in the settings schema spelling, or None when unusable.
+
+    The audio server hyphenates A2DP profile names (``a2dp-sink-sbc-xq``) while the
+    settings schema and the dashboard use underscores (``sbc_xq``), so both spellings
+    are normalised before they are compared - otherwise a codec pin silently never
+    matched the profile it was meant to select.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower().replace("-", "_")
+    return candidate if _CODEC_PATTERN.fullmatch(candidate) else None
+
+
+def codec_from_props(props: Any, address: str) -> str | None:
+    """The A2DP codec one audio-graph object reports for a speaker, if any.
+
+    PipeWire exposes ``api.bluez5.codec`` on the BlueZ card; builds that do not
+    report it only show the active profile (``a2dp-sink-<codec>``), whose suffix is
+    used as a fallback. The graph is output of a local process, so the value is
+    reduced to a bounded token and everything else is reported as unknown.
+    """
+    if not isinstance(props, dict):
+        return None
+    address_clean = address.strip().lower()
+    address_key = address_clean.replace(":", "_")
+    values = " ".join(str(value).lower() for value in props.values())
+    if address_clean not in values and address_key not in values:
+        return None
+    codec = _codec_token(props.get(BLUEZ_CODEC_PROPERTY))
+    if codec:
+        return codec
+    profile = str(props.get(BLUEZ_PROFILE_PROPERTY, "")).strip().lower()
+    if profile.startswith(A2DP_SINK_PROFILE_PREFIX):
+        return _codec_token(profile[len(A2DP_SINK_PROFILE_PREFIX):].lstrip("-_"))
+    return None
+
+
+def codec_from_graph(graph: Any, address: str) -> str | None:
+    """The codec a ``pw-dump`` graph reports for a speaker, if any."""
+    if not isinstance(graph, list):
+        return None
+    for node in graph:
+        if not isinstance(node, dict):
+            continue
+        props = {**node.get("props", {}), **node.get("info", {}).get("props", {})}
+        codec = codec_from_props(props, address)
+        if codec:
+            return codec
+    return None
 SINK_PROBE_TIMEOUT = PlayerSettings.model_fields["sink_probe_timeout"].default
 # Teardown must always stay bounded: a wedged child (paused, or blocked writing
 # to a suspended A2DP sink) used to make the *next* play_media wait forever,
@@ -106,6 +174,9 @@ class MediaPlayerBridge:
         # can be garbage-collected mid-stream which silently stops audio output.
         self._background_tasks: set[asyncio.Task] = set()
         self.keepalive_addresses: set[str] = set()
+        # The A2DP codec the graph reported for each speaker, captured while the
+        # sink probe already has the graph parsed (no extra probe).
+        self._last_codec: dict[str, str] = {}
         self.keepalive_interval = self.player_settings.keepalive_interval_seconds
         self.keepalive_pulse_duration = self.player_settings.keepalive_pulse_duration_seconds
         self._keepalive_task: asyncio.Task | None = None
@@ -414,6 +485,10 @@ class MediaPlayerBridge:
         logger.debug("Resolved sink '%s' via %s transport for speaker %s (%.2fs)", sink_name, transport, addr, sink_seconds)
         if self.health:
             self.health.observe_component("pipewire", HealthState.HEALTHY, source=transport)
+        # Report what the link is running before touching anything, then honour an
+        # explicit codec pin. Both are best-effort: audio does not depend on them.
+        await self._report_codec(addr, transport)
+        await self._apply_codec_override(addr)
         await self._stop_processes(addr)
         spawn_started = time.monotonic()
         try:
@@ -687,6 +762,102 @@ class MediaPlayerBridge:
                 return duration
         return None
 
+    def _configured_codec(self, address: str) -> str | None:
+        """The operator's codec pin for this speaker, when one is configured."""
+        store = getattr(self, "config_store", None)
+        settings = getattr(store, "settings", None)
+        speakers = getattr(settings, "speakers", None)
+        speaker = speakers.get(address) if isinstance(speakers, dict) else None
+        return getattr(speaker, "codec_override", None)
+
+    async def _report_codec(self, address: str, transport: str) -> None:
+        """Record and log the codec the sink is actually running.
+
+        This is what separates "the link is bad" from "the link was silently
+        downgraded": every reconnect re-negotiates the codec, so an operator can
+        compare this line before and after a dropout.
+        """
+        codec = self._last_codec.get(address)
+        if not codec:
+            return
+        if self.health:
+            self.health.record_speaker_codec(address, codec)
+        logger.info("Streaming to %s over %s using A2DP codec %s", address, transport, codec)
+
+    async def _async_available_profiles(self, card: str) -> list[str]:
+        """The A2DP profile names the audio server offers for one BlueZ card."""
+        try:
+            process = await self._process_factory(
+                "pactl", "-s", f"unix:{self.player_settings.pulse_socket}", "list", "cards",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(
+                process.communicate(), timeout=self.player_settings.sink_probe_timeout
+            )
+        except Exception:
+            logger.debug("Card profile listing failed for %s", card)
+            return []
+        profiles: list[str] = []
+        in_card = False
+        for line in stdout.decode("utf-8", "replace").splitlines():
+            if line.strip().lower().startswith("name:"):
+                in_card = card.lower() in line.lower()
+                continue
+            if not in_card:
+                continue
+            match = re.match(PACTL_CARD_PROFILE_PATTERN, line)
+            if match and match.group(1).lower().startswith(A2DP_SINK_PROFILE_PREFIX):
+                profiles.append(match.group(1))
+        return profiles
+
+    @staticmethod
+    def _profile_for_codec(profiles: list[str], codec: str) -> str | None:
+        """The profile name that selects a codec, or None when it is not offered."""
+        for name in profiles:
+            if not name.lower().startswith(A2DP_SINK_PROFILE_PREFIX):
+                continue
+            if _codec_token(name[len(A2DP_SINK_PROFILE_PREFIX):].lstrip("-_")) == codec:
+                return name
+        return None
+
+    async def _apply_codec_override(self, address: str) -> None:
+        """Pin the A2DP codec when the operator asked for one.
+
+        The setting used to be stored and never read, so pinning SBC-XQ on hardware
+        where LDAC stutters appeared to do nothing. The profile name is discovered
+        from the audio server instead of guessed, and every failure path logs and
+        returns: playback must never depend on this.
+        """
+        requested = _codec_token(self._configured_codec(address))
+        if not requested or self._last_codec.get(address) == requested:
+            return
+        # BlueZ names the card after the uppercased address (``bluez_card.AA_BB_...``),
+        # so it is spelled the way the audio server reports it.
+        card = f"{CARD_PATH_PREFIX}{address.replace(':', '_').upper()}"
+        profile = self._profile_for_codec(await self._async_available_profiles(card), requested)
+        if profile is None:
+            logger.warning("A2DP codec %s is not offered by %s; keeping the negotiated codec.", requested, card)
+            return
+        try:
+            process = await self._process_factory(
+                "pactl", "-s", f"unix:{self.player_settings.pulse_socket}",
+                "set-card-profile", card, profile,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self.player_settings.sink_probe_timeout
+            )
+        except Exception as error:
+            logger.warning("Could not pin A2DP codec %s on %s: %s", requested, card, safe_detail(error))
+            return
+        if process.returncode:
+            logger.warning(
+                "Could not pin A2DP codec %s on %s: %s",
+                requested, card, safe_detail(stderr.decode("utf-8", "replace")),
+            )
+            return
+        logger.info("Pinned A2DP codec %s for %s (profile %s)", requested, address, profile)
+
     async def _async_resolve_sink(self, address: str) -> str | None:
         graph = []
         try:
@@ -722,10 +893,17 @@ class MediaPlayerBridge:
         for node in graph:
             props = {**node.get("props", {}), **node.get("info", {}).get("props", {})}
             values = " ".join(str(value).lower() for value in props.values())
+            if address_clean not in values and address_key not in values:
+                continue
+            # The negotiated codec sits on the BlueZ card, not on the sink node, so
+            # it is remembered here - the graph is already parsed, so reporting the
+            # codec later costs no extra probe.
+            codec = codec_from_props(props, address)
+            if codec:
+                self._last_codec[address] = codec
             media_class = props.get("media.class", "")
             if media_class == "Audio/Sink" or "sink" in media_class.lower():
-                if address_clean in values or address_key in values:
-                    return props.get("node.name") or str(node.get("id"))
+                return props.get("node.name") or str(node.get("id"))
         pulse_socket = self.player_settings.pulse_socket
         if os.path.exists(pulse_socket):
             try:

@@ -857,3 +857,100 @@ async def test_pulseaudio_player_bounds_queued_latency():
     paplay_args = calls[1]
     assert f"--latency-msec={PLAYER_LATENCY_MSEC}" in paplay_args
     assert PLAYER_LATENCY_MSEC <= 500
+
+
+def test_codec_from_props_reads_the_bluez_card_and_the_profile_fallback():
+    """The negotiated codec is what tells a bad link from a downgraded one."""
+    from backend.bl_haos.ha.player import codec_from_props
+
+    address = "AA:BB:CC:DD:EE:01"
+    card = {"device.name": "bluez_card.AA_BB_CC_DD_EE_01", "api.bluez5.codec": "LDAC"}
+    assert codec_from_props(card, address) == "ldac"
+
+    # Some builds only report the active profile, whose suffix names the codec.
+    fallback = {"device.name": "bluez_card.AA_BB_CC_DD_EE_01", "api.bluez5.profile": "a2dp-sink-sbc-xq"}
+    assert codec_from_props(fallback, address) == "sbc_xq"
+
+    other = {"device.name": "bluez_card.11_22_33_44_55_66", "api.bluez5.codec": "aptx"}
+    assert codec_from_props(other, address) is None, "another speaker's codec is not ours"
+
+    junk = {"device.name": "bluez_card.AA_BB_CC_DD_EE_01", "api.bluez5.codec": "not a codec!"}
+    assert codec_from_props(junk, address) is None
+    assert codec_from_props(None, address) is None
+
+
+def test_codec_from_graph_scans_until_it_finds_the_speaker():
+    from backend.bl_haos.ha.player import codec_from_graph
+
+    graph = [
+        {"props": {"node.name": "ffmpeg-keepalive"}},
+        {"info": {"props": {"device.name": "bluez_card.EC_81_93_53_A9_16", "api.bluez5.codec": "SBC"}}},
+    ]
+    assert codec_from_graph(graph, "ec:81:93:53:a9:16") == "sbc"
+    assert codec_from_graph(graph, "aa:bb:cc:dd:ee:01") is None
+    assert codec_from_graph("not a graph", "aa:bb:cc:dd:ee:01") is None
+
+
+def test_profile_for_codec_matches_the_normalised_spelling():
+    """Profile names are hyphenated, codec names underscored; both must match."""
+    profiles = ["a2dp-sink-sbc-xq", "a2dp-sink-ldac", "off", "headset-head-unit"]
+    assert MediaPlayerBridge._profile_for_codec(profiles, "sbc_xq") == "a2dp-sink-sbc-xq"
+    assert MediaPlayerBridge._profile_for_codec(profiles, "ldac") == "a2dp-sink-ldac"
+    assert MediaPlayerBridge._profile_for_codec(profiles, "aptx_hd") is None
+
+
+@pytest.mark.asyncio
+async def test_codec_override_pins_the_profile_the_server_offers(monkeypatch):
+    """A configured codec pin is applied by discovered profile name."""
+    calls: list[tuple] = []
+
+    class CardListing:
+        returncode = 0
+
+        async def communicate(self):
+            return (
+                b"Card #1\n\tName: bluez_card.10_22_33_44_55_66\n\tProfiles:\n"
+                b"\t\ta2dp-sink-sbc-xq: High Fidelity Playback (codec SBC-XQ)\n"
+                b"\t\ta2dp-sink-ldac: High Fidelity Playback (codec LDAC)\n"
+                b"\t\toff: Off\n",
+                b"",
+            )
+
+    class SetProfile:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_process(*args, **kwargs):
+        calls.append(args)
+        return CardListing() if "list" in args else SetProfile()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    monkeypatch.setattr(bridge, "_configured_codec", lambda address: "sbc_xq")
+    bridge._last_codec["10:22:33:44:55:66"] = "ldac"
+
+    await bridge._apply_codec_override("10:22:33:44:55:66")
+
+    set_calls = [args for args in calls if "set-card-profile" in args]
+    assert len(set_calls) == 1
+    assert set_calls[0][-2:] == ("bluez_card.10_22_33_44_55_66", "a2dp-sink-sbc-xq")
+
+
+@pytest.mark.asyncio
+async def test_codec_override_is_skipped_when_the_speaker_is_already_on_it(monkeypatch):
+    """Steady state costs nothing: the pin is not re-applied on every play."""
+    calls: list[tuple] = []
+
+    async def fake_process(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("no profile switch is expected")
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    monkeypatch.setattr(bridge, "_configured_codec", lambda address: "sbc_xq")
+    bridge._last_codec["10:22:33:44:55:66"] = "sbc_xq"
+
+    await bridge._apply_codec_override("10:22:33:44:55:66")
+
+    assert calls == []
+

@@ -59,6 +59,34 @@ entity comes back by itself (with its history and automations intact) when the
 speaker returns. **Remove** is what forgets a speaker for good, and it works
 while the speaker is offline too.
 
+### Stability: Disconnects, Reconnects and Quality
+The bridge deliberately does not fight for a link:
+
+- A dropout has to survive a **5-second grace window** before it is acted on. A link
+  that returns inside it is a *flap*: nothing is reconnected and the event is counted.
+- A speaker that drops **6 times in 2 minutes** gets a **60-second cooldown** instead
+  of a reconnect loop.
+- A link that has just come up is left alone for **15 seconds**, so a presence
+  advertisement cannot fast-track a retry while the A2DP transport is still being
+  negotiated.
+- **Connect** (the button, and the recovery after a failed play) resets a stale A2DP
+  transport on purpose. The automatic reconnect never does: a speaker that is already
+  connected is reported as success instead of being disconnected and reconnected.
+
+Every one of those decisions is observable, so a software flap can be told from a
+radio problem:
+
+- The log names the codec on every playback (`... using A2DP codec ldac`). Because
+  every reconnect re-negotiates the codec, a quality drop that coincides with a
+  reconnect is usually a codec change rather than a bad link.
+- `GET /api/health` reports per speaker: `connects`, `disconnects`,
+  `suppressed_flaps`, `codec`, `link_reason`. A rising `suppressed_flaps` with a low
+  `disconnects` means the bridge was right not to act; a high `disconnects` means the
+  link really is going away (range, another device taking the speaker, or the
+  speaker's own power saving).
+- To pin a codec, set the per-speaker codec in the dashboard. The bridge applies it
+  on the next playback and warns if the speaker does not offer it.
+
 ### Playing Audio from Home Assistant
 - Each connected trusted speaker appears as a native `media_player` entity after the BL-HAOS integration is configured.
 - Use standard Home Assistant Lovelace media cards, automation actions (`media_player.play_media`, `tts.speak`), or Music Assistant to send audio directly to your speaker.

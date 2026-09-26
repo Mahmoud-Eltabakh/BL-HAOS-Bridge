@@ -9,7 +9,7 @@ import json
 from typing import Any
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .constants import (
     BEARER_PREFIX,
@@ -39,6 +39,19 @@ from .constants import (
     URL_PATTERN,
     URL_REDACTION_PLACEHOLDER,
 )
+
+
+def safe_codec(value: Any) -> str | None:
+    """A bounded codec name, or None when the value is not one.
+
+    Codec names are read out of the local audio graph, so they are treated as
+    untrusted input: anything that is not a plain identifier becomes ``None`` rather
+    than reaching the health snapshot, the dashboard or the support bundle.
+    """
+    if value is None:
+        return None
+    candidate = str(value).strip().lower()
+    return candidate if _IDENTIFIER_PATTERN.fullmatch(candidate) else None
 
 
 class HealthState(str, Enum):
@@ -279,6 +292,23 @@ class SpeakerHealth(BaseModel):
     transition: str | None = None
     observed_at: float = Field(default_factory=time.time)
     attempt: int = Field(default=0, ge=0)
+    # Link churn, counted on state edges: how often this speaker came up, how often
+    # it went down, and how many dropouts the bridge deliberately did not act on
+    # (a flap inside the grace window, or a dropout inside a flap cooldown). These
+    # numbers are what separates a flapping link from a radio dropout.
+    connects: int = Field(default=0, ge=0)
+    disconnects: int = Field(default=0, ge=0)
+    suppressed_flaps: int = Field(default=0, ge=0)
+    # The A2DP codec BlueZ actually negotiated, and the last bounded reason a link
+    # event carried. Both come from the local audio graph, never from the network.
+    codec: str | None = Field(default=None, max_length=MAX_IDENTIFIER_LENGTH)
+    link_reason: str | None = Field(default=None, max_length=MAX_DETAIL_LENGTH)
+
+    @field_validator("codec")
+    @classmethod
+    def valid_codec(cls, value: str | None) -> str | None:
+        """Keep only a bounded codec token, or report the codec as unknown."""
+        return safe_codec(value)
 
 
 class HealthSnapshot(BaseModel):
@@ -331,6 +361,7 @@ class HealthRegistry:
         failure: FailureClass | str | None = None,
         detail: Any = None,
         attempt: int = 0,
+        codec: str | None = None,
     ) -> HealthSnapshot:
         address = normalize_address(address)
         previous = self.speakers.get(address)
@@ -340,6 +371,15 @@ class HealthRegistry:
                 classification=FailureClass(failure), detail=safe_detail(detail), attempt=attempt,
                 observed_at=self.clock(),
             )
+        # Link churn is counted on the *edges* only: repeated observations of the
+        # same state must not inflate it, because these counters are how an
+        # operator tells a flapping link from a radio dropout.
+        connects = (previous.connects if previous else 0) + int(
+            state == SpeakerState.CONNECTED and (previous is None or previous.state != SpeakerState.CONNECTED)
+        )
+        disconnects = (previous.disconnects if previous else 0) + int(
+            state == SpeakerState.DISCONNECTED and previous is not None and previous.state == SpeakerState.CONNECTED
+        )
         self.speakers[address] = SpeakerHealth(
             address=address,
             state=state,
@@ -347,7 +387,51 @@ class HealthRegistry:
             transition=f"{previous.state.value}->{state.value}" if previous else state.value,
             attempt=attempt,
             observed_at=self.clock(),
+            connects=connects,
+            disconnects=disconnects,
+            suppressed_flaps=previous.suppressed_flaps if previous else 0,
+            codec=codec or (previous.codec if previous else None),
+            link_reason=safe_detail(detail) if failure else (previous.link_reason if previous else None),
         )
+        return self.snapshot()
+
+    def record_suppressed_flap(self, address: str, reason: Any = None) -> HealthSnapshot:
+        """Count a dropout the bridge deliberately did not act on.
+
+        Two cases share the counter: a link that came back inside the disconnect
+        grace window (so the drop was a flap, not a failure), and a speaker that
+        hit the flap limit and is being left alone for a cooldown. A rising count
+        next to a low ``disconnects`` is the signature of a marginal link.
+        """
+        address = normalize_address(address)
+        previous = self.speakers.get(address)
+        base = previous.model_copy(update={"observed_at": self.clock()}) if previous else SpeakerHealth(address=address)
+        self.speakers[address] = base.model_copy(
+            update={
+                "suppressed_flaps": base.suppressed_flaps + 1,
+                "link_reason": safe_detail(reason) or base.link_reason,
+            }
+        )
+        return self.snapshot()
+
+    def record_speaker_codec(self, address: str, codec: Any) -> HealthSnapshot:
+        """Record the A2DP codec BlueZ negotiated for this speaker.
+
+        Reported rather than enforced: the operator sees which codec a link is
+        running (and whether a reconnect silently downgraded it), and an unusable
+        value is dropped by the ``SpeakerHealth`` validator.
+        """
+        address = normalize_address(address)
+        codec = safe_codec(codec)
+        if codec is None:
+            return self.snapshot()
+        previous = self.speakers.get(address)
+        if previous is None:
+            self.speakers[address] = SpeakerHealth(address=address, codec=codec)
+        else:
+            self.speakers[address] = previous.model_copy(
+                update={"codec": codec, "observed_at": self.clock()}
+            )
         return self.snapshot()
 
     def set_lifecycle(self, state: HealthState, *, failure: FailureClass | str | None = None, detail: Any = None) -> HealthSnapshot:
