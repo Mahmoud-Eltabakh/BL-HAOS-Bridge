@@ -23,6 +23,7 @@ from ..constants import (
     COMMAND_PLAY_MEDIA,
     COMMAND_SET_VOLUME,
     COMMAND_STOP,
+    DEFAULT_CODEC,
     HA_COMMAND_PAUSE,
     HA_COMMAND_PLAY,
     HA_COMMAND_PLAY_MEDIA_PREFIX,
@@ -92,6 +93,63 @@ def codec_from_props(props: Any, address: str) -> str | None:
     profile = str(props.get(BLUEZ_PROFILE_PROPERTY, "")).strip().lower()
     if profile.startswith(A2DP_SINK_PROFILE_PREFIX):
         return _codec_token(profile[len(A2DP_SINK_PROFILE_PREFIX):].lstrip("-_"))
+    return None
+
+
+def _positive_int(value: Any) -> int | None:
+    """A sample rate from a property that may be an int or a fraction string.
+
+    PipeWire spells some rates as ``1/48000`` and others as a plain integer, and
+    the value may arrive as a string depending on the probe, so the shape is
+    normalised rather than assumed.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if value > 0 else None
+    if isinstance(value, str):
+        denominator = value.strip().rsplit("/", 1)[-1]
+        try:
+            parsed = int(float(denominator))
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
+    return None
+
+
+def node_rate_from_props(props: Any, node: Any) -> int | None:
+    """The rate an audio-graph object is running at, when the graph says.
+
+    This is a diagnostic, not a decision: the A2DP link is asked for
+    ``bluez5.default.rate`` (48 kHz) and the player feeds the same rate. When a
+    speaker negotiates something else anyway, the audio server converts every
+    sample, and this is how that becomes visible instead of being guessed at
+    from a complaint about "quality".
+    """
+    candidates: list[Any] = []
+    if isinstance(props, dict):
+        candidates.append(props.get("audio.rate"))
+        candidates.append(props.get("node.rate"))
+    params = None
+    if isinstance(node, dict):
+        info = node.get("info")
+        if isinstance(info, dict):
+            params = info.get("params")
+    formats = params.get("Format") if isinstance(params, dict) else None
+    if isinstance(formats, list):
+        for entry in formats:
+            if not isinstance(entry, dict):
+                continue
+            candidates.append(entry.get("rate"))
+            fmt = entry.get("format")
+            if isinstance(fmt, dict):
+                candidates.append(fmt.get("rate"))
+    for candidate in candidates:
+        rate = _positive_int(candidate)
+        if rate:
+            return rate
     return None
 
 
@@ -174,6 +232,9 @@ class MediaPlayerBridge:
         )
         self.states: dict[str, str] = {}
         self.volumes: dict[str, float] = {}
+        # The rate each sink is running at, captured while the sink probe already
+        # has the graph parsed. Reported when playback starts; see _report_codec.
+        self.sink_rates: dict[str, int] = {}
         self.active_processes: dict[str, tuple[asyncio.subprocess.Process, asyncio.subprocess.Process]] = {}
         self.last_urls: dict[str, str] = {}
         # Playback clock per speaker so Home Assistant can draw a progress bar.
@@ -836,7 +897,23 @@ class MediaPlayerBridge:
             return
         if self.health:
             self.health.record_speaker_codec(address, codec)
-        logger.info("Streaming to %s over %s using A2DP codec %s", address, transport, codec)
+        # The rate and the buffer belong in the same line as the codec: "quality
+        # dropped" and "it stutters" are answered by what the link is running and
+        # how much slack the player holds, and neither is visible from the codec
+        # alone. A sink rate that differs from the rate being fed means something
+        # in between is converting every sample.
+        rate = self.sink_rates.get(address)
+        fed = self.player_settings.sample_rate_hz
+        if rate is None:
+            timing = f"fed at {fed} Hz"
+        elif rate == fed:
+            timing = f"at {rate} Hz"
+        else:
+            timing = f"at {rate} Hz (resampling from {fed} Hz)"
+        logger.info(
+            "Streaming to %s over %s using A2DP codec %s, %s, buffer %d ms",
+            address, transport, codec, timing, self.player_settings.latency_msec,
+        )
 
     async def _async_available_profiles(self, card: str) -> list[str]:
         """The A2DP profile names the audio server offers for one BlueZ card."""
@@ -883,7 +960,10 @@ class MediaPlayerBridge:
         returns: playback must never depend on this.
         """
         requested = _codec_token(self._configured_codec(address))
-        if not requested or self._last_codec.get(address) == requested:
+        if not requested or requested == DEFAULT_CODEC or self._last_codec.get(address) == requested:
+            # ``auto`` is the operator saying "negotiate the best the speaker
+            # offers", which is what BlueZ already does - so it is not a pin, and
+            # it must not send the bridge looking for a profile called "auto".
             return
         # BlueZ names the card after the uppercased address (``bluez_card.AA_BB_...``),
         # so it is spelled the way the audio server reports it.
@@ -957,6 +1037,9 @@ class MediaPlayerBridge:
                 self._last_codec[address] = codec
             media_class = props.get("media.class", "")
             if media_class == "Audio/Sink" or "sink" in media_class.lower():
+                rate = node_rate_from_props(props, node)
+                if rate:
+                    self.sink_rates[address] = rate
                 return props.get("node.name") or str(node.get("id"))
         pulse_socket = self.player_settings.pulse_socket
         if os.path.exists(pulse_socket):
@@ -996,6 +1079,10 @@ class MediaPlayerBridge:
         return "pipewire", validate_identifier(sink, "PipeWire sink")
 
     def _player_command(self, transport: str, sink: str) -> tuple[str, ...]:
+        # ``resample.quality`` is a stream property: it applies to the adapter this
+        # client's stream runs through, so it is honoured whether the stream ends up
+        # needing a rate conversion or not. The server's own default is 4 of 15.
+        stream_properties = json.dumps({"resample.quality": self.player_settings.resample_quality})
         if transport == "pulse":
             # paplay reads raw PCM from standard input when no file argument is given.
             # Passing "-" causes it to attempt open("-", O_RDONLY) which fails with ENOENT.
@@ -1012,6 +1099,9 @@ class MediaPlayerBridge:
                 str(self.player_settings.channels),
                 "--format=s16le",
                 f"--latency-msec={self.player_settings.latency_msec}",
+                # pacat has no JSON property flag, but --property becomes a stream
+                # property, which is where the resampler reads its quality from.
+                f"--property=resample.quality={self.player_settings.resample_quality}",
             )
         return (
             "pw-play", "--target", sink, "--raw", "--rate", str(self.player_settings.sample_rate_hz),
@@ -1021,6 +1111,7 @@ class MediaPlayerBridge:
             # buffer the PulseAudio transport was given, so the same speaker
             # stuttered here and not there.
             f"--latency={self.player_settings.latency_msec}{PLAYER_LATENCY_UNIT}",
+            "--properties", stream_properties,
             "-",
         )
 

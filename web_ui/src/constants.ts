@@ -52,6 +52,24 @@ export const WS_RECONNECT_MAX_DELAY_MS = 10000;
 export const WS_RECONNECT_MULTIPLIER = 1.5;
 export const SCAN_POLL_INTERVAL_MS = 2000;
 
+// --- Audio codecs --------------------------------------------------------
+/**
+ * A2DP codecs an operator may pin on one speaker, mirroring the bridge's
+ * `SUPPORTED_CODECS`. `auto` is the bridge's "no pin" value: it negotiates the
+ * highest quality the speaker offers. The stability note matters on a busy 2.4
+ * GHz band or a slow board, where LDAC at its highest bitrate is the first thing
+ * to break up and SBC-XQ is the reliable choice.
+ */
+export const CODEC_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'auto', label: 'Default (highest the speaker supports)' },
+  { value: 'ldac', label: 'LDAC (highest bitrate, most demanding)' },
+  { value: 'aptx_hd', label: 'aptX HD' },
+  { value: 'aptx', label: 'aptX' },
+  { value: 'aac', label: 'AAC' },
+  { value: 'sbc_xq', label: 'SBC-XQ (steady, good quality)' },
+  { value: 'sbc', label: 'SBC (most compatible)' },
+];
+
 // --- Operator-facing messages -------------------------------------------
 export const ERROR_MESSAGES = {
   nativeDiagnosticsUnavailable: 'Native diagnostics are unavailable',

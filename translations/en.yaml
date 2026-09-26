@@ -8,3 +8,6 @@ configuration:
   playback_buffer_ms:
     name: "Playback Buffer (ms)"
     description: "Audio held ahead of the speaker, 50-2000 ms. Raise it if playback breaks up or stutters; more buffer also means audio keeps playing slightly longer after a pause."
+  ldac_quality:
+    name: "LDAC Quality"
+    description: "LDAC only. auto adapts the bitrate while you listen (990 -> 660 -> 330 kbps), so the quality changes mid-song; sq is a steady 660 kbps and hq a steady 990 kbps for a clean link. Use mq (330 kbps) if the link is still too weak, or pin the speaker to SBC-XQ instead."

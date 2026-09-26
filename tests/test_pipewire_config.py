@@ -10,13 +10,37 @@ def test_wireplumber_codec_ranking():
     assert 'ldac aptx_hd aptx aac sbc_xq sbc' in content
 
 def test_wireplumber_volume_sync():
+    """Volume sync is `hw-volume`, not a property that never existed.
+
+    The config used to set `bluez5.enable-volume-sync`, which no WirePlumber
+    release defines: volume sync to the speaker's own AVRCP volume comes from
+    `bluez5.enable-hw-volume` plus the per-profile `bluez5.hw-volume`, so the
+    dead line is gone and the tests assert what actually does the work.
+    """
     bluez_lua = Path("rootfs/etc/wireplumber/bluetooth.lua.d/50-bluez.lua")
     assert bluez_lua.exists(), "50-bluez.lua must exist"
 
     content = bluez_lua.read_text(encoding="utf-8")
-    assert 'bluez5.enable-volume-sync' in content
+    assert 'bluez5.enable-volume-sync"]' not in content, "not a real property; do not resurrect it"
     assert 'bluez5.enable-hw-volume' in content
+    assert '["bluez5.hw-volume"] = "[ a2dp_sink a2dp_source ]"' in content
     assert 'a2dp_sink' in content
+
+
+def test_wireplumber_asks_for_the_rate_the_player_feeds():
+    """The link and the player must agree on 48 kHz, or something resamples.
+
+    `bluez5.default.rate` is a real WirePlumber 0.4 property ("the bluetooth
+    default audio rate"), and the player feeds the same 48 kHz. A speaker that
+    negotiates 44.1 kHz anyway is reported by the playback log line instead of
+    being silently converted at the server's default resampler quality.
+    """
+    from backend.bl_haos.config import PlayerSettings
+
+    content = Path("rootfs/etc/wireplumber/bluetooth.lua.d/50-bluez.lua").read_text(encoding="utf-8")
+
+    fed_rate = PlayerSettings.model_fields["sample_rate_hz"].default
+    assert f'bluez5.default.rate"] = {fed_rate}' in content
 
 
 def test_bluetooth_nodes_are_never_suspended_on_idle():

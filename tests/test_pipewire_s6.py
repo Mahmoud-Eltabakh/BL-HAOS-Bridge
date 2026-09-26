@@ -40,3 +40,28 @@ def test_pipewire_s6_services():
     assert "PIPEWIRE_RUNTIME_DIR=/var/run/pipewire" in wp_run_content
     assert 'mkdir -p "$PIPEWIRE_RUNTIME_DIR"' in wp_run_content
     assert "exec wireplumber" in wp_run_content
+
+
+def test_wireplumber_writes_the_ldac_quality_choice():
+    """LDAC quality is an add-on option, so it has to reach WirePlumber's config.
+
+    WirePlumber reads the bluez5 properties from lua fragments at start, so the
+    choice is written into a fragment that sorts after 50-bluez.lua (60-...) and
+    therefore wins. An unusable value falls back to the shipped default rather
+    than being handed to WirePlumber.
+    """
+    from backend.bl_haos.constants import DEFAULT_LDAC_QUALITY, LDAC_QUALITY_MODES
+
+    wp_run = Path("rootfs/etc/s6-overlay/s6-rc.d/20-wireplumber/run")
+    content = wp_run.read_text(encoding="utf-8")
+
+    # bashio is how an add-on option reaches a container script.
+    assert content.startswith("#!/command/with-contenv bashio")
+    assert "bashio::config 'ldac_quality'" in content
+    assert "60-bl-haos-options.lua" in content
+    assert 'bluez5.a2dp.ldac.quality' in content
+    # Every accepted mode is one WirePlumber documents, and the fallback is the
+    # same value the add-on ships, so the two cannot drift apart.
+    for mode in LDAC_QUALITY_MODES:
+        assert mode in content
+    assert f'ldac_quality="{DEFAULT_LDAC_QUALITY}"' in content

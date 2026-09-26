@@ -1,4 +1,4 @@
-#!/command/with-contenv bash
+#!/command/with-contenv bashio
 # ==============================================================================
 # BL-HAOS: S6-rc WirePlumber Session Manager Service
 # ==============================================================================
@@ -10,6 +10,36 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
 
 mkdir -p "$PIPEWIRE_RUNTIME_DIR"
 chmod 755 "$PIPEWIRE_RUNTIME_DIR"
+
+# LDAC's encoding quality is the one A2DP codec setting that changes *during*
+# playback: its default (`auto`) is Adaptive Bitrate, so a marginal link is
+# answered by lowering the bitrate (990 -> 660 -> 330 kbps) instead of cutting
+# out, which the listener hears as the quality of the same song changing. It is a
+# device property, so it is written as a rule for the BlueZ cards, into a fragment
+# that sorts after 50-bluez.lua and therefore wins.
+ldac_quality="$(bashio::config 'ldac_quality')"
+case "${ldac_quality,,}" in
+	auto|hq|sq|mq) ;;
+	*)
+		echo "[wireplumber] Unusable ldac_quality '${ldac_quality}', using sq"
+		ldac_quality="sq"
+		;;
+esac
+
+{
+	echo "-- Generated from the add-on options at container start. Do not edit."
+	echo "-- LDAC quality mode; see DOCS.md (Audio stutters, or the quality changes)."
+	echo "bluez_monitor = bluez_monitor or { properties = {}, rules = {} }"
+	echo "bluez_monitor.rules = bluez_monitor.rules or {}"
+	echo "table.insert(bluez_monitor.rules, {"
+	echo "  matches = { { { \"device.name\", \"matches\", \"bluez_card.*\" } } },"
+	echo "  apply_properties = {"
+	echo "    [\"bluez5.a2dp.ldac.quality\"] = \"${ldac_quality}\","
+	echo "  },"
+	echo "})"
+} > /etc/wireplumber/bluetooth.lua.d/60-bl-haos-options.lua
+
+echo "[wireplumber] LDAC quality mode: ${ldac_quality}"
 
 # Wait for PipeWire socket to be active before starting WirePlumber
 for i in $(seq 1 50); do

@@ -426,6 +426,80 @@ async def test_resolve_sink_prefers_matching_pipewire_sink():
 
 
 @pytest.mark.asyncio
+async def test_resolve_sink_records_the_rate_the_link_runs_at():
+    """The rate belongs to the diagnostic that explains a quality complaint.
+
+    The A2DP link is asked for 48 kHz and the player feeds 48 kHz, so the graph
+    usually confirms there is nothing in between. When a speaker negotiates 44.1
+    kHz anyway, something converts every sample - and that has to be visible.
+    """
+    graph = [{
+        "id": 42,
+        "props": {
+            "media.class": "Audio/Sink",
+            "node.name": "bluez_output.10_22_33_44_55_66.1",
+            "device.description": "10:22:33:44:55:66",
+            "audio.rate": 44100,
+        },
+    }]
+
+    async def process_factory(*args, **_kwargs):
+        return ProbeProcess(json.dumps(graph).encode())
+
+    bridge = MediaPlayerBridge(process_factory=process_factory)
+    assert await bridge._async_resolve_sink("10:22:33:44:55:66") == "bluez_output.10_22_33_44_55_66.1"
+    assert bridge.sink_rates == {"10:22:33:44:55:66": 44100}
+
+
+def test_node_rate_reads_every_shape_pipewire_reports_it_in():
+    from backend.bl_haos.ha.player import node_rate_from_props
+
+    # A plain property, a fraction string, and the format parameter.
+    assert node_rate_from_props({"audio.rate": 48000}, {}) == 48000
+    assert node_rate_from_props({"node.rate": "1/44100"}, {}) == 44100
+    assert node_rate_from_props({}, {"info": {"params": {"Format": [{"format": {"rate": 44100}}]}}}) == 44100
+    assert node_rate_from_props({}, {"info": {"params": {"Format": [{"rate": 48000}]}}}) == 48000
+    # Nothing usable is reported as nothing, never as a guess.
+    assert node_rate_from_props({}, {}) is None
+    assert node_rate_from_props({"audio.rate": 0}, {}) is None
+    assert node_rate_from_props({"audio.rate": "unknown"}, {}) is None
+    assert node_rate_from_props(None, None) is None
+
+
+@pytest.mark.asyncio
+async def test_playback_log_names_the_codec_the_rate_and_the_buffer(caplog):
+    """One read-only line answers "why does it sound like that?".
+
+    The codec says which encoder is running, the rate says whether anything is
+    converting the samples, and the buffer says how much slack the player holds.
+    """
+    graph = [{
+        "id": 42,
+        "props": {
+            "media.class": "Audio/Sink",
+            "node.name": "bluez_output.10_22_33_44_55_66.1",
+            "device.description": "10:22:33:44:55:66",
+            "api.bluez5.codec": "ldac",
+            "audio.rate": 44100,
+        },
+    }]
+
+    async def process_factory(*args, **_kwargs):
+        if args[0] == "pw-dump":
+            return ProbeProcess(json.dumps(graph).encode())
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(process_factory=process_factory)
+
+    with caplog.at_level("INFO", logger="bl_haos.ha.player"):
+        await bridge.play_url("10:22:33:44:55:66", "https://example.test/audio.mp3")
+
+    assert "using A2DP codec ldac" in caplog.text
+    assert "at 44100 Hz (resampling from 48000 Hz)" in caplog.text
+    assert f"buffer {bridge.player_settings.latency_msec} ms" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_resolve_sink_stops_when_pipewire_probe_hangs(monkeypatch):
     process = HangingProbeProcess()
 
@@ -885,6 +959,42 @@ async def test_pulseaudio_player_bounds_queued_latency():
     assert PLAYER_LATENCY_MSEC <= 500
 
 
+@pytest.mark.asyncio
+async def test_players_ask_the_stream_for_a_high_quality_resampler():
+    """PipeWire's own resampler default (4 of 15) must not be what converts audio.
+
+    Matching the link's rate means conversion usually happens in ffmpeg instead,
+    but a speaker that negotiates 44.1 kHz while a 48 kHz source plays still gets
+    converted by the server - at its default quality unless the stream says
+    otherwise. Both transports are told.
+    """
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append(args)
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    await bridge.play_url("10:22:33:44:55:66", "https://example.test/audio.mp3")
+
+    pw_play_args = calls[1]
+    assert "--properties" in pw_play_args
+    properties = json.loads(pw_play_args[pw_play_args.index("--properties") + 1])
+    assert properties["resample.quality"] == bridge.player_settings.resample_quality
+    assert bridge.player_settings.resample_quality > 4, "the server default is 4 of 15"
+
+    calls.clear()
+
+    async def pulse_sink(_address):
+        return "pulse:bluez_sink.10_22_33_44_55_66.a2dp_sink"
+
+    pulse_bridge = MediaPlayerBridge(sink_resolver=pulse_sink, process_factory=process_factory)
+    await pulse_bridge.play_url("10:22:33:44:55:66", "https://example.test/audio.mp3")
+
+    paplay_args = calls[1]
+    assert f"--property=resample.quality={pulse_bridge.player_settings.resample_quality}" in paplay_args
+
+
 def test_parse_sink_volume_reads_both_audio_servers():
     """The read-back has to understand what each client actually prints."""
     pactl = (
@@ -1053,6 +1163,32 @@ def test_codec_from_graph_scans_until_it_finds_the_speaker():
     assert codec_from_graph(graph, "ec:81:93:53:a9:16") == "sbc"
     assert codec_from_graph(graph, "aa:bb:cc:dd:ee:01") is None
     assert codec_from_graph("not a graph", "aa:bb:cc:dd:ee:01") is None
+
+
+@pytest.mark.asyncio
+async def test_codec_override_skips_auto_without_probing_for_it():
+    """`auto` means "negotiate the best", so there is nothing to pin.
+
+    It used to be treated as a codec name: the bridge listed the card's profiles
+    looking for one called "auto" and warned once per playback when it found none.
+    """
+    from backend.bl_haos.config import ConfigStore
+
+    store = ConfigStore(config_file=os.path.join(os.path.dirname(__file__), "..", ".tmp-codec-auto.json"))
+    try:
+        store.update_speaker("10:22:33:44:55:66", codec_override="auto")
+        calls = []
+
+        async def process_factory(*args, **kwargs):
+            calls.append(args)
+            return FakeProcess(returncode=0)
+
+        bridge = MediaPlayerBridge(config_store=store, sink_resolver=fake_sink, process_factory=process_factory)
+        await bridge._apply_codec_override("10:22:33:44:55:66")
+
+        assert calls == [], "no profile listing and no warning for the default"
+    finally:
+        store.file_path.unlink(missing_ok=True)
 
 
 def test_profile_for_codec_matches_the_normalised_spelling():

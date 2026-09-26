@@ -49,6 +49,29 @@ def test_playback_buffer_option_matches_the_daemon_default():
     assert data["options"]["playback_buffer_ms"] == PLAYBACK_BUFFER_DEFAULT_MS
     assert data["schema"]["playback_buffer_ms"] == f"int({PLAYBACK_BUFFER_MIN_MS},{PLAYBACK_BUFFER_MAX_MS})?"
 
+
+def test_ldac_quality_option_is_bounded_to_the_modes_wireplumber_documents():
+    """The add-on shield the operator from the option grammar; the schema cannot.
+
+    `auto` is LDAC's Adaptive Bitrate mode, which changes the bitrate while a
+    song plays, so the shipped default is a fixed quality. The schema, the
+    translations and the daemon-side fallback all have to agree on the same set.
+    """
+    from backend.bl_haos.constants import DEFAULT_LDAC_QUALITY, LDAC_QUALITY_MODES
+
+    with open(Path("config.yaml"), "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    assert data["options"]["ldac_quality"] == DEFAULT_LDAC_QUALITY
+    assert DEFAULT_LDAC_QUALITY in LDAC_QUALITY_MODES
+    assert data["schema"]["ldac_quality"] == f"list({'|'.join(LDAC_QUALITY_MODES)})?"
+
+    with open(Path("translations/en.yaml"), "r", encoding="utf-8") as f:
+        translations = yaml.safe_load(f)
+    description = translations["configuration"]["ldac_quality"]["description"]
+    for mode in LDAC_QUALITY_MODES:
+        assert mode in description, f"{mode} must be described in the add-on UI"
+
 def test_runtime_version_is_sourced_from_the_shared_constant():
     """The daemon version and the add-on manifest must not drift apart.
 

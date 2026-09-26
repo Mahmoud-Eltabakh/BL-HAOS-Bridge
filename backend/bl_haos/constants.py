@@ -17,7 +17,7 @@ ADDON_SLUG = "bl-haos"
 # Single source of truth for the runtime version. ``backend/tests/test_addon_config.py``
 # asserts it matches ``config.yaml`` so the add-on manifest and the daemon cannot
 # drift apart.
-VERSION = "0.2.62"
+VERSION = "0.2.63"
 
 # Logger namespace shared by every bridge module and the log format the daemon
 # installs at startup.
@@ -123,6 +123,14 @@ TRUTHY_FLAGS = frozenset({"1", "true", "yes", "on"})
 DEFAULT_LOG_LEVEL = "info"
 DEFAULT_CODEC = "auto"
 SUPPORTED_CODECS = frozenset({"auto", "sbc", "sbc_xq", "aac", "aptx", "aptx_hd", "ldac"})
+# LDAC encoding quality, the one A2DP codec knob that changes *during* playback:
+# `auto` is Adaptive Bitrate, so a marginal link is answered by dropping the
+# bitrate (990 -> 660 -> 330 kbps) instead of cutting out, which the listener
+# hears as the quality of the same song changing. `sq` (660 kbps) is the default
+# here because it is stable, still far above SBC, and leaves headroom for the CPU
+# that has to encode it; `hq` is for a clean link and `mq` for a poor one.
+LDAC_QUALITY_MODES = ("auto", "hq", "sq", "mq")
+DEFAULT_LDAC_QUALITY = "sq"
 DEFAULT_DEMO_SCENARIO = "healthy"
 VOLUME_MIN_PERCENT = 0
 VOLUME_MAX_PERCENT = 100

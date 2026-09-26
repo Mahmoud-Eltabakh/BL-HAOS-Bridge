@@ -61,8 +61,37 @@ describe('SettingsModal', () => {
     );
 
     expect(screen.getByRole('slider', { name: 'Speaker volume setting' })).toHaveValue('35');
-    // A connected speaker's live level needs no settings lookup.
-    expect(apiClient.getSettings).not.toHaveBeenCalled();
+  });
+
+  it('shows the stored codec pin and saves the operator pick', async () => {
+    // The per-speaker codec is how an operator answers "it breaks up / the quality
+    // changes": pin something steadier than the negotiated codec.
+    vi.mocked(apiClient.getSettings).mockResolvedValue({
+      speakers: { [connectedDevice.address]: { default_volume: 70, codec_override: 'ldac' } },
+    } as any);
+
+    render(
+      <SettingsModal
+        isOpen
+        onClose={() => {}}
+        selectedDevice={connectedDevice}
+        adapters={[]}
+        onSaved={() => {}}
+      />
+    );
+
+    const codecSelect = screen.getByRole('combobox', { name: 'Audio Codec' });
+    await waitFor(() => expect(codecSelect).toHaveValue('ldac'));
+
+    fireEvent.change(codecSelect, { target: { value: 'sbc_xq' } });
+    fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() => {
+      expect(apiClient.updateSpeaker).toHaveBeenCalledWith(
+        connectedDevice.address,
+        expect.objectContaining({ codec_override: 'sbc_xq' })
+      );
+    });
   });
 
   it('falls back to the stored startup volume for a switched-off speaker', async () => {

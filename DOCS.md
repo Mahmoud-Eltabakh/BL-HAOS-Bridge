@@ -90,33 +90,63 @@ radio problem:
   `disconnects` means the bridge was right not to act; a high `disconnects` means the
   link really is going away (range, another device taking the speaker, or the
   speaker's own power saving).
-- To pin a codec, set the per-speaker codec in the dashboard. The bridge applies it
-  on the next playback and warns if the speaker does not offer it.
+- To pin a codec, set it per speaker in that speaker's **Settings → Audio Codec** in the
+  dashboard (LDAC, aptX HD, aptX, AAC, SBC-XQ, SBC, or the default). The bridge applies
+  it on the next playback and warns if the speaker does not offer it. For an LDAC link
+  that changes quality as it plays, see
+  [Audio stutters, flutters, or the quality changes](#audio-stutters-flutters-or-the-quality-changes).
 
-### Audio stutters or flutters
+### Audio stutters, flutters, or the quality changes
 
-Audio that plays for a moment and then breaks up is a buffer problem far more often
-than a radio problem: an A2DP link delivers in bursts, and the speaker drains its own
-buffer at a fixed rate, so whatever the player client holds is the slack that absorbs
-the bursts.
+Audio that plays for a moment and then breaks up, or that quietly sounds worse as a
+song goes on, is answered by three things: the codec, the buffer, and the host.
 
-- The bridge gives both player clients the same explicit buffer (500 ms by default).
-  Raise it for a link that still stutters with the **Playback Buffer (ms)** add-on
-  option (Settings &rarr; Add-ons &rarr; BL-HAOS &rarr; Configuration), or with the
-  `BLHAOS_PLAYBACK_BUFFER_MS` environment variable when the image is run outside the
-  Supervisor. The daemon re-reads it at start, so a restart applies the new value.
+**The quality that changes mid-song is LDAC.** LDAC is the only A2DP codec here whose
+bitrate moves while it plays, and its own default is Adaptive Bitrate: when the link
+is marginal it lowers the bitrate (990 -> 660 -> 330 kbps) instead of dropping out, so
+the same song sounds different as you listen. The add-on ships a fixed LDAC quality
+instead (`sq`, a steady 660 kbps, still far above SBC) and exposes the choice:
 
-  The value is bounded to 50-2000 ms on purpose. More buffer also means more audio
-  queued ahead of the speaker, so a pause takes that much longer to fall silent;
-  that is the trade-off, and the default is where both ends stop hurting.
-- Pin the codec (see above). `LDAC` at its highest bitrate needs both CPU and radio
-  headroom that a Pi-class board and a busy 2.4 GHz band do not always have, and a
-  link that is marginal for LDAC is usually fine on `sbc_xq` or `sbc`. A codec that
-  changes right before the stutter starts is the giveaway: the log names the codec on
-  every playback.
-- Check the host. Decoding and resampling compete with everything else on the same
-  board; a stutter that starts with a Home Assistant backup or a CPU-heavy automation
-  is not a Bluetooth problem at all.
+| `ldac_quality` | Bitrate | When |
+|---|---|---|
+| `hq` | 990/909 kbps | A clean link and spare CPU; the highest quality LDAC offers. |
+| `sq` | 660/606 kbps | The shipped default: steady, and the CPU headroom that encoding wants. |
+| `mq` | 330/303 kbps | A weak link that still stutters at `sq`. |
+| `auto` | adaptive | Upstream's default: the bitrate follows the link, so the quality changes. |
+
+**Pin a codec per speaker** in that speaker's **Settings → Audio Codec** in the
+dashboard. This is the strongest lever: LDAC at any quality needs both radio and CPU
+headroom that a Pi-class board and a busy 2.4 GHz band do not always have, and a link
+that is marginal for LDAC is usually fine on **SBC-XQ** (steady, good) or **SBC** (most
+compatible). The bridge applies the pin on the next playback and warns if the speaker
+does not offer it.
+
+**The buffer** is the other half. The bridge gives both player clients the same
+explicit buffer (500 ms by default) because an A2DP link delivers in bursts and the
+speaker drains its own buffer at a fixed rate. Raise it with the **Playback Buffer
+(ms)** add-on option (Settings &rarr; Add-ons &rarr; BL-HAOS &rarr; Configuration), or
+with the `BLHAOS_PLAYBACK_BUFFER_MS` environment variable when the image is run
+outside the Supervisor. The daemon re-reads it at start, so a restart applies it.
+
+The value is bounded to 50-2000 ms on purpose. More buffer also means more audio
+queued ahead of the speaker, so a pause takes that much longer to fall silent; that is
+the trade-off, and the default is where both ends stop hurting.
+
+**Check the host.** Decoding and resampling compete with everything else on the same
+board; a stutter that starts with a Home Assistant backup or a CPU-heavy automation is
+not a Bluetooth problem at all.
+
+Every playback logs what the link is running, so a report does not have to be guessed
+at:
+
+```text
+Streaming to aa:bb:cc:dd:ee:01 over pipewire using A2DP codec ldac, at 48000 Hz, buffer 500 ms
+```
+
+`at 44100 Hz (resampling from 48000 Hz)` would mean the speaker negotiated a rate the
+player is not feeding, so something in between converts every sample - that case is
+covered by `resample.quality` on the stream, but knowing it is happening is what makes
+the difference diagnosable.
 
 ### Playing Audio from Home Assistant
 - Each connected trusted speaker appears as a native `media_player` entity after the BL-HAOS integration is configured.
@@ -144,7 +174,8 @@ the bursts.
 |---|---|---|
 | `log_level` | `info` | Logging verbosity (`trace`, `debug`, `info`, `warning`, `error`). |
 | `default_codec` | `auto` | Preferred Bluetooth A2DP audio codec. `auto` prioritizes highest fidelity supported by speaker: LDAC -> aptX HD -> aptX -> AAC -> SBC-XQ -> SBC. |
-| `playback_buffer_ms` | `500` | Audio held ahead of the speaker, 50-2000 ms. Raise it if playback breaks up; more buffer also means audio keeps playing slightly longer after a pause. See [Audio stutters or flutters](#audio-stutters-or-flutters). |
+| `playback_buffer_ms` | `500` | Audio held ahead of the speaker, 50-2000 ms. Raise it if playback breaks up; more buffer also means audio keeps playing slightly longer after a pause. See [Audio stutters, flutters, or the quality changes](#audio-stutters-flutters-or-the-quality-changes). |
+| `ldac_quality` | `sq` | LDAC encoding quality: `hq` 990 kbps, `sq` 660 kbps (steady), `mq` 330 kbps, `auto` adaptive (upstream's default, which changes the bitrate while a song plays). See the same section. |
 
 ### Collecting Logs
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { DeviceInfo, AdapterInfo, apiClient } from '../api/client';
+import { CODEC_OPTIONS } from '../constants';
 import { X, Sliders, Save, Volume2, AlertCircle } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -21,6 +22,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [autoReconnect, setAutoReconnect] = useState(true);
   const [preferredAdapter, setPreferredAdapter] = useState('hci0');
   const [defaultVolume, setDefaultVolume] = useState(70);
+  const [codecOverride, setCodecOverride] = useState('');
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -48,24 +50,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     // The slider is seeded from the level the speaker is actually at: the bridge
     // reads its real volume back from the audio server. A speaker that is
     // switched off has no level to read, so its stored startup volume is shown
-    // instead. Before this the slider always opened at 70% - a number that was
-    // neither the speaker's level nor its setting, and that saving wrote over
-    // the real setting.
+    // instead - and the stored codec pin is read from the same settings, because
+    // a device record does not carry either of them.
     if (!isOpen || !selectedDevice || seededForRef.current === `${selectedDevice.address}:${isOpen}`) return;
     seededForRef.current = `${selectedDevice.address}:${isOpen}`;
     const live = selectedDevice.playback?.volume;
     if (selectedDevice.connected && typeof live === 'number') {
       setDefaultVolume(Math.round(live * 100));
-      return;
     }
     let cancelled = false;
     void (async () => {
       try {
         const settings: any = await apiClient.getSettings();
-        const stored = settings?.speakers?.[selectedDevice.address?.toLowerCase()]?.default_volume;
-        if (!cancelled && typeof stored === 'number') setDefaultVolume(stored);
+        const stored = settings?.speakers?.[selectedDevice.address?.toLowerCase()];
+        if (cancelled || !stored) return;
+        if (typeof stored.codec_override === 'string') setCodecOverride(stored.codec_override);
+        if (typeof stored.default_volume === 'number' && !(selectedDevice.connected && typeof live === 'number')) {
+          setDefaultVolume(stored.default_volume);
+        }
       } catch {
-        // A failed read leaves the slider where it is; saving still works.
+        // A failed read leaves the form as it is; saving still works.
       }
     })();
     return () => {
@@ -105,6 +109,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         auto_reconnect: autoReconnect,
         preferred_adapter: preferredAdapter,
         default_volume: defaultVolume,
+        codec_override: codecOverride || undefined,
       });
       onSaved();
       onClose();
@@ -163,6 +168,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">Bluetooth Adapter</label>
             <select
               value={preferredAdapter}
+              aria-label="Bluetooth Adapter"
               onChange={(e) => setPreferredAdapter(e.target.value)}
               className="neu-control w-full rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
             >
@@ -172,6 +178,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1.5">Audio Codec</label>
+            <select
+              value={codecOverride || 'auto'}
+              aria-label="Audio Codec"
+              onChange={(e) => setCodecOverride(e.target.value)}
+              className="neu-control w-full rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-400/70"
+            >
+              {CODEC_OPTIONS.map((codec) => (
+                <option key={codec.value} value={codec.value}>
+                  {codec.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs neu-text-muted mt-1.5">
+              Applied on the next playback. Pin a steadier codec when the audio breaks up or its
+              quality changes while a song plays.
+            </p>
           </div>
 
           <div>

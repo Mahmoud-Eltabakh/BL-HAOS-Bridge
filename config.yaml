@@ -1,6 +1,6 @@
 name: "BL-HAOS"
 slug: "bl_haos"
-version: "0.2.62"
+version: "0.2.63"
 description: "High-fidelity Bluetooth audio streaming adapter for Home Assistant OS"
 url: "https://github.com/Mahmoud-Eltabakh/BL-HAOS-Bridge"
 image: "ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge"
@@ -29,6 +29,7 @@ options:
   log_level: "info"
   default_codec: "auto"
   playback_buffer_ms: 500
+  ldac_quality: "sq"
 discovery:
   - bl_haos
 schema:
@@ -37,3 +38,6 @@ schema:
   # Bounded on purpose: the audio held ahead of a speaker is what a stutter-free
   # link trades against how long audio keeps playing after a pause.
   playback_buffer_ms: "int(50,2000)?"
+  # LDAC only. `auto` is Adaptive Bitrate, which lowers the bitrate when the link
+  # is marginal, so the quality of the same song changes as you listen.
+  ldac_quality: "list(auto|hq|sq|mq)?"

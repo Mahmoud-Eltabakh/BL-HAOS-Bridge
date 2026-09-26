@@ -88,6 +88,11 @@ class PlayerSettings(BaseModel):
     keepalive_interval_seconds: float = Field(default=240, gt=0)
     keepalive_pulse_duration_seconds: float = Field(default=1, gt=0)
     pipe_chunk_size: int = Field(default=64 * 1024, gt=0)
+    # Quality of the resampler PipeWire runs when the stream's rate does not match
+    # the sink's. The A2DP link is asked for 48 kHz (bluez5.default.rate), so this
+    # only matters for a speaker that negotiates 44.1 kHz anyway - and then the
+    # server's own default (4 of 15) is a needless quality loss on every sample.
+    resample_quality: int = Field(default=10, ge=0, le=15)
     # How often the real sink volume is read back so a level changed on the
     # speaker itself reaches Home Assistant and the dashboard. Cheap enough to
     # run often (one read-only client call per connected speaker).
