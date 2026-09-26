@@ -22,4 +22,8 @@ def test_backend_s6_service():
     # pool holds them; otherwise a command can be written to a connection the
     # daemon has just closed, which reaches the user as "Server disconnected".
     assert "--timeout-keep-alive" in content
+    # The playback buffer is an add-on option, and an option only reaches the
+    # daemon if this script reads it out of /data/options.json and exports it.
+    assert "bashio::config 'playback_buffer_ms'" in content
+    assert "BLHAOS_PLAYBACK_BUFFER_MS" in content
     assert not Path("rootfs/etc/services.d/bl-haos/run").exists()

@@ -29,6 +29,7 @@ from ..constants import (
     HA_COMMAND_STOP,
     HA_COMMAND_VOLUME_PREFIX,
     PACTL_CARD_PROFILE_PATTERN,
+    PACTL_SINK_VOLUME_PATTERN,
     PLAYBACK_IDLE,
     PLAYBACK_PAUSED,
     PLAYBACK_PLAYING,
@@ -36,6 +37,8 @@ from ..constants import (
     VOLUME_MAX_PERCENT,
     VOLUME_MAX_RATIO,
     VOLUME_MIN_RATIO,
+    WPCTL_MUTED_MARKER,
+    WPCTL_VOLUME_PATTERN,
 )
 from ..health import (
     FailureClass,
@@ -123,8 +126,16 @@ TITLE_MAX_LENGTH = 128
 TTS_STREAM_MARKER = "/api/tts_proxy/"
 TTS_STREAM_TITLE = "Text to speech"
 # Bound how much audio may be queued ahead of the speaker. The default
-# PulseAudio buffer is large enough that pause/stop kept playing for a while.
+# PulseAudio buffer is large enough that pause/stop kept playing for a while, but
+# too small a buffer stutters: an A2DP link delivers in bursts and a speaker
+# drains its own buffer at a fixed rate, so the client-side buffer is exactly the
+# slack that absorbs radio jitter and a slow decoder. Both players are given the
+# same bound (see PLAYBACK_BUFFER_* in constants for the trade-off).
 PLAYER_LATENCY_MSEC = PlayerSettings.model_fields["latency_msec"].default
+# pw-play wants its units spelled out: a bare number is read as a sample count,
+# not as milliseconds, and its own default is 100ms - small enough that jitter
+# beyond it is plainly audible.
+PLAYER_LATENCY_UNIT = "ms"
 # A speaker that has just connected does not necessarily have a usable sink yet:
 # WirePlumber still has to publish the node, and the first stream pays for A2DP
 # transport acquisition plus codec negotiation. A short silent pulse fired at
@@ -180,6 +191,11 @@ class MediaPlayerBridge:
         self.keepalive_interval = self.player_settings.keepalive_interval_seconds
         self.keepalive_pulse_duration = self.player_settings.keepalive_pulse_duration_seconds
         self._keepalive_task: asyncio.Task | None = None
+        # Reading the speaker's real volume back is what keeps the slider honest;
+        # it runs on its own clock so a level changed with the speaker's own
+        # buttons shows up even while nothing is playing.
+        self.volume_poll_seconds = self.player_settings.volume_poll_seconds
+        self._volume_watch_task: asyncio.Task | None = None
         # Connect-time sink warm-ups in flight, keyed by speaker address.
         self._warmup_tasks: dict[str, asyncio.Task] = {}
         self.warmup_attempts = SINK_WARMUP_ATTEMPTS
@@ -301,7 +317,26 @@ class MediaPlayerBridge:
         self.timelines.pop(address, None)
 
     def get_volume(self, address: str) -> float:
-        return self.volumes.get(self._address(address), self.player_settings.default_volume)
+        """The level Home Assistant and the dashboard should show.
+
+        The authoritative value is the last level the audio server reported for
+        the sink (see ``refresh_volume``): that is where the speaker really is.
+        Until one has been read, the speaker's own stored startup volume stands
+        in - never the global default, which would claim a level the speaker is
+        not at.
+        """
+        addr = self._address(address)
+        if addr in self.volumes:
+            return self.volumes[addr]
+        return self._stored_default_volume(addr)
+
+    def _stored_default_volume(self, address: str) -> float:
+        """The startup level configured for one speaker, or the global default."""
+        if self.config_store:
+            speaker = self.config_store.get_speaker(address)
+            if speaker is not None:
+                return speaker.default_volume / VOLUME_MAX_PERCENT
+        return self.player_settings.default_volume
 
     async def _notify(self, address: str) -> None:
         if self._state_callback:
@@ -582,6 +617,7 @@ class MediaPlayerBridge:
                         "Warmed A2DP sink for %s in %.2fs (attempt %d)",
                         addr, time.monotonic() - started, attempt,
                     )
+                    await self._apply_startup_volume(addr)
                     return
                 if time.monotonic() + self.warmup_retry_seconds >= deadline:
                     break
@@ -593,6 +629,24 @@ class MediaPlayerBridge:
             logger.debug("Sink warm-up failed for %s", addr, exc_info=True)
         finally:
             self._warmup_tasks.pop(addr, None)
+
+    async def _apply_startup_volume(self, addr: str) -> None:
+        """Put a freshly connected speaker at its configured level, then read it back.
+
+        The startup volume was documented as being applied when a speaker
+        registers, but only the reported number was set: the speaker kept the
+        level it was already at. Applying it makes the read-back meaningful, and
+        the read-back keeps the published level honest for a speaker that ignores
+        absolute volume or clamps it to its own range.
+        """
+        sink = await self._sink_resolver(addr)
+        if not sink:
+            return
+        try:
+            await self._apply_volume(addr, self.get_volume(addr), sink)
+        except Exception:
+            logger.debug("Startup volume could not be applied to %s", addr, exc_info=True)
+        await self.refresh_volume(addr, sink)
 
     async def _cancel_sink_warmup(self, addr: str) -> None:
         """Give way to a real play before it starts.
@@ -961,15 +1015,145 @@ class MediaPlayerBridge:
             )
         return (
             "pw-play", "--target", sink, "--raw", "--rate", str(self.player_settings.sample_rate_hz),
-            "--channels", str(self.player_settings.channels), "-",
+            "--channels", str(self.player_settings.channels),
+            # pw-play's own default is 100ms. Without this flag the PipeWire
+            # transport (the one this add-on actually uses) held a fifth of the
+            # buffer the PulseAudio transport was given, so the same speaker
+            # stuttered here and not there.
+            f"--latency={self.player_settings.latency_msec}{PLAYER_LATENCY_UNIT}",
+            "-",
         )
 
     def _player_environment(self, transport: str) -> dict[str, Any]:
         pulse_server = f"unix:{self.player_settings.pulse_socket}"
         return {"env": {**os.environ, "PULSE_SERVER": pulse_server}} if transport == "pulse" else {}
 
-    async def _apply_volume(self, address: str, volume: float) -> None:
-        sink = await self._sink_resolver(address)
+    async def refresh_volume(self, address: str, sink: str | None = None) -> float | None:
+        """Read the sink's real volume and publish it when it changed.
+
+        A Bluetooth speaker keeps its own volume: AVRCP absolute volume moves the
+        sink with it when the operator presses the speaker's buttons or uses its
+        own app. None of that reaches the bridge on its own, so without this
+        read-back the slider kept showing the last level written from Home
+        Assistant while the speaker sat somewhere else entirely.
+
+        ``sink`` reuses a resolution the caller already did; probing the graph
+        again would cost a ``pw-dump`` per caller for no new information.
+        """
+        addr = self._address(address)
+        sink = sink or await self._sink_resolver(addr)
+        if not sink:
+            return None
+        try:
+            transport, sink_name = self._parse_sink(sink)
+        except ValueError:
+            logger.debug("Volume read-back skipped for invalid sink")
+            return None
+        volume = await self._read_sink_volume(transport, sink_name)
+        if volume is None:
+            return None
+        previous = self.volumes.get(addr)
+        if previous is None or abs(previous - volume) >= self.player_settings.volume_readback_tolerance:
+            self.volumes[addr] = volume
+            logger.debug(
+                "Speaker %s is at %d%% (was %s)",
+                addr,
+                round(volume * VOLUME_MAX_PERCENT),
+                "unknown" if previous is None else f"{round(previous * VOLUME_MAX_PERCENT)}%",
+            )
+            await self._notify(addr)
+        return volume
+
+    async def _read_sink_volume(self, transport: str, sink_name: str) -> float | None:
+        """Ask the audio server for one sink's volume, or None when it cannot say."""
+        if transport == "pulse":
+            command = (
+                "pactl", "-s", f"unix:{self.player_settings.pulse_socket}",
+                "get-sink-volume", sink_name,
+            )
+        else:
+            command = ("wpctl", "get-volume", sink_name)
+        try:
+            process = await self._process_factory(
+                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    process.communicate(), timeout=self.player_settings.sink_probe_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.debug("Volume read-back timed out for %s", sink_name)
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+                return None
+        except (OSError, subprocess.SubprocessError) as error:
+            logger.debug("Volume read-back unavailable for %s: %s", sink_name, safe_detail(error))
+            return None
+        if process.returncode:
+            logger.debug("Volume read-back for %s failed (code %s)", sink_name, process.returncode)
+            return None
+        output = self._decode_output(stdout)
+        if WPCTL_MUTED_MARKER in output:
+            # The level is still reported, but the sink is muted in the audio
+            # server: silence behind a non-zero slider is otherwise unexplainable.
+            logger.debug("Sink %s is muted in the audio server", sink_name)
+        return self.parse_sink_volume(transport, output)
+
+    @staticmethod
+    def parse_sink_volume(transport: str, output: str) -> float | None:
+        """The volume an audio-server listing reports, as a 0-1 ratio.
+
+        ``pactl get-sink-volume`` prints one entry per channel (``front-left:
+        45875 / 70% / -9.29 dB, front-right: ...``) and ``wpctl get-volume`` a
+        bare ratio. A sink whose channels disagree is reported at its loudest
+        channel: that is the most a single slider can honestly say about it.
+        """
+        if transport == "pulse":
+            levels = [int(level) for level in re.findall(PACTL_SINK_VOLUME_PATTERN, output)]
+            if not levels:
+                return None
+            return min(max(levels), VOLUME_MAX_PERCENT) / VOLUME_MAX_PERCENT
+        match = re.search(WPCTL_VOLUME_PATTERN, output)
+        if not match:
+            return None
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            return None
+        return min(max(value, VOLUME_MIN_RATIO), VOLUME_MAX_RATIO)
+
+    def start_volume_watch(self) -> None:
+        """Start reading every connected speaker's real volume back."""
+        if self._volume_watch_task is None:
+            self._volume_watch_task = self._track_task(self._volume_watch_loop(), "volume watch")
+
+    async def stop_volume_watch(self) -> None:
+        task = self._volume_watch_task
+        self._volume_watch_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _volume_watch_loop(self) -> None:
+        """Poll the sinks of connected speakers so their reported level stays true."""
+        try:
+            while True:
+                await asyncio.sleep(self.volume_poll_seconds)
+                for address in list(self.keepalive_addresses):
+                    try:
+                        await self.refresh_volume(address)
+                    except Exception:
+                        logger.debug("Volume read-back failed for %s", address, exc_info=True)
+        except asyncio.CancelledError:
+            pass
+
+    async def _apply_volume(self, address: str, volume: float, sink: str | None = None) -> None:
+        sink = sink or await self._sink_resolver(address)
         if sink:
             try:
                 transport, sink_name = self._parse_sink(sink)
@@ -1144,6 +1328,7 @@ class MediaPlayerBridge:
     async def async_shutdown(self) -> None:
         logger.debug("Shutting down MediaPlayerBridge...")
         await self.stop_keepalive()
+        await self.stop_volume_watch()
         for pending in tuple(self._warmup_tasks.values()):
             pending.cancel()
         self._warmup_tasks.clear()

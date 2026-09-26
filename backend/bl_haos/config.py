@@ -21,8 +21,12 @@ from .constants import (
     ENV_DEMO_MODE,
     ENV_DEMO_SCENARIO,
     ENV_NATIVE_TOKEN,
+    ENV_PLAYBACK_BUFFER_MS,
     FALLBACK_CONFIG_PATH,
     MAX_ALIAS_LENGTH,
+    PLAYBACK_BUFFER_DEFAULT_MS,
+    PLAYBACK_BUFFER_MAX_MS,
+    PLAYBACK_BUFFER_MIN_MS,
     SUPPORTED_CODECS,
     TOKEN_ENTROPY_BYTES,
     TRUTHY_FLAGS,
@@ -30,6 +34,7 @@ from .constants import (
     VOLUME_MAX_RATIO,
     VOLUME_MIN_PERCENT,
     VOLUME_MIN_RATIO,
+    VOLUME_READBACK_TOLERANCE,
 )
 
 logger = logging.getLogger("bl_haos.config")
@@ -70,13 +75,24 @@ class PlayerSettings(BaseModel):
     stop_grace_seconds: float = Field(default=2, gt=0)
     kill_grace_seconds: float = Field(default=1.5, gt=0)
     command_stop_budget_seconds: float = Field(default=0.25, gt=0)
-    latency_msec: int = Field(default=250, gt=0)
+    # Audio held ahead of the speaker. A Bluetooth link delivers in bursts and a
+    # speaker drains its own buffer at a fixed rate, so a client that holds only
+    # its default keeps running dry and the result is audible stutter; too much
+    # and audio keeps playing after a pause. See PLAYBACK_BUFFER_* in constants.
+    latency_msec: int = Field(
+        default=PLAYBACK_BUFFER_DEFAULT_MS, ge=PLAYBACK_BUFFER_MIN_MS, le=PLAYBACK_BUFFER_MAX_MS
+    )
     sample_rate_hz: int = Field(default=48000, gt=0)
     channels: int = Field(default=2, gt=0)
     default_volume: float = Field(default=DEFAULT_VOLUME_RATIO, ge=VOLUME_MIN_RATIO, le=VOLUME_MAX_RATIO)
     keepalive_interval_seconds: float = Field(default=240, gt=0)
     keepalive_pulse_duration_seconds: float = Field(default=1, gt=0)
     pipe_chunk_size: int = Field(default=64 * 1024, gt=0)
+    # How often the real sink volume is read back so a level changed on the
+    # speaker itself reaches Home Assistant and the dashboard. Cheap enough to
+    # run often (one read-only client call per connected speaker).
+    volume_poll_seconds: float = Field(default=30, gt=0)
+    volume_readback_tolerance: float = Field(default=VOLUME_READBACK_TOLERANCE, ge=0, le=1)
 
 
 class SystemSettings(BaseModel):
@@ -150,6 +166,10 @@ class ConfigStore:
                 demo_scenario=self._configured_demo_scenario(),
             )
             self.save()
+        # Deployment-level overrides that are not persisted settings: they belong
+        # to the container, so they are re-applied on every load instead of being
+        # written to the settings file.
+        self.settings.player.latency_msec = self._configured_playback_buffer_ms()
         return self.settings
 
     @staticmethod
@@ -166,6 +186,36 @@ class ConfigStore:
     @staticmethod
     def _configured_demo_scenario() -> str:
         return os.environ.get(ENV_DEMO_SCENARIO, DEFAULT_DEMO_SCENARIO).strip() or DEFAULT_DEMO_SCENARIO
+
+    @staticmethod
+    def _configured_playback_buffer_ms() -> int:
+        """The buffer the audio clients hold, in milliseconds.
+
+        A speaker whose link needs more slack than the default (a stuttering
+        LDAC link, a busy host) can be given more without a settings write, and a
+        value outside the supported range is ignored rather than trusted: an
+        unbounded buffer would turn a pause into minutes of queued audio.
+        """
+        configured = os.environ.get(ENV_PLAYBACK_BUFFER_MS, "").strip()
+        if not configured:
+            return PLAYBACK_BUFFER_DEFAULT_MS
+        try:
+            value = int(configured)
+        except ValueError:
+            logger.warning(
+                "Ignoring %s=%s: not a whole number of milliseconds", ENV_PLAYBACK_BUFFER_MS, configured
+            )
+            return PLAYBACK_BUFFER_DEFAULT_MS
+        if not PLAYBACK_BUFFER_MIN_MS <= value <= PLAYBACK_BUFFER_MAX_MS:
+            logger.warning(
+                "Ignoring %s=%s: outside %d-%d ms",
+                ENV_PLAYBACK_BUFFER_MS,
+                configured,
+                PLAYBACK_BUFFER_MIN_MS,
+                PLAYBACK_BUFFER_MAX_MS,
+            )
+            return PLAYBACK_BUFFER_DEFAULT_MS
+        return value
 
     def save(self) -> None:
         """Atomically persist settings to JSON file."""

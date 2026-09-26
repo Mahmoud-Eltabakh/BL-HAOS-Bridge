@@ -16,7 +16,8 @@
 - **Embedded Ingress Web Dashboard**: Visual discovery scanner with real-time RSSI signal strength meters, one-click PIN/SSP pairing, speaker control cards, and volume sliders directly inside the Home Assistant sidebar.
 - **Native `media_player` Integration**: Trusted connected speakers are exposed through the separate [BL-HAOS HACS integration](https://github.com/Mahmoud-Eltabakh/BL-HAOS-Integration) over the private Supervisor add-on network.
 - **Audiophile Codec Priority**: Automatically negotiates the highest quality codec supported by your speaker: `LDAC` &rarr; `aptX HD` &rarr; `aptX` &rarr; `AAC` &rarr; `SBC-XQ` &rarr; `SBC`.
-- **Volume control that stays in sync**: `media_player.set_volume` writes straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The dashboard's slider reads that same value, so Home Assistant, the dashboard and the speaker agree - see [Volume](DOCS.md#volume).
+- **Volume control that stays in sync**: `media_player.set_volume` writes straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The bridge also reads the sink's real level back, so a change made with the speaker's own buttons reaches Home Assistant and the dashboard - see [Volume](DOCS.md#volume).
+- **Stutter-free playback**: the player clients are given an explicit buffer (500 ms by default, `BLHAOS_PLAYBACK_BUFFER_MS` to change it) instead of the small client default, because a Bluetooth link delivers in bursts and the speaker drains its own buffer at a fixed rate.
 - **Aggressive Auto-Reconnect Engine**: Background daemon actively monitors connection health and instantly reconnects speakers when they wake from sleep or re-enter range.
 - **Multi-Adapter Support**: Run multiple Bluetooth USB dongles alongside onboard Bluetooth controllers with independent speaker assignments.
 

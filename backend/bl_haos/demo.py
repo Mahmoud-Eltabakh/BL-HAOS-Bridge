@@ -257,6 +257,9 @@ class DemoRuntime:
     async def start_keepalive(self) -> None:
         return None
 
+    def start_volume_watch(self) -> None:
+        return None
+
     async def async_shutdown(self) -> None:
         return None
 

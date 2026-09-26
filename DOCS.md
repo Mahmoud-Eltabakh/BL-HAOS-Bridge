@@ -93,15 +93,42 @@ radio problem:
 - To pin a codec, set the per-speaker codec in the dashboard. The bridge applies it
   on the next playback and warns if the speaker does not offer it.
 
+### Audio stutters or flutters
+
+Audio that plays for a moment and then breaks up is a buffer problem far more often
+than a radio problem: an A2DP link delivers in bursts, and the speaker drains its own
+buffer at a fixed rate, so whatever the player client holds is the slack that absorbs
+the bursts.
+
+- The bridge gives both player clients the same explicit buffer (500 ms by default).
+  Raise it for a link that still stutters with the **Playback Buffer (ms)** add-on
+  option (Settings &rarr; Add-ons &rarr; BL-HAOS &rarr; Configuration), or with the
+  `BLHAOS_PLAYBACK_BUFFER_MS` environment variable when the image is run outside the
+  Supervisor. The daemon re-reads it at start, so a restart applies the new value.
+
+  The value is bounded to 50-2000 ms on purpose. More buffer also means more audio
+  queued ahead of the speaker, so a pause takes that much longer to fall silent;
+  that is the trade-off, and the default is where both ends stop hurting.
+- Pin the codec (see above). `LDAC` at its highest bitrate needs both CPU and radio
+  headroom that a Pi-class board and a busy 2.4 GHz band do not always have, and a
+  link that is marginal for LDAC is usually fine on `sbc_xq` or `sbc`. A codec that
+  changes right before the stutter starts is the giveaway: the log names the codec on
+  every playback.
+- Check the host. Decoding and resampling compete with everything else on the same
+  board; a stutter that starts with a Home Assistant backup or a CPU-heavy automation
+  is not a Bluetooth problem at all.
+
 ### Playing Audio from Home Assistant
 - Each connected trusted speaker appears as a native `media_player` entity after the BL-HAOS integration is configured.
 - Use standard Home Assistant Lovelace media cards, automation actions (`media_player.play_media`, `tts.speak`), or Music Assistant to send audio directly to your speaker.
 - Volume adjustments in Home Assistant are written straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The dashboard's slider reads the same value, so it follows Home Assistant instead of keeping whatever it last set itself; see [Volume](#volume).
 
 ### Volume
-- Home Assistant, the dashboard and the speaker share one volume level: `media_player.set_volume` and the dashboard slider both write the speaker's A2DP sink, and both read back the level the bridge applied. A change on either surface moves the other.
-- The speaker's own volume buttons change the sink volume in the audio server, but the bridge does not read that value back, so a change made on the speaker itself is not reflected in Home Assistant or on the dashboard - set the level from either surface to bring them back in step.
-- Each speaker's `default_volume` from the dashboard settings is applied when the speaker registers, and the last level set from either surface is stored, so it survives a restart.
+- Home Assistant, the dashboard and the speaker share one volume level: `media_player.set_volume` and the dashboard slider both write the speaker's A2DP sink, and both read back the level the audio server reports for it. A change on either surface moves the other.
+- The speaker owns that level too. AVRCP absolute volume moves the sink when you press the speaker's own buttons or use its own app, so the bridge reads it back: once when the speaker connects and every 30 seconds after that. A change made on the speaker reaches Home Assistant and the dashboard within one poll interval instead of staying invisible.
+- While a poll is failing (a speaker that went away, a sink that is not published) the last known level is kept rather than replaced with a guess.
+- Each speaker's volume in the dashboard settings is applied to the speaker when it connects and again when you save it, so the slider is a level to be set, not just a number in a file. The last level set from either surface survives a restart.
+- A sink that is muted in the audio server still reports its level: the sliders show the level, and the add-on log names the mute at `debug`, so silence behind a non-zero slider is explicable rather than mysterious.
 
 
 - Every connected trusted speaker is an independent `media_player` entity and can stream its own media at its own volume.
@@ -117,6 +144,7 @@ radio problem:
 |---|---|---|
 | `log_level` | `info` | Logging verbosity (`trace`, `debug`, `info`, `warning`, `error`). |
 | `default_codec` | `auto` | Preferred Bluetooth A2DP audio codec. `auto` prioritizes highest fidelity supported by speaker: LDAC -> aptX HD -> aptX -> AAC -> SBC-XQ -> SBC. |
+| `playback_buffer_ms` | `500` | Audio held ahead of the speaker, 50-2000 ms. Raise it if playback breaks up; more buffer also means audio keeps playing slightly longer after a pause. See [Audio stutters or flutters](#audio-stutters-or-flutters). |
 
 ### Collecting Logs
 

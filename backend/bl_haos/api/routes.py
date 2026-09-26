@@ -18,6 +18,7 @@ from ..constants import (
     API_PREFIX,
     APP_NAME,
     BEARER_PREFIX,
+    COMMAND_SET_VOLUME,
     DEFAULT_PIN,
     MAX_ADDRESS_LENGTH,
     MAX_ALIAS_LENGTH,
@@ -586,4 +587,22 @@ async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, r
             reconnect_engine.register_speaker(address, preferred_adapter=payload.preferred_adapter)
         else:
             reconnect_engine.unregister_speaker(address)
+    # A volume saved in the speaker's settings is the level the operator expects
+    # the speaker to be at, so it is applied now as well as at every reconnect.
+    # Best-effort on purpose: a speaker that is switched off has no sink, and
+    # saving its settings must still succeed.
+    if payload.default_volume is not None:
+        bridge = getattr(request.app.state, "ha_bridge", None)
+        if bridge is not None:
+            try:
+                await bridge.execute(
+                    address, COMMAND_SET_VOLUME, volume=payload.default_volume / VOLUME_MAX_PERCENT
+                )
+            except Exception as error:
+                logger.warning(
+                    "Could not apply volume %d%% to %s: %s",
+                    payload.default_volume,
+                    address,
+                    safe_detail(error),
+                )
     return updated

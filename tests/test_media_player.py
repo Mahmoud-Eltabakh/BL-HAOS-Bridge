@@ -290,8 +290,11 @@ async def test_connect_warmup_retries_while_the_sink_is_still_appearing():
     bridge.register_keepalive(address)
     await bridge._warmup_tasks[address]
 
-    assert resolutions["count"] == 3, "the warm-up must keep probing until the sink exists"
+    # Retrying until the sink exists is the point; the exact number of probes is
+    # not, because the warm-up also syncs the speaker's volume once it is up.
+    assert resolutions["count"] >= 3, "the warm-up must keep probing until the sink exists"
     assert "ffmpeg" in calls
+    assert "wpctl" in calls, "the connected speaker is put at its configured level"
 
 
 @pytest.mark.asyncio
@@ -838,6 +841,29 @@ async def test_playback_end_clears_the_timeline():
 
 
 @pytest.mark.asyncio
+async def test_pipewire_player_bounds_queued_latency():
+    """The PipeWire transport must get the buffer the PulseAudio transport gets.
+
+    pw-play's own default is 100ms, and a bare ``--latency`` number means *samples*
+    rather than milliseconds, so the flag has to carry its unit. Without it the
+    transport this add-on actually uses held a fifth of the other one's buffer and
+    any jitter beyond that was audible as stutter.
+    """
+    from backend.bl_haos.ha.player import PLAYER_LATENCY_MSEC
+
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append(args)
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    await bridge.play_url("10:22:33:44:55:66", "https://example.test/audio.mp3")
+
+    assert f"--latency={PLAYER_LATENCY_MSEC}ms" in calls[1]
+
+
+@pytest.mark.asyncio
 async def test_pulseaudio_player_bounds_queued_latency():
     """Pause/stop responsiveness depends on a small client-side buffer."""
     from backend.bl_haos.ha.player import PLAYER_LATENCY_MSEC
@@ -857,6 +883,144 @@ async def test_pulseaudio_player_bounds_queued_latency():
     paplay_args = calls[1]
     assert f"--latency-msec={PLAYER_LATENCY_MSEC}" in paplay_args
     assert PLAYER_LATENCY_MSEC <= 500
+
+
+def test_parse_sink_volume_reads_both_audio_servers():
+    """The read-back has to understand what each client actually prints."""
+    pactl = (
+        "Volume: front-left: 45875 /  70% / -9.29 dB,   front-right: 45875 /  70% / -9.29 dB\n"
+        "        balance 0.00\n"
+    )
+    assert MediaPlayerBridge.parse_sink_volume("pulse", pactl) == pytest.approx(0.70)
+    assert MediaPlayerBridge.parse_sink_volume("pipewire", "Volume: 0.42\n") == pytest.approx(0.42)
+    # A muted sink still reports its level: silence behind a non-zero slider is
+    # reported as such rather than silently turned into 0.
+    assert MediaPlayerBridge.parse_sink_volume("pipewire", "Volume: 0.42 [MUTED]\n") == pytest.approx(0.42)
+    # Channels that disagree are reported at the loudest one.
+    uneven = "Volume: front-left: 19661 / 30% / -31.00 dB, front-right: 45875 / 70% / -9.29 dB"
+    assert MediaPlayerBridge.parse_sink_volume("pulse", uneven) == pytest.approx(0.70)
+    assert MediaPlayerBridge.parse_sink_volume("pipewire", "") is None
+    assert MediaPlayerBridge.parse_sink_volume("pipewire", "garbage") is None
+    assert MediaPlayerBridge.parse_sink_volume("pulse", "no volume here") is None
+
+
+class VolumeProcess(FakeProcess):
+    """A probe whose stdout answers with an audio-server volume listing."""
+
+    def __init__(self, output: bytes, returncode: int = 0):
+        super().__init__(returncode=returncode)
+        self._output = output
+
+    async def communicate(self):
+        return self._output, b""
+
+
+@pytest.mark.asyncio
+async def test_volume_is_read_back_from_the_sink_and_published():
+    """A level changed on the speaker itself must reach the sliders.
+
+    The speaker owns its volume: nothing in the audio graph tells the bridge when
+    someone presses the speaker's buttons, so the sink is asked directly and a
+    changed level is published to the dashboard and the entity.
+    """
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append(args)
+        return VolumeProcess(b"Volume: 0.42\n")
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "10:22:33:44:55:66"
+    published = []
+
+    async def state_callback(addr):
+        published.append((addr, bridge.get_volume(addr)))
+
+    bridge._state_callback = state_callback
+
+    assert await bridge.refresh_volume(address) == pytest.approx(0.42)
+    assert bridge.get_volume(address) == pytest.approx(0.42)
+    assert published == [(address, pytest.approx(0.42))]
+    assert calls[0][0] == "wpctl" and calls[0][1] == "get-volume"
+
+    # Reading the same level again must not republish it.
+    published.clear()
+    await bridge.refresh_volume(address)
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_volume_read_back_uses_the_pulse_client_for_a_pulse_sink():
+    calls = []
+
+    async def pulse_sink(_address):
+        return "pulse:bluez_sink.10_22_33_44_55_66.a2dp_sink"
+
+    async def process_factory(*args, **kwargs):
+        calls.append(args)
+        return VolumeProcess(b"Volume: front-left: 32768 / 50% / -18.06 dB, front-right: 32768 / 50%")
+
+    bridge = MediaPlayerBridge(sink_resolver=pulse_sink, process_factory=process_factory)
+
+    assert await bridge.refresh_volume("10:22:33:44:55:66") == pytest.approx(0.50)
+    assert calls[0][0] == "pactl"
+    assert "get-sink-volume" in calls[0]
+    assert "bluez_sink.10_22_33_44_55_66.a2dp_sink" in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_volume_read_back_keeps_the_last_level_when_the_probe_fails():
+    """An unreadable sink must not wipe the level the sliders are showing."""
+
+    async def process_factory(*args, **kwargs):
+        return VolumeProcess(b"", returncode=1)
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "10:22:33:44:55:66"
+    bridge.volumes[address] = 0.35
+
+    assert await bridge.refresh_volume(address) is None
+    assert bridge.get_volume(address) == pytest.approx(0.35)
+
+
+@pytest.mark.asyncio
+async def test_volume_watch_reads_connected_speakers_on_its_own_clock():
+    """The poll is what makes a level changed on the speaker show up by itself."""
+    reads = []
+
+    async def process_factory(*args, **kwargs):
+        reads.append(args)
+        return VolumeProcess(b"Volume: 0.55\n")
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "10:22:33:44:55:66"
+    bridge.keepalive_addresses.add(address)
+    bridge.volume_poll_seconds = 0.01
+
+    bridge.start_volume_watch()
+    for _ in range(300):
+        if address in bridge.volumes:
+            break
+        await asyncio.sleep(0.01)
+    await bridge.stop_volume_watch()
+
+    assert bridge.volumes[address] == pytest.approx(0.55)
+    assert reads, "the watch must read the sink"
+    assert bridge._volume_watch_task is None
+
+
+def test_get_volume_falls_back_to_the_speakers_own_startup_volume(tmp_path):
+    """An unread speaker reports its configured level, never a global default."""
+    from backend.bl_haos.config import ConfigStore
+
+    store = ConfigStore(config_file=str(tmp_path / "settings.json"))
+    store.update_speaker("10:22:33:44:55:66", default_volume=35)
+    bridge = MediaPlayerBridge(config_store=store, sink_resolver=fake_sink, process_factory=fake_process)
+    bridge.volumes.clear()
+
+    assert bridge.get_volume("10:22:33:44:55:66") == pytest.approx(0.35)
+    # A speaker nobody has configured still reports the global default.
+    assert bridge.get_volume("AA:BB:CC:DD:EE:99") == pytest.approx(0.70)
 
 
 def test_codec_from_props_reads_the_bluez_card_and_the_profile_fallback():

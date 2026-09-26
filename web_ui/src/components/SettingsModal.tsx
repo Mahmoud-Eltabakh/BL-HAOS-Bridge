@@ -25,11 +25,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  // Seeding happens once per open: the device list keeps refreshing while the
+  // dialog is up, and re-seeding would fight the operator's drag.
+  const seededForRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       previousFocusRef.current = document.activeElement as HTMLElement;
       closeButtonRef.current?.focus();
+    } else {
+      seededForRef.current = null;
     }
     if (selectedDevice) {
       setAlias(selectedDevice.alias || selectedDevice.name || '');
@@ -37,7 +42,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setPreferredAdapter(selectedDevice.adapter_name || 'hci0');
       setErrorMsg(null);
     }
-  }, [selectedDevice]);
+  }, [selectedDevice, isOpen]);
+
+  useEffect(() => {
+    // The slider is seeded from the level the speaker is actually at: the bridge
+    // reads its real volume back from the audio server. A speaker that is
+    // switched off has no level to read, so its stored startup volume is shown
+    // instead. Before this the slider always opened at 70% - a number that was
+    // neither the speaker's level nor its setting, and that saving wrote over
+    // the real setting.
+    if (!isOpen || !selectedDevice || seededForRef.current === `${selectedDevice.address}:${isOpen}`) return;
+    seededForRef.current = `${selectedDevice.address}:${isOpen}`;
+    const live = selectedDevice.playback?.volume;
+    if (selectedDevice.connected && typeof live === 'number') {
+      setDefaultVolume(Math.round(live * 100));
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const settings: any = await apiClient.getSettings();
+        const stored = settings?.speakers?.[selectedDevice.address?.toLowerCase()]?.default_volume;
+        if (!cancelled && typeof stored === 'number') setDefaultVolume(stored);
+      } catch {
+        // A failed read leaves the slider where it is; saving still works.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, selectedDevice]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -143,7 +177,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                <Volume2 className="w-3.5 h-3.5 neu-text-faint" /> Default Startup Volume
+                <Volume2 className="w-3.5 h-3.5 neu-text-faint" /> Speaker Volume
               </label>
               <span className="text-xs font-mono text-slate-200">{defaultVolume}%</span>
             </div>
@@ -152,13 +186,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               min="0"
               max="100"
               value={defaultVolume}
-              aria-label="Default startup volume"
+              aria-label="Speaker volume"
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={defaultVolume}
               onChange={(e) => setDefaultVolume(Number(e.target.value))}
               className="neu-range w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer"
             />
+            <p className="text-xs neu-text-muted mt-1.5">
+              {selectedDevice.connected
+                ? 'Set on the speaker now, and applied whenever it reconnects.'
+                : 'Applied when the speaker connects.'}
+            </p>
           </div>
 
           <div className="flex items-center justify-between pt-2">

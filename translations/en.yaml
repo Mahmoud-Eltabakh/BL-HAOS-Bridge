@@ -5,3 +5,6 @@ configuration:
   default_codec:
     name: "Default Codec"
     description: "Preferred Bluetooth A2DP audio codec (auto will negotiate highest supported: LDAC -> aptX HD -> aptX -> AAC -> SBC-XQ -> SBC)."
+  playback_buffer_ms:
+    name: "Playback Buffer (ms)"
+    description: "Audio held ahead of the speaker, 50-2000 ms. Raise it if playback breaks up or stutters; more buffer also means audio keeps playing slightly longer after a pause."

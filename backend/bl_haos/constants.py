@@ -17,7 +17,7 @@ ADDON_SLUG = "bl-haos"
 # Single source of truth for the runtime version. ``backend/tests/test_addon_config.py``
 # asserts it matches ``config.yaml`` so the add-on manifest and the daemon cannot
 # drift apart.
-VERSION = "0.2.61"
+VERSION = "0.2.62"
 
 # Logger namespace shared by every bridge module and the log format the daemon
 # installs at startup.
@@ -110,6 +110,11 @@ ENV_SUPERVISOR_TOKEN = "SUPERVISOR_TOKEN"
 ENV_NATIVE_TOKEN = "BLHAOS_NATIVE_TOKEN"
 ENV_DEMO_MODE = "BLHAOS_DEMO_MODE"
 ENV_DEMO_SCENARIO = "BLHAOS_DEMO_SCENARIO"
+# Not a settings field: how much audio the player clients may hold ahead of the
+# speaker. It is an environment override so a link that needs more slack than the
+# default can be tuned on a running add-on, and so the value can be changed
+# without writing settings.
+ENV_PLAYBACK_BUFFER_MS = "BLHAOS_PLAYBACK_BUFFER_MS"
 TRUTHY_FLAGS = frozenset({"1", "true", "yes", "on"})
 
 # ---------------------------------------------------------------------------
@@ -125,6 +130,14 @@ DEFAULT_VOLUME_PERCENT = 70
 VOLUME_MIN_RATIO = 0.0
 VOLUME_MAX_RATIO = 1.0
 DEFAULT_VOLUME_RATIO = DEFAULT_VOLUME_PERCENT / VOLUME_MAX_PERCENT
+# The buffer the audio clients hold ahead of the speaker, in milliseconds. It is
+# bounded on purpose: it is what a stutter-free A2DP link trades against how long
+# audio keeps playing after a pause or stop, and both ends of that trade-off were
+# real complaints. The default is high enough to absorb radio jitter and a slow
+# decoder, and low enough that pausing stays responsive.
+PLAYBACK_BUFFER_DEFAULT_MS = 500
+PLAYBACK_BUFFER_MIN_MS = 50
+PLAYBACK_BUFFER_MAX_MS = 2000
 MAX_ALIAS_LENGTH = 128
 TOKEN_ENTROPY_BYTES = 32
 
@@ -206,6 +219,16 @@ BLUEZ_PROFILE_PROPERTY = "api.bluez5.profile"
 A2DP_SINK_PROFILE_PREFIX = "a2dp-sink"
 CARD_PATH_PREFIX = "bluez_card."
 PACTL_CARD_PROFILE_PATTERN = r"^\s*([A-Za-z0-9_.:-]+):\s"
+# Reading the speaker's real volume back. `pactl get-sink-volume` prints one
+# entry per channel ("front-left: 45875 /  70% / -9.29 dB, front-right: ..."),
+# `wpctl get-volume` a bare ratio, and the PipeWire client marks a muted node.
+PACTL_SINK_VOLUME_PATTERN = r"(\d+)%"
+WPCTL_VOLUME_PATTERN = r"Volume:\s*([0-9.]+)"
+WPCTL_MUTED_MARKER = "[MUTED]"
+# A read-back this close to the level already published is the same level: AVRCP
+# absolute volume is quantised to 7 bits, so a level written as 42% comes back as
+# 41 % or 42 % and must not make the slider jitter under the operator's finger.
+VOLUME_READBACK_TOLERANCE = 0.01
 
 # ---------------------------------------------------------------------------
 # Redaction vocabulary

@@ -286,6 +286,7 @@ async def lifespan(app: FastAPI):
     logger.debug("Starting AutoReconnectEngine and keepalive tasks...")
     await reconnect_engine.start()
     await ha_bridge.start_keepalive()
+    ha_bridge.start_volume_watch()
     health.set_lifecycle(HealthState.HEALTHY)
     await health.publish(ws_manager)
     logger.info("BL-HAOS backend daemon is ready.")

@@ -29,6 +29,7 @@ const connectedDevice: DeviceInfo = {
   rssi: -50,
   is_audio_sink: true,
   device_type: 'Speaker',
+  playback: { state: 'idle', volume: 0.7 },
 };
 
 describe('SpeakerCard', () => {
@@ -90,6 +91,40 @@ describe('SpeakerCard', () => {
     );
 
     expect(slider).toHaveValue('42');
+  });
+
+  it('shows no volume at all until the bridge has read the speaker', () => {
+    // The bridge reads the speaker's real volume back from the audio server.
+    // Until that first read there is no honest number to show, and the card used
+    // to invent 70% - which looked exactly like a real level and was not one.
+    render(
+      <SpeakerCard
+        device={{ ...connectedDevice, playback: { state: 'idle', volume: null } }}
+        onSettingsClick={() => {}}
+        onRefresh={() => {}}
+      />
+    );
+
+    expect(screen.getByRole('slider', { name: 'Speaker volume' })).toBeDisabled();
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.queryByText('70%')).not.toBeInTheDocument();
+  });
+
+  it('offers the slider again as soon as the bridge reports a level', () => {
+    const { rerender } = render(
+      <SpeakerCard
+        device={{ ...connectedDevice, playback: { state: 'idle', volume: null } }}
+        onSettingsClick={() => {}}
+        onRefresh={() => {}}
+      />
+    );
+    expect(screen.getByRole('slider', { name: 'Speaker volume' })).toBeDisabled();
+
+    rerender(<SpeakerCard device={connectedDevice} onSettingsClick={() => {}} onRefresh={() => {}} />);
+
+    const slider = screen.getByRole('slider', { name: 'Speaker volume' });
+    expect(slider).not.toBeDisabled();
+    expect(slider).toHaveValue('70');
   });
 
   it('surfaces an error message when the volume commit fails', async () => {

@@ -9,6 +9,37 @@ def _write(path: Path, payload: dict) -> Path:
     return path
 
 
+def test_playback_buffer_is_a_deployment_override(tmp_path, monkeypatch):
+    """The buffer the audio clients hold is set by the deployment, not by settings.
+
+    It is re-applied on every load, so a value left behind in the settings file
+    never outlives the environment variable that set it, and a value outside the
+    supported range is ignored instead of trusted (an unbounded buffer would turn
+    a pause into minutes of queued audio).
+    """
+    from backend.bl_haos.constants import (
+        ENV_PLAYBACK_BUFFER_MS,
+        PLAYBACK_BUFFER_DEFAULT_MS,
+        PLAYBACK_BUFFER_MAX_MS,
+    )
+
+    monkeypatch.setenv(ENV_PLAYBACK_BUFFER_MS, "900")
+    store = ConfigStore(config_file=str(tmp_path / "settings.json"))
+    assert store.settings.player.latency_msec == 900
+
+    monkeypatch.setenv(ENV_PLAYBACK_BUFFER_MS, str(PLAYBACK_BUFFER_MAX_MS + 1))
+    store.load()
+    assert store.settings.player.latency_msec == PLAYBACK_BUFFER_DEFAULT_MS
+
+    monkeypatch.setenv(ENV_PLAYBACK_BUFFER_MS, "loud")
+    store.load()
+    assert store.settings.player.latency_msec == PLAYBACK_BUFFER_DEFAULT_MS
+
+    monkeypatch.delenv(ENV_PLAYBACK_BUFFER_MS)
+    store.load()
+    assert store.settings.player.latency_msec == PLAYBACK_BUFFER_DEFAULT_MS
+
+
 def test_upgrade_ignores_settings_that_this_release_removed(tmp_path):
     """A config written by a previous release must still load.
 

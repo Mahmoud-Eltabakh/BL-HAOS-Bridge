@@ -15,11 +15,15 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
   const [showConfirmRemove, setShowConfirmRemove] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Seed the local volume from the bridge-reported playback volume whenever it
-  // changes (reconnects, and volume set from the Home Assistant media_player).
+  // Seed the local volume from the level the bridge reports for the speaker.
+  // The bridge reads the sink's real volume back from the audio server, so this
+  // is where the speaker actually is - including a change made with the
+  // speaker's own buttons. Until that first report there is no honest number to
+  // show, so the slider stays disabled instead of claiming a level (it used to
+  // fall back to 70%, which looked like the real volume and was not).
   const playbackVolume = device.playback?.volume;
-  const reportedVolume = device.connected
-    ? Math.round((playbackVolume ?? 0.7) * 100)
+  const reportedVolume = device.connected && typeof playbackVolume === 'number'
+    ? Math.round(playbackVolume * 100)
     : null;
   useEffect(() => {
     if (reportedVolume !== null) setVolume(reportedVolume);
@@ -123,7 +127,12 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
         <div className="neu-inset mt-4 rounded-lg p-3">
           <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
             <span className="flex items-center gap-1.5"><Volume2 className="w-4 h-4 text-slate-400" /> Volume</span>
-            <span className="font-mono text-slate-200">{volume}%</span>
+            <span
+              className="font-mono text-slate-200"
+              title={reportedVolume === null ? 'Waiting for the bridge to read the speaker volume' : undefined}
+            >
+              {reportedVolume === null ? '—' : `${volume}%`}
+            </span>
           </div>
           <input
             type="range"
@@ -133,12 +142,12 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
             aria-label="Speaker volume"
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={volume}
-            disabled={volumeSaving}
+            aria-valuenow={reportedVolume ?? undefined}
+            disabled={volumeSaving || reportedVolume === null}
             onChange={(e) => setVolume(Number(e.target.value))}
             onPointerUp={() => void commitVolume(volume)}
             onKeyUp={() => void commitVolume(volume)}
-            className="neu-range w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer"
+            className="neu-range w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer disabled:opacity-50"
           />
         </div>
       )}

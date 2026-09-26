@@ -15,6 +15,14 @@ case "${configured_log_level,,}" in
 	*) export LOG_LEVEL="${configured_log_level,,}" ;;
 esac
 
+# Audio held ahead of the speaker. A link that needs more slack than the default
+# (LDAC on a busy 2.4 GHz band, a slow board) can be given more here; the daemon
+# validates the range and ignores anything it cannot use.
+configured_buffer_ms="$(bashio::config 'playback_buffer_ms')"
+if [ -n "${configured_buffer_ms}" ] && [ "${configured_buffer_ms}" != "null" ]; then
+	export BLHAOS_PLAYBACK_BUFFER_MS="${configured_buffer_ms}"
+fi
+
 echo "[bl-haos-daemon] Starting FastAPI backend daemon on port 8099..."
 
 # uvicorn closes an idle keep-alive connection after 5 seconds by default, while

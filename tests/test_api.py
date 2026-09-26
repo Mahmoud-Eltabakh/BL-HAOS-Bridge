@@ -459,6 +459,23 @@ def test_live_volume_route_updates_bridge_and_publishes(monkeypatch):
         assert published == ["10:22:33:44:55:66"]
 
 
+def test_saving_a_speaker_volume_applies_it_to_the_speaker():
+    """The volume saved in a speaker's settings is a level, not a number in a file.
+
+    Saving it only stored it: the speaker stayed where it was while the settings
+    slider, the dashboard card and the entity all claimed the new level.
+    """
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/settings/speakers/10:22:33:44:55:77",
+            json={"custom_alias": "Patio", "default_volume": 35},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["default_volume"] == 35
+        assert app.state.ha_bridge.get_volume("10:22:33:44:55:77") == pytest.approx(0.35)
+
+
 def test_live_volume_route_validates_address_and_level():
     with TestClient(app) as client:
         bad_address = client.post("/api/devices/not-a-mac/volume", json={"volume": 50})

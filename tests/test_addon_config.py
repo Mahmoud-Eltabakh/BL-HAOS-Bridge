@@ -31,6 +31,23 @@ def test_config_yaml_syntax_and_fields():
     assert "options" in data
     assert "schema" in data
     assert data["options"]["log_level"] == "info"
+    assert data["schema"]["playback_buffer_ms"] == "int(50,2000)?"
+
+
+def test_playback_buffer_option_matches_the_daemon_default():
+    """The add-on option and the daemon's own default must be the same number.
+
+    The daemon falls back to its default when the option is missing or unusable,
+    so a shipped default that drifts from the schema's promise would mean the
+    add-on UI and the running container disagree about the buffer.
+    """
+    from backend.bl_haos.constants import PLAYBACK_BUFFER_DEFAULT_MS, PLAYBACK_BUFFER_MAX_MS, PLAYBACK_BUFFER_MIN_MS
+
+    with open(Path("config.yaml"), "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    assert data["options"]["playback_buffer_ms"] == PLAYBACK_BUFFER_DEFAULT_MS
+    assert data["schema"]["playback_buffer_ms"] == f"int({PLAYBACK_BUFFER_MIN_MS},{PLAYBACK_BUFFER_MAX_MS})?"
 
 def test_runtime_version_is_sourced_from_the_shared_constant():
     """The daemon version and the add-on manifest must not drift apart.
