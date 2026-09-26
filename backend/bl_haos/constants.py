@@ -17,7 +17,7 @@ ADDON_SLUG = "bl-haos"
 # Single source of truth for the runtime version. ``backend/tests/test_addon_config.py``
 # asserts it matches ``config.yaml`` so the add-on manifest and the daemon cannot
 # drift apart.
-VERSION = "0.2.60"
+VERSION = "0.2.61"
 
 # Logger namespace shared by every bridge module and the log format the daemon
 # installs at startup.

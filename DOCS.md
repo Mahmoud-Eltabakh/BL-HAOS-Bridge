@@ -51,13 +51,19 @@ device in radio range can arrange — is not published and is refused commands.
 
 ### A Speaker That Is Switched Off
 A trusted speaker that is switched off or out of range stays where you left it:
-its card remains on the dashboard with an **Offline** badge and its Home
-Assistant entity reads *unavailable* instead of disappearing. BlueZ stops
-reporting the device when it goes away, but the bridge keeps the last known
-record — name, alias, adapter and trust — for exactly this reason, and the same
-entity comes back by itself (with its history and automations intact) when the
-speaker returns. **Remove** is what forgets a speaker for good, and it works
-while the speaker is offline too.
+its card remains on the dashboard with an **Offline** badge, and BlueZ keeps
+reporting the device because a paired device is not temporary. The bridge keeps
+the last known record — name, alias, adapter and trust — for exactly this
+reason, and the same entity comes back by itself (with its history and
+automations intact) when the speaker returns.
+
+The native record reports `connected`, `paired` and `detached`, so the Home
+Assistant integration can tell the two offline cases apart: a paired speaker
+that is switched off keeps its entity but is disabled (out of the state machine,
+identity intact), while a speaker whose pairing is gone - BlueZ withdrew the
+device, which it does for anything it treats as temporary - has its entity
+removed completely. **Remove** in the dashboard is what forgets a speaker for
+good, and it works while the speaker is offline too.
 
 ### Stability: Disconnects, Reconnects and Quality
 The bridge deliberately does not fight for a link:

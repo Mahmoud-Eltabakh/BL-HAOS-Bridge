@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.61
+
+- Report pairing state in the native speaker record: `paired` and `detached`. The integration keeps one `media_player` entity per trusted speaker, and the two offline cases need to be told apart - a speaker that is switched off is still paired (BlueZ keeps its object), while a device BlueZ withdraws is one it treats as temporary, which is every device that is not paired. Without these fields the integration could only see `available: false` and had to treat both the same way.
+
 ## 0.2.60
 
 - Mirror playback state on the dashboard. The dashboard's volume slider reads `playback.volume` from `/api/devices` and follows the bridge, but a volume set from Home Assistant arrives on the native socket, which the dashboard does not listen to - so the slider kept showing the level it last set itself (or the 70% fallback) while the speaker actually played the new one. Every playback change now also publishes `playback_updated` on the dashboard's own socket (`/ws`), and `/api/devices` carries the live `playback` envelope, so the card shows the real volume on load and follows Home Assistant afterwards.

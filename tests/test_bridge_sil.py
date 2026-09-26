@@ -284,6 +284,55 @@ def _set_native_volume(client, address: str, volume: float):
     )
 
 
+def _native_speakers(client) -> dict:
+    """Return the native snapshot the integration reads."""
+    token = app.state.config_store.settings.native_token
+    response = client.get("/api/native/speakers", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    return response.json()["speakers"]
+
+
+def test_native_record_reports_pairing_state():
+    """The integration needs to tell a switched-off speaker from an unpaired one.
+
+    A paired speaker keeps its entity in Home Assistant (disabled while it is
+    away); a speaker BlueZ no longer knows has its entity removed. Both are
+    offline, so the record has to say which one it is.
+    """
+    with TestClient(app) as client:
+        _register_native_speaker(client, "AA_BB_CC_DD_EE_09")
+        speakers = _native_speakers(client)
+
+    record = speakers["aa:bb:cc:dd:ee:09"]
+    assert record["paired"] is True
+    assert record["detached"] is False
+    assert record["connected"] is True
+
+
+def test_native_record_marks_a_speaker_bluez_withdrew():
+    """BlueZ withdrawing the object is reported as ``detached``.
+
+    BlueZ drops the object of any device it treats as temporary. A record can be
+    paired in the bridge's own copy and still be withdrawn, so ``paired`` alone
+    cannot answer whether the speaker is still there - which is why the snapshot
+    reports both.
+    """
+    with TestClient(app) as client:
+        _register_native_speaker(client, "AA_BB_CC_DD_EE_0A")
+        client.portal.call(
+            app.state.bt_manager._on_interfaces_removed,
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_0A",
+            ["org.bluez.Device1"],
+        )
+        speakers = _native_speakers(client)
+
+    record = speakers["aa:bb:cc:dd:ee:0a"]
+    assert record["detached"] is True
+    assert record["connected"] is False
+    # The speaker is still the operator's, so the record is kept and published.
+    assert record["trusted"] is True
+
+
 def test_devices_endpoint_reports_live_playback_volume(monkeypatch):
     """The dashboard's initial slider value comes from /api/devices.
 

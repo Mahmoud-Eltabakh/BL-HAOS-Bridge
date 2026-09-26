@@ -202,6 +202,12 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
         # it must not be reported as trust (see THREAT-MODEL.md, T3).
         "trusted": bool(device.trusted),
         "is_audio_sink": device.is_audio_sink,
+        # Pairing state, so the integration can tell "switched off but still
+        # paired" (keep the entity, disable it) from "BlueZ no longer knows this
+        # device" (remove the entity). A device BlueZ withdraws is one it treats
+        # as temporary, which is every device that is not paired.
+        "paired": bool(device.paired),
+        "detached": bool(device.detached),
         "playback": playback_envelope(bridge, device.address),
     }
 
