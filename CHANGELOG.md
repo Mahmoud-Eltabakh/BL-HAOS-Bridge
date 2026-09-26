@@ -7,7 +7,7 @@
 - Refuse media targets that can only be the bridge itself or a dead end: loopback, link-local (including the cloud metadata address), multicast, reserved and unspecified addresses, along with the legacy numeric spellings (`2130706433`, `0x7f000001`) and IPv4-mapped forms (`::ffff:127.0.0.1`) that `getaddrinfo` still accepts. Private LAN ranges remain usable because Home Assistant serves TTS and local media from one. (T2)
 - Pin the decoder to network protocols (`-protocol_whitelist http,https,tcp,tls,crypto,data,httpproxy`), so a hostile manifest cannot reach `file`, `concat`, `subfile`, `pipe` or `fd` inputs. (T1, T2)
 - Report `credential_fingerprint` (8 hex characters of SHA-256) on the authenticated `/api/native/identity` endpoint so an operator can see whether the credential rotated; the unauthenticated diagnostics payload stays free of any credential-shaped field, and reports the address that may currently pair. (T6)
-- Enable the Supervisor watchdog, so a dead container is restarted rather than leaving a silent speaker behind a healthy-looking dashboard. (T9)
+- Supervise the container instead of trusting the dashboard: the manifest declares the Supervisor watchdog URL (`http://[HOST]:[PORT:8099]/api/health`), which the Supervisor polls so a bridge that stops answering is restarted rather than left as a silent speaker behind a healthy-looking dashboard. A repository app must declare this as a URL - the boolean form is only valid for local apps, and a value that fails validation makes the Supervisor skip the app, which removes it from the store. (T9)
 - `play_url` now surfaces the validator's reason ("must not target a loopback, link-local or multicast address") instead of collapsing every rejection into "must be a safe HTTP(S) URL".
 
 ## 0.2.56

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -81,3 +82,51 @@ def test_dependency_and_release_policy_is_explicit():
     assert "severity: HIGH,CRITICAL" in workflow
     assert "stable" in readme.lower() and "preview" in readme.lower()
     assert "apt-get install" in dockerfile and "bluez" in dockerfile
+
+
+# Supervisor validates a *repository* app's watchdog against this pattern
+# (supervisor/apps/validate.py); the boolean form is only accepted for local apps.
+SUPERVISOR_REPOSITORY_WATCHDOG = re.compile(r"^(?:https?|\[PROTO:\w+\]|tcp):\/\/\[HOST\]:(\[PORT:\d+\]|\d+).*$")
+
+# The same grammar with named groups, so the test can state which host, port and
+# path Supervisor will poll.
+WATCHDOG_URL_PARTS = re.compile(r"^(?P<scheme>https?)://\[HOST\]:(?P<port>\[PORT:\d+\]|\d+)(?P<path>.*)$")
+
+
+def test_watchdog_is_a_repository_app_health_check_url():
+    """The manifest must declare ``watchdog`` the way a repository app is allowed to.
+
+    ``config.yaml`` published to a GitHub repository is validated against the
+    repository-app schema, where ``watchdog`` is a health-check URL matching
+    ``SUPERVISOR_REPOSITORY_WATCHDOG``. ``watchdog: true`` is the *local*-app form:
+    publishing it makes the manifest invalid and the Supervisor skips the whole
+    app, which removes it from the store.
+    """
+    from backend.bl_haos.api.routes import router
+    from backend.bl_haos.constants import API_PREFIX
+
+    with open(Path("config.yaml"), "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    watchdog = data.get("watchdog")
+    assert watchdog is not None, "the container must be supervised"
+    assert not isinstance(watchdog, bool), (
+        "watchdog: true is the local-app form; a repository app needs a health-check URL"
+    )
+    assert SUPERVISOR_REPOSITORY_WATCHDOG.match(watchdog), f"Supervisor rejects {watchdog!r}"
+
+    # urlsplit() refuses the [HOST]/[PORT:n] placeholders (it validates a bracketed
+    # host as an IPv6 literal), so read the parts the way Supervisor does: it
+    # substitutes both placeholders before it uses the URL.
+    parts = WATCHDOG_URL_PARTS.match(watchdog)
+    assert parts is not None, f"unparsable watchdog URL: {watchdog!r}"
+    assert parts["scheme"] in {"http", "https"}, "the watchdog must be an HTTP health check"
+    assert parts["port"] == f"[PORT:{data['ingress_port']}]", (
+        "the watchdog must poll the port the daemon actually listens on"
+    )
+
+    # A watchdog polling a path the daemon does not serve fails every check, and
+    # Supervisor then restarts a healthy container in a loop.
+    health_path = f"{API_PREFIX}/health"
+    assert parts["path"] == health_path, f"watchdog must poll {health_path}, not {parts['path']}"
+    assert health_path in {route.path for route in router.routes}, f"no route serves {health_path}"

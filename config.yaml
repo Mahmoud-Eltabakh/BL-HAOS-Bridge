@@ -18,9 +18,13 @@ audio: true
 full_access: true
 udev: true
 stage: "experimental"
-# Restart the add-on if the container dies: the audio path is the product, and a
-# silent speaker with a healthy-looking UI is worse than a restart.
-watchdog: true
+# Supervisor watchdog. A repository app must declare this as a health-check URL:
+# the Supervisor validates it against (http|https|tcp)://[HOST]:([PORT:n]|n) and
+# only accepts the boolean form for local apps; a manifest that fails validation
+# is skipped, which removes the app from the store. It polls this URL and
+# restarts the container when the poll fails. /api/health answers HTTP 200
+# whenever the daemon is alive, so a degraded bridge is not restarted in a loop.
+watchdog: "http://[HOST]:[PORT:8099]/api/health"
 options:
   log_level: "info"
   default_codec: "auto"
