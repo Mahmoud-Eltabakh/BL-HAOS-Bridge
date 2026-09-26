@@ -1,0 +1,14 @@
+# Trivy suppressions for the release gate in .github/workflows/builder.yaml.
+#
+# The scan runs with `severity: HIGH,CRITICAL`, `ignore-unfixed: false` and
+# `exit-code: 1`, so a single unfixable base-image CVE blocks the add-on image
+# (all three architectures). This file is the deliberate escape hatch: it is
+# empty on purpose, and every addition must be:
+#
+#   <CVE-id or package>  # <date> - <why it cannot be fixed> - <tracking issue>
+#
+# Example (do not enable without the justification above):
+#   CVE-0000-00000  # 2026-01-01 - no upstream fix for the pinned base image - #123
+#
+# Prefer removing the offending package, or bumping the base image, over
+# suppressing a finding.

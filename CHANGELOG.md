@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.57
+
+- Require explicit consent for Bluetooth pairing. The BlueZ agent answered every prompt with the fixed PIN `0000`, passkey `0` and an unconditional confirmation while the adapter stayed pairable, so any device in radio range could pair — and, once paired, it was published to Home Assistant as a trusted speaker and accepted commands. Pairing now opens a 90-second window for exactly one address (`POST /api/devices/pair`, opened before the attempt and closed in `finally`), every prompt from any other device is refused with `org.bluez.Error.Rejected`, and the adapter is set `Pairable=false` at boot and whenever no window is open. The route no longer rewrites the agent's PIN callback permanently — which is what made a single pairing's PIN apply to every later device. (THREAT-MODEL.md, T3)
+- Treat **`Trusted`** as the only signal that a speaker is the operator's. `paired` and `connected` are states any device in radio range can reach by itself, so they no longer publish a speaker, accept native commands, arm auto-reconnect, or register a keep-alive. `/api/native/speakers` and the command endpoint now require trust.
+- Refuse media targets that can only be the bridge itself or a dead end: loopback, link-local (including the cloud metadata address), multicast, reserved and unspecified addresses, along with the legacy numeric spellings (`2130706433`, `0x7f000001`) and IPv4-mapped forms (`::ffff:127.0.0.1`) that `getaddrinfo` still accepts. Private LAN ranges remain usable because Home Assistant serves TTS and local media from one. (T2)
+- Pin the decoder to network protocols (`-protocol_whitelist http,https,tcp,tls,crypto,data,httpproxy`), so a hostile manifest cannot reach `file`, `concat`, `subfile`, `pipe` or `fd` inputs. (T1, T2)
+- Report `credential_fingerprint` (8 hex characters of SHA-256) on the authenticated `/api/native/identity` endpoint so an operator can see whether the credential rotated; the unauthenticated diagnostics payload stays free of any credential-shaped field, and reports the address that may currently pair. (T6)
+- Enable the Supervisor watchdog, so a dead container is restarted rather than leaving a silent speaker behind a healthy-looking dashboard. (T9)
+- `play_url` now surfaces the validator's reason ("must not target a loopback, link-local or multicast address") instead of collapsing every rejection into "must be a safe HTTP(S) URL".
+
 ## 0.2.56
 
 - Stop a `play_media` action from failing with `Failed to play_media: Server disconnected`. uvicorn closed an idle keep-alive connection after 5 seconds, while Home Assistant keeps pooled sockets in its shared aiohttp session for longer, so a command could be written to a socket the daemon had just closed. The daemon now keeps idle connections open for 75 seconds (`UVICORN_KEEP_ALIVE_SECONDS` overrides it), which is longer than any client pool holds them, so the client always retires the socket first.

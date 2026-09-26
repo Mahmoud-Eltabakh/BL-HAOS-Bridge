@@ -26,6 +26,7 @@ from ..constants import (
     PLAYBACK_IDLE,
     PLAYBACK_PAUSED,
     PLAYBACK_PLAYING,
+    PLAYBACK_PROTOCOL_WHITELIST,
     VOLUME_MAX_PERCENT,
     VOLUME_MAX_RATIO,
     VOLUME_MIN_RATIO,
@@ -237,8 +238,24 @@ class MediaPlayerBridge:
             if result is not None:
                 await result
 
-    def _track_task(self, coro: Awaitable[Any], description: str) -> asyncio.Task:
-        """Create a background task with a strong reference and error logging."""
+    def _track_task(self, coro: Awaitable[Any], description: str) -> asyncio.Task | None:
+        """Create a background task with a strong reference and error logging.
+
+        Some callers are synchronous by design: a D-Bus/event listener runs
+        ``register_keepalive`` and a startup pass warms an already-connected
+        speaker, and neither can guarantee it is inside the event loop. When no
+        loop is running there is nothing to schedule the work on, so the
+        coroutine is closed and the drop is logged - abandoning it both loses
+        the work silently and leaks a "coroutine was never awaited" warning.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            logger.warning("Dropped background task '%s': no running event loop", description)
+            return None
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
 
@@ -361,7 +378,10 @@ class MediaPlayerBridge:
         try:
             url = validate_media_url(url)
         except ValueError as error:
-            raise MediaPlayerError("Media URL must be a safe HTTP(S) URL") from error
+            # Keep the validator's bounded, non-reflective reason: "must be a
+            # safe HTTP(S) URL" and "must not target a loopback..." tell the
+            # operator different things.
+            raise MediaPlayerError(str(error)) from error
         async with self._address_lock(addr):
             await self._play_url_locked(addr, url)
 
@@ -399,7 +419,9 @@ class MediaPlayerBridge:
         try:
             logger.debug("Spawning ffmpeg decoder and %s player for %s", transport, addr)
             decoder = await self._process_factory(
-                "ffmpeg", "-nostdin", "-loglevel", "error", "-i", url,
+                "ffmpeg", "-nostdin", "-loglevel", "error",
+                "-protocol_whitelist", PLAYBACK_PROTOCOL_WHITELIST,
+                "-i", url,
                 "-f", "s16le", "-ar", str(self.player_settings.sample_rate_hz),
                 "-ac", str(self.player_settings.channels), "pipe:1",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -468,9 +490,9 @@ class MediaPlayerBridge:
         existing = self._warmup_tasks.get(addr)
         if existing and not existing.done():
             return
-        self._warmup_tasks[addr] = self._track_task(
-            self._async_warm_sink(addr), f"sink warm-up {addr}"
-        )
+        task = self._track_task(self._async_warm_sink(addr), f"sink warm-up {addr}")
+        if task is not None:
+            self._warmup_tasks[addr] = task
 
     async def _async_warm_sink(self, addr: str) -> None:
         """Send one silent pulse as soon as the speaker's sink is available."""
@@ -595,6 +617,7 @@ class MediaPlayerBridge:
         try:
             process = await self._process_factory(
                 "ffprobe", "-v", "error",
+                "-protocol_whitelist", PLAYBACK_PROTOCOL_WHITELIST,
                 "-show_entries", "format=duration:format_tags=title,artist",
                 "-of", "default=noprint_wrappers=1", url,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,

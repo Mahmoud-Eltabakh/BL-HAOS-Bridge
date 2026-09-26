@@ -53,7 +53,7 @@ from .constants import (
 from .diagnostics import DiagnosticsService
 from .demo import DemoRuntime
 from .ha.player import MediaPlayerBridge
-from .health import FailureClass, HealthRegistry, HealthState, SpeakerState
+from .health import FailureClass, HealthRegistry, HealthState, SpeakerState, safe_detail
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL_INFO),
@@ -87,6 +87,40 @@ async def _publish_supervisor_discovery(native_token: str, log_level: str) -> No
                     logger.debug("Supervisor discovery registration succeeded (HTTP %s)", response.status)
     except (aiohttp.ClientError, TimeoutError) as err:
         logger.warning("Supervisor discovery registration failed: %s", err)
+
+
+def _spawn(coro, description: str) -> asyncio.Task | None:
+    """Schedule one background publish, or dispose of it when there is no loop.
+
+    Bluetooth events can arrive from a caller that is not running the event
+    loop. Creating a task there raises RuntimeError and abandons the coroutine,
+    which used to drop the event silently and surface later as
+    "coroutine 'ConnectionManager.broadcast' was never awaited". Closing the
+    coroutine keeps the drop explicit, warning-free, and logged with the event
+    that was lost.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        logger.warning("Dropped background task '%s': no running event loop", description)
+        return None
+    tracked = app.state.event_tasks = getattr(app.state, "event_tasks", set())
+    task = loop.create_task(coro)
+    tracked.add(task)
+
+    def _on_done(completed: asyncio.Task) -> None:
+        tracked.discard(completed)
+        if completed.cancelled():
+            return
+        error = completed.exception()
+        if error is not None:
+            logger.warning("Background task '%s' failed: %s", description, safe_detail(error))
+
+    task.add_done_callback(_on_done)
+    return task
 
 
 @asynccontextmanager
@@ -124,7 +158,7 @@ async def lifespan(app: FastAPI):
         log_level.lower(),
         len(config_store.settings.speakers),
     )
-    asyncio.create_task(_publish_supervisor_discovery(config_store.settings.native_token, log_level.lower()))
+    _spawn(_publish_supervisor_discovery(config_store.settings.native_token, log_level.lower()), "supervisor discovery")
 
     if config_store.settings.demo_mode:
         logger.debug("Running in demo mode with scenario '%s'", config_store.settings.demo_scenario)
@@ -156,10 +190,13 @@ async def lifespan(app: FastAPI):
     async def _publish_native_speaker(address: str) -> None:
         device = next(
             (candidate for candidate in bt_manager.get_devices(audio_only=True)
-             if candidate.address.strip().lower().replace("-", ":") == address.strip().lower().replace("-", ":")),
+             if candidate.address.strip().lower().replace("-", ":").replace("_", ":") == address.strip().lower().replace("-", ":").replace("_", ":")),
             None,
         )
-        if device and (device.trusted or device.paired or device.connected) and device.is_audio_sink:
+        # Only an operator-trusted speaker is published to Home Assistant.
+        # Pairing alone is not consent: a device in radio range reaches
+        # "paired" without the operator doing anything (THREAT-MODEL.md, T3).
+        if device and device.trusted and device.is_audio_sink:
             logger.debug("Broadcasting native speaker update for %s", address)
             await native_ws_manager.broadcast(NATIVE_SPEAKER_UPDATED_EVENT, native_speaker_record(app, device))
 
@@ -177,24 +214,26 @@ async def lifespan(app: FastAPI):
         return ws_manager.broadcast(event_type, data)
 
     def _on_bt_event(event_type: str, data):
-        tracked = app.state.event_tasks = getattr(app.state, "event_tasks", set())
-        task = asyncio.create_task(_broadcast_bt_event(event_type, data))
-        tracked.add(task)
-        task.add_done_callback(tracked.discard)
+        _spawn(_broadcast_bt_event(event_type, data), f"broadcast {event_type}")
         if event_type in (EVENT_DEVICE_UPDATED, EVENT_DEVICE_DISCOVERED) and hasattr(data, "address"):
             is_audio = getattr(data, "is_audio_sink", False)
             is_conn = getattr(data, "connected", False)
             is_trust = getattr(data, "trusted", False)
             is_paired = getattr(data, "paired", False)
 
-            if is_audio and (is_trust or is_paired or is_conn):
-                asyncio.create_task(_publish_native_speaker(data.address))
-                if not is_conn:
-                    asyncio.create_task(ha_bridge.execute(data.address, PLAYBACK_STOPPED))
-                    ha_bridge.unregister_keepalive(data.address)
+            if is_audio and not is_conn and (is_trust or is_paired):
+                # A speaker we may be streaming to just went away; end the stream
+                # instead of letting the decoder write into a dead sink.
+                _spawn(ha_bridge.execute(data.address, PLAYBACK_STOPPED), f"stop playback for {data.address}")
+                ha_bridge.unregister_keepalive(data.address)
+            if is_audio and is_trust:
+                # Publishing to Home Assistant and arming auto-reconnect are both
+                # consequences of the operator trusting a speaker, never of a
+                # device that merely paired or connected.
+                _spawn(_publish_native_speaker(data.address), f"native speaker update for {data.address}")
                 reconnect_engine.register_speaker(data.address)
-            if is_conn and is_audio:
-                ha_bridge.register_keepalive(data.address)
+                if is_conn:
+                    ha_bridge.register_keepalive(data.address)
 
     bt_manager.add_event_listener(_on_bt_event)
 
@@ -203,10 +242,10 @@ async def lifespan(app: FastAPI):
     app.state.reconnect_engine = reconnect_engine
 
     for device in bt_manager.get_devices():
-        if device.trusted or device.paired or device.connected:
+        if device.trusted:
             reconnect_engine.register_speaker(device.address)
-        if device.connected and device.is_audio_sink:
-            ha_bridge.register_keepalive(device.address)
+            if device.connected and device.is_audio_sink:
+                ha_bridge.register_keepalive(device.address)
 
     # Register known speakers from config
     for addr, spk in config_store.settings.speakers.items():

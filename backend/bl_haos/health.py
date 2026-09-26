@@ -1,5 +1,7 @@
 """Canonical, bounded runtime health contract for the bridge."""
 
+import hashlib
+import ipaddress
 import re
 import time
 from enum import Enum
@@ -22,6 +24,8 @@ from .constants import (
     MAX_MEDIA_TYPE_LENGTH,
     MAX_MEDIA_URL_LENGTH,
     MAX_TCP_PORT,
+    MEDIA_BLOCKED_HOST_NAMES,
+    MEDIA_LOCALHOST_SUFFIX,
     MIN_PORTABLE_CODEPOINT,
     MIN_TCP_PORT,
     MULTICAST_ADDRESS_BIT,
@@ -31,6 +35,7 @@ from .constants import (
     SECRET_TOKENS,
     SENSITIVE_QUERY_KEY_TOKENS,
     SOURCE_LIFECYCLE,
+    TOKEN_FINGERPRINT_CHARS,
     URL_PATTERN,
     URL_REDACTION_PLACEHOLDER,
 )
@@ -103,6 +108,67 @@ def validate_identifier(value: str, label: str = "Identifier") -> str:
     return value
 
 
+def token_fingerprint(token: str) -> str:
+    """Return a short digest that identifies a credential without revealing it.
+
+    Operators compare the value before and after a rotation, or against the
+    integration's value, to tell whether the credential they think is in use is
+    the one installed. Eight hex characters of a SHA-256 digest cannot be
+    reversed into the 32-byte secret.
+    """
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:TOKEN_FINGERPRINT_CHARS]
+
+
+def media_host_is_blocked(hostname: str | None) -> bool:
+    """Reject audio targets that can only be the bridge itself or a dead end.
+
+    The check is deliberately syntactic: it needs no DNS, so playback never pays
+    for a resolution and a caller cannot name the loopback interface, the cloud
+    metadata service, or a legacy numeric spelling of either. Names that merely
+    *resolve* to such an address are left to the decoder.
+    """
+    if not hostname:
+        return True
+    host = hostname.strip().lower().rstrip(".")
+    if host in MEDIA_BLOCKED_HOST_NAMES or host.endswith(MEDIA_LOCALHOST_SUFFIX):
+        return True
+    address = _media_address(host)
+    if address is None:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        # ::ffff:127.0.0.1 reaches loopback exactly like 127.0.0.1 does.
+        address = address.ipv4_mapped
+    return bool(
+        address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
+def _media_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse a host as an IP literal, including the legacy numeric spellings.
+
+    ``getaddrinfo`` still accepts ``2130706433``, ``0x7f000001`` and the short
+    ``127.1`` form, all of which reach loopback while failing a plain
+    ``ipaddress.ip_address`` parse.
+    """
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        numeric = int(host, 0)
+    except ValueError:
+        return None
+    if not 0 <= numeric <= 0xFFFFFFFF:
+        return None
+    return ipaddress.IPv4Address(numeric)
+
+
 def validate_media_url(url: str) -> str:
     if not isinstance(url, str) or not url or len(url) > MAX_MEDIA_URL_LENGTH:
         raise ValueError("Media URL must be a safe HTTP(S) URL")
@@ -111,6 +177,8 @@ def validate_media_url(url: str) -> str:
     parsed = urlsplit(url)
     if parsed.scheme not in HTTP_SCHEMES or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Media URL must be a safe HTTP(S) URL")
+    if media_host_is_blocked(parsed.hostname):
+        raise ValueError("Media URL must not target a loopback, link-local or multicast address")
     try:
         if parsed.port is not None and not MIN_TCP_PORT <= parsed.port <= MAX_TCP_PORT:
             raise ValueError

@@ -37,6 +37,7 @@ from ..health import (
     HealthRegistry,
     HealthState,
     normalize_address,
+    token_fingerprint,
     validate_adapter_name,
     validate_media_type,
     validate_media_url,
@@ -59,9 +60,11 @@ def require_native_auth(authorization: str | None, request: Request) -> None:
 def native_diagnostics(app: Any) -> dict[str, Any]:
     """Return only bounded, non-secret native bridge readiness details."""
     devices = app.state.bt_manager.get_devices(audio_only=True)
-    trusted_speakers = [device for device in devices if (device.trusted or device.paired or device.connected) and device.is_audio_sink]
+    trusted_speakers = [device for device in devices if device.trusted and device.is_audio_sink]
     health = getattr(app.state, "health_registry", None)
     snapshot = health.snapshot() if health else None
+    config_store = getattr(app.state, "config_store", None)
+    token = getattr(getattr(config_store, "settings", None), "native_token", "") or ""
     return {
         "bridge_version": NATIVE_BRIDGE_VERSION,
         "native_transport_ready": hasattr(app.state, "ha_bridge"),
@@ -69,6 +72,9 @@ def native_diagnostics(app: Any) -> dict[str, Any]:
         "trusted_speaker_count": len(trusted_speakers),
         "connected_trusted_speaker_count": sum(device.connected for device in trusted_speakers),
         "health_status": snapshot.status.value if snapshot else HealthState.UNKNOWN.value,
+        # Which device may currently pair, so an operator can see that a pairing
+        # window is open (and close it by letting it expire).
+        "pairing_authorized_address": getattr(app.state.bt_manager, "current_pairing_address", lambda: None)(),
     }
 
 
@@ -166,7 +172,7 @@ class NativeCommandRequest(BaseModel):
 
 
 def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str, Any]:
-    """Expose only trusted audio-sink metadata for the native integration."""
+    """Expose only operator-trusted audio-sink metadata for the native integration."""
     address = device.address.strip().lower().replace("-", ":")
     app = source.app if hasattr(source, "app") else source
     bridge = getattr(app.state, "ha_bridge", None)
@@ -176,7 +182,10 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
         "available": device.connected,
         "connected": device.connected,
         "adapter": device.adapter_name,
-        "trusted": bool(device.trusted or device.paired or device.connected),
+        # Trust is the operator's explicit "this speaker is mine". Merely being
+        # paired or connected is what any device in radio range can achieve, so
+        # it must not be reported as trust (see THREAT-MODEL.md, T3).
+        "trusted": bool(device.trusted),
         "is_audio_sink": device.is_audio_sink,
         "playback": {
             "state": bridge.get_state(device.address) if bridge else PLAYBACK_IDLE,
@@ -228,17 +237,25 @@ async def get_native_identity(request: Request, authorization: str | None = Head
     """Return the fixed, versioned native bridge identity."""
     require_native_auth(authorization, request)
     logger.debug("Native bridge identity requested")
-    return {"bridge_id": NATIVE_BRIDGE_ID, "version": NATIVE_BRIDGE_VERSION}
+    return {
+        "bridge_id": NATIVE_BRIDGE_ID,
+        "version": NATIVE_BRIDGE_VERSION,
+        # The caller necessarily holds the credential already, so a digest here
+        # discloses nothing - it lets an operator confirm which credential the
+        # bridge is using after a rotation. The unauthenticated diagnostics
+        # endpoint deliberately stays free of any credential-shaped field.
+        "credential_fingerprint": token_fingerprint(request.app.state.config_store.settings.native_token),
+    }
 
 
 @router.get("/native/speakers")
 async def list_native_speakers(request: Request, authorization: str | None = Header(default=None)):
-    """Return the current trusted Bluetooth audio-sink snapshot."""
+    """Return the current operator-trusted Bluetooth audio-sink snapshot."""
     require_native_auth(authorization, request)
     speakers = {
         record["address"]: record
         for device in request.app.state.bt_manager.get_devices(audio_only=True)
-        if device.trusted or device.paired or device.connected
+        if device.trusted
         for record in [native_speaker_record(request, device)]
     }
     logger.debug("Native speakers requested: returning %d speakers (%s)", len(speakers), list(speakers.keys()))
@@ -266,7 +283,7 @@ async def command_native_speaker(
     )
     if device is None:
         raise HTTPException(status_code=404, detail="Native speaker was not found")
-    if not ((device.trusted or device.paired or device.connected) and device.is_audio_sink):
+    if not (device.trusted and device.is_audio_sink):
         raise HTTPException(status_code=409, detail="Native speaker is not trusted or not an audio sink")
     try:
         logger.debug("Executing media player command: %s (volume: %s, url: %s)", payload.operation, payload.volume, payload.url)
@@ -392,9 +409,9 @@ async def list_devices(request: Request, audio_only: bool = True):
 async def pair_device(payload: PairRequest, request: Request):
     logger.debug("Pairing request received for %s", payload.address)
     try:
-        if payload.pin and hasattr(request.app.state.bt_manager, "agent") and request.app.state.bt_manager.agent:
-            request.app.state.bt_manager.agent.pin_callback = lambda dev: payload.pin
-        success = await request.app.state.bt_manager.pair_and_trust(payload.address)
+        # The manager opens a short-lived pairing window for this one address, so
+        # the BlueZ agent answers only while this operator-initiated call runs.
+        success = await request.app.state.bt_manager.pair_and_trust(payload.address, payload.pin)
         # Register in auto reconnect if available
         reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
         if reconnect_engine:

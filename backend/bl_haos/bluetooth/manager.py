@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -30,13 +31,15 @@ from ..constants import (
     BLUEZ_ROOT_PATH,
     BLUEZ_ROOT_PATH_TRAILER,
     COMPONENT_BLUETOOTH,
+    DEFAULT_PIN,
     DEVICE_PATH_PREFIX,
     EVENT_DBUS_DISCONNECTED,
     EVENT_DEVICE_DISCOVERED,
     EVENT_DEVICE_UPDATED,
+    PAIRING_WINDOW_SECONDS,
     SOURCE_BLUEZ,
 )
-from ..health import FailureClass, HealthRegistry, HealthState, SpeakerState, normalize_address, validate_adapter_name
+from ..health import FailureClass, HealthRegistry, HealthState, SpeakerState, normalize_address, safe_detail, validate_adapter_name
 
 logger = logging.getLogger("bl_haos.bluetooth.manager")
 
@@ -51,6 +54,11 @@ class BluetoothManager:
         self._initialized = False
         self.health = health_registry
         self._signal_bus: MessageBus | None = None
+        # Operator-initiated pairing consent (THREAT-MODEL.md, T3): the agent
+        # answers BlueZ only for this address, and only until the window expires.
+        self._pairing_address: str | None = None
+        self._pairing_pin: str | None = None
+        self._pairing_expires_at: float = 0.0
 
     def add_event_listener(self, listener: Callable[[str, Any], None]):
         """Subscribe to live Bluetooth state and discovery events."""
@@ -61,7 +69,16 @@ class BluetoothManager:
             try:
                 listener(event_type, data)
             except Exception as e:
-                logger.error("Error in event listener: %s", e)
+                # One listener must never break D-Bus signal handling, but a bare
+                # "listener failed" hides which subscriber dropped which event -
+                # and every event a subscriber misses is a state change Home
+                # Assistant never sees.
+                logger.error(
+                    "Event listener %s failed for '%s': %s",
+                    getattr(listener, "__qualname__", repr(listener)),
+                    event_type,
+                    safe_detail(e),
+                )
 
     def _observe_bluetooth(
         self,
@@ -83,8 +100,9 @@ class BluetoothManager:
             self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
             logger.info("Connected to D-Bus System Bus")
 
-            # Register Agent
-            self.agent = BlueZAgent()
+            # Register Agent. Every callback consults the pairing window, so a
+            # device in radio range is refused unless the operator asked for it.
+            self.agent = self.build_agent()
             self.bus.export(AGENT_PATH, self.agent)
 
             # Register with AgentManager1
@@ -101,6 +119,9 @@ class BluetoothManager:
             # Subscribe to ObjectManager and PropertiesChanged signals
             await self._subscribe_signals()
             await self._load_managed_objects()
+            # No pairing window is open at boot, so the adapter must not accept
+            # pairing requests until an operator asks for one.
+            await self.close_pairing_window()
             self._initialized = True
             logger.debug(
                 "BluetoothManager initialized with %d adapter(s) and %d device(s)",
@@ -325,10 +346,136 @@ class BluetoothManager:
             for adapter in self.adapters.values():
                 await adapter.stop_discovery()
 
-    async def pair_and_trust(self, address: str) -> bool:
-        """Pair with device and set trusted flag for auto-reconnection."""
+    # ------------------------------------------------------------------
+    # Pairing consent (THREAT-MODEL.md, T3)
+    #
+    # BlueZ routes every pairing and authorization prompt to the process that
+    # registered the default agent. Before this existed the agent answered with a
+    # fixed PIN and auto-confirmed, so any device in radio range could pair while
+    # the adapter was pairable - and a paired audio sink was then published to
+    # Home Assistant as a speaker. Consent is now explicit, per device, and
+    # bounded in time.
+    # ------------------------------------------------------------------
+    def build_agent(self) -> BlueZAgent:
+        """Create the BlueZ agent wired to this manager's pairing window."""
+        return BlueZAgent(
+            pin_callback=self.authorized_pin,
+            passkey_callback=self.authorized_passkey,
+            confirm_callback=self.confirm_pairing,
+            authorization_callback=self.pairing_is_authorized,
+        )
+
+    def address_from_device_path(self, device_path: str) -> str | None:
+        """Resolve a BlueZ object path to the address of the device it names."""
+        device = self.devices.get(device_path)
+        candidate = device.address if device is not None else ""
+        if not candidate and "dev_" in device_path:
+            # The object may be too new to be in the cache; the path is canonical.
+            candidate = device_path.rsplit("dev_", 1)[-1].replace("_", ":")
+        try:
+            return normalize_address(candidate)
+        except ValueError:
+            return None
+
+    def pairing_window_active(self, address: str) -> bool:
+        """True while the operator's pairing request for this address is open."""
+        if self._pairing_address is None:
+            return False
+        if time.monotonic() >= self._pairing_expires_at:
+            self._pairing_address = None
+            self._pairing_pin = None
+            return False
+        return self._pairing_address == address
+
+    async def open_pairing_window(self, address: str, pin: str | None = None) -> None:
+        """Allow one specific device to pair, for a bounded time."""
+        address = normalize_address(address)
+        self._pairing_address = address
+        self._pairing_pin = pin or DEFAULT_PIN
+        self._pairing_expires_at = time.monotonic() + PAIRING_WINDOW_SECONDS
+        logger.info(
+            "Pairing window open for %s (%ds); all other devices are refused",
+            address,
+            PAIRING_WINDOW_SECONDS,
+        )
+        await self._set_adapters_pairable(True)
+
+    async def close_pairing_window(self) -> None:
+        """Close the window and stop the adapters accepting pairing requests."""
+        was_open = self._pairing_address is not None
+        self._pairing_address = None
+        self._pairing_pin = None
+        self._pairing_expires_at = 0.0
+        if was_open:
+            logger.info("Pairing window closed")
+        await self._set_adapters_pairable(False)
+
+    async def _set_adapters_pairable(self, pairable: bool) -> None:
+        """Best-effort adapter posture change; a failure must not fail pairing."""
+        for adapter in self.adapters.values():
+            try:
+                await adapter.set_pairable(pairable)
+            except Exception as error:
+                logger.warning(
+                    "Could not set Pairable=%s on %s: %s",
+                    pairable,
+                    adapter.interface_name,
+                    safe_detail(error),
+                )
+
+    def current_pairing_address(self) -> str | None:
+        """The address that may currently pair, if any (surfaced in diagnostics)."""
+        if self._pairing_address is None:
+            return None
+        return self._pairing_address if self.pairing_window_active(self._pairing_address) else None
+
+    def pairing_is_authorized(self, device_path: str) -> bool:
+        """Whether BlueZ may complete a pairing or authorization for this device."""
+        address = self.address_from_device_path(device_path)
+        if address is None:
+            return False
+        if self.pairing_window_active(address):
+            return True
+        device = self.devices.get(device_path)
+        return bool(device is not None and device.trusted)
+
+    def authorized_pin(self, device_path: str) -> str | None:
+        """The PIN to answer with, only for the device the operator asked to pair."""
+        address = self.address_from_device_path(device_path)
+        if address is None or not self.pairing_window_active(address):
+            return None
+        return self._pairing_pin
+
+    def authorized_passkey(self, device_path: str) -> int | None:
+        """Numeric passkey pairing, only when the operator supplied such a PIN."""
+        pin = self.authorized_pin(device_path)
+        if pin is None or not pin.isdigit():
+            return None
+        return int(pin)
+
+    def confirm_pairing(self, device_path: str, passkey: int) -> bool:
+        """Answer BlueZ's confirmation prompt only for an authorized pairing."""
+        authorized = self.pairing_is_authorized(device_path)
+        if not authorized:
+            logger.warning("Refusing pairing confirmation for unauthorized device %s", device_path)
+        return authorized
+
+    async def pair_and_trust(self, address: str, pin: str | None = None) -> bool:
+        """Pair with a device the operator asked for, then trust it for reconnects.
+
+        The pairing window is opened for exactly this address and closed again in
+        `finally`, so the agent answers BlueZ only while this call runs.
+        """
         address = normalize_address(address)
         logger.debug("Starting pair_and_trust for %s", address)
+        await self.open_pairing_window(address, pin)
+        try:
+            return await self._pair_and_trust(address)
+        finally:
+            await self.close_pairing_window()
+
+    async def _pair_and_trust(self, address: str) -> bool:
+        """Pair and trust one address; the caller holds its pairing window."""
         try:
             await self.stop_scan()
         except Exception as e:

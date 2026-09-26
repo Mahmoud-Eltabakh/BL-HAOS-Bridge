@@ -17,7 +17,7 @@ ADDON_SLUG = "bl-haos"
 # Single source of truth for the runtime version. ``backend/tests/test_addon_config.py``
 # asserts it matches ``config.yaml`` so the add-on manifest and the daemon cannot
 # drift apart.
-VERSION = "0.2.56"
+VERSION = "0.2.57"
 
 # Logger namespace shared by every bridge module and the log format the daemon
 # installs at startup.
@@ -164,6 +164,10 @@ A2DP_SINK_RETRY_INTERVAL = 0.5
 DEFAULT_PIN = "0000"
 PIN_DIGITS_MIN = 4
 PIN_DIGITS_MAX = 8
+# Bluetooth pairing is answered only inside this window, and only for the device
+# the operator explicitly asked to pair. Anything else is refused, so a device in
+# radio range cannot pair by itself (see THREAT-MODEL.md, T3).
+PAIRING_WINDOW_SECONDS = 90
 
 # ---------------------------------------------------------------------------
 # Reconnect policy
@@ -184,6 +188,10 @@ RECONNECT_BACKOFF_JITTER = 0.15
 # ---------------------------------------------------------------------------
 SECRET_TOKENS = ("token", "password", "secret", "authorization", "bearer")
 SENSITIVE_QUERY_KEY_TOKENS = (*SECRET_TOKENS, "api[_-]?key", "key")
+# Characters of the credential digest reported by diagnostics. A short prefix is
+# enough to tell one credential from another (and to see that it rotated) without
+# publishing anything that shortens a guess of the 32-byte secret.
+TOKEN_FINGERPRINT_CHARS = 8
 REDACTED_PLACEHOLDER = "[redacted]"
 URL_PATTERN = r"[a-z]+://[^\s]+"
 URL_REDACTION_PLACEHOLDER = "[url redacted]"
@@ -194,6 +202,24 @@ URL_REDACTION_PLACEHOLDER = "[url redacted]"
 HTTP_SCHEMES = frozenset({"http", "https"})
 MIN_TCP_PORT = 1
 MAX_TCP_PORT = 65535
+# Media URLs the bridge refuses to fetch. Loopback, link-local (which includes
+# the cloud metadata address), multicast, reserved and unspecified targets are
+# never a legitimate audio source - and 127.0.0.1 is the bridge's own
+# unauthenticated API, which is otherwise reachable from inside the container
+# even though the Supervisor refuses unauthenticated Ingress requests.
+# Private LAN ranges stay allowed on purpose: Home Assistant itself serves TTS
+# and local media from a private address.
+MEDIA_BLOCKED_HOST_NAMES = (
+    "localhost",
+    "localhost.localdomain",
+    "ip6-localhost",
+    "ip6-loopback",
+)
+MEDIA_LOCALHOST_SUFFIX = ".localhost"
+# Protocols the media decoder may use. `file`, `concat`, `subfile`, `pipe` and
+# `fd` are deliberately absent: an attacker-supplied manifest must not be able
+# to pull the bridge's own filesystem into a stream.
+PLAYBACK_PROTOCOL_WHITELIST = "http,https,tcp,tls,crypto,data,httpproxy"
 MIN_PORTABLE_CODEPOINT = 32
 DELETE_CODEPOINT = 127
 BROADCAST_ADDRESS_OCTET = 0xFF

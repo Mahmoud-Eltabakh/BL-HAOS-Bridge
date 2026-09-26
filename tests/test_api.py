@@ -1,3 +1,6 @@
+import asyncio
+import inspect
+
 from backend.bl_haos.main import app
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock
@@ -147,24 +150,28 @@ def test_pair_publishes_native_speaker():
             }
         })
         published = []
+        pairing_calls = []
 
         async def publish(address):
             published.append(address)
 
         app.state.publish_native_speaker = publish
-        app.state.bt_manager.pair_and_trust = lambda address: None
 
-        async def pair(address):
+        async def pair(address, pin=None):
+            pairing_calls.append((address, pin))
             device = app.state.bt_manager.get_device_by_address(address)
             device._properties["Trusted"] = True
             device._properties["Paired"] = True
             return True
 
         app.state.bt_manager.pair_and_trust = pair
-        response = client.post("/api/devices/pair", json={"address": dev_addr, "pin": None})
+        response = client.post("/api/devices/pair", json={"address": dev_addr, "pin": "4321"})
 
         assert response.status_code == 200
         assert published == [dev_addr]
+        # The operator's PIN is what the pairing window answers with, so it must
+        # reach the manager instead of a hardcoded default (THREAT-MODEL.md, T3).
+        assert pairing_calls == [(dev_addr, "4321")]
 
 
 def test_native_speaker_record_includes_the_playback_timeline():
@@ -199,7 +206,7 @@ def test_pairing_failure_surfaces_a_bounded_bluez_reason():
     """Operators need the real BlueZ reason instead of a generic failure string."""
     dev_addr = "aa:bb:cc:dd:ee:09"
 
-    async def pair(_address):
+    async def pair(_address, _pin=None):
         raise RuntimeError("org.bluez.Error.Failed br-connection-page-timeout")
 
     with TestClient(app) as client:
@@ -216,7 +223,7 @@ def test_pairing_failure_redacts_credentials_in_reason():
     """Surfaced failure detail must not leak tokens or URLs."""
     dev_addr = "aa:bb:cc:dd:ee:0a"
 
-    async def pair(_address):
+    async def pair(_address, _pin=None):
         raise RuntimeError("denied token=supersecret123 at https://bridge.local/pair?t=abc")
 
     with TestClient(app) as client:
@@ -301,6 +308,42 @@ def test_native_play_media_rejects_unsafe_url_without_side_effects(monkeypatch):
     reconnect.assert_not_awaited()
 
 
+def test_native_play_media_rejects_targets_that_are_the_bridge_or_a_dead_end(monkeypatch):
+    """A media URL must not be usable as a request into the bridge itself."""
+    from backend.bl_haos.health import validate_media_url
+
+    with TestClient(app) as client:
+        token = app.state.config_store.settings.native_token
+        execute = AsyncMock()
+        monkeypatch.setattr(app.state.ha_bridge, "execute", execute)
+        responses = [
+            client.post(
+                "/api/native/speakers/10:22:33:44:55:66/command",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"operation": "play_media", "url": url},
+            )
+            for url in (
+                "http://127.0.0.1:8099/api/devices?audio_only=false",
+                "http://localhost:8099/api/health",
+                "http://2130706433:8099/api/health",
+                "http://169.254.169.254/latest/meta-data/",
+                "http://0.0.0.0/audio.mp3",
+            )
+        ]
+
+    assert {response.status_code for response in responses} == {422}
+    execute.assert_not_awaited()
+
+    # The private LAN stays usable: Home Assistant serves TTS and local media
+    # from a private address, so blocking RFC1918 wholesale would break the
+    # product (see THREAT-MODEL.md, T2).
+    assert validate_media_url("http://192.168.1.21:8123/api/tts_proxy/abc.mp3")
+    assert validate_media_url("https://media.example.com/song.mp3")
+    for blocked in ("http://[::ffff:127.0.0.1]:8099/", "http://224.0.0.1/", "http://localhost./x"):
+        with pytest.raises(ValueError, match="loopback, link-local or multicast"):
+            validate_media_url(blocked)
+
+
 def test_api_rejects_invalid_address_and_adapter_before_manager_calls(monkeypatch):
     with TestClient(app) as client:
         manager_lookup = Mock()
@@ -326,6 +369,23 @@ def test_native_command_rejects_inconsistent_media_payload_without_execution(mon
 
     assert response.status_code == 422
     execute.assert_not_awaited()
+
+
+def test_background_spawn_outside_the_loop_disposes_the_coroutine():
+    """Regression: an event delivered off-loop must not leak an un-awaited coroutine.
+
+    Bluetooth events can be dispatched from a caller that is not inside the event
+    loop; scheduling a task there raised RuntimeError, the listener swallowed it,
+    and the broadcast was lost while CPython later warned
+    "coroutine 'ConnectionManager.broadcast' was never awaited".
+    """
+    from backend.bl_haos.main import _spawn
+
+    coro = asyncio.sleep(0)
+
+    assert _spawn(coro, "unit test") is None
+    assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
+    assert not getattr(app.state, "event_tasks", set())
 
 
 def test_native_auth_still_rejects_ingress_header_alone():

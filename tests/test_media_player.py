@@ -6,6 +6,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from backend.bl_haos.constants import PLAYBACK_PROTOCOL_WHITELIST
 from backend.bl_haos.ha.player import MediaPlayerBridge
 from backend.bl_haos.health import FailureClass, HealthRegistry, SpeakerState
 
@@ -41,6 +42,25 @@ async def fake_sink(_address):
 
 async def fake_process(*args, **_kwargs):
     return FakeProcess(returncode=0 if args[0] == "wpctl" else None)
+
+
+def test_sink_warmup_is_dropped_without_a_running_loop():
+    """Regression: a synchronous listener path must not abandon a coroutine.
+
+    ``register_keepalive`` is reached from a Bluetooth event listener, so it can
+    run outside the event loop. Creating the warm-up task there used to raise
+    RuntimeError and leave ``_async_warm_sink`` un-awaited - the warm-up silently
+    never happened and the suite leaked a "was never awaited" RuntimeWarning.
+    """
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=fake_process)
+    address = "10:22:33:44:55:66"
+
+    bridge.register_keepalive(address)
+
+    assert bridge.keepalive_addresses == {address}
+    assert bridge._warmup_tasks == {}
+    assert bridge._background_tasks == set()
+
 
 @pytest.mark.asyncio
 async def test_media_player_state_transitions():
@@ -104,6 +124,56 @@ async def test_media_player_keeps_valid_url_as_one_process_argument():
     ffmpeg_args = calls[0][0]
     assert ffmpeg_args[0] == "ffmpeg"
     assert ffmpeg_args.count("https://example.test/audio.mp3?token=signed") == 1
+    # The decoder is pinned to network protocols: a manifest must not be able to
+    # pull the bridge's own filesystem into a stream.
+    assert ffmpeg_args[ffmpeg_args.index("-protocol_whitelist") + 1] == PLAYBACK_PROTOCOL_WHITELIST
+    assert "file" not in PLAYBACK_PROTOCOL_WHITELIST.split(",")
+    assert "concat" not in PLAYBACK_PROTOCOL_WHITELIST.split(",")
+
+
+@pytest.mark.asyncio
+async def test_play_url_refuses_targets_that_are_the_bridge_itself():
+    """Loopback, metadata and legacy numeric spellings must never be fetched."""
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+
+    for url in (
+        "http://127.0.0.1:8099/api/devices?audio_only=false",
+        "http://localhost:8099/api/health",
+        "http://[::ffff:127.0.0.1]:8099/api/health",
+        "http://2130706433:8099/api/health",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://0.0.0.0/audio.mp3",
+    ):
+        with pytest.raises(Exception, match="loopback, link-local or multicast"):
+            await bridge.play_url("10:22:33:44:55:66", url)
+
+    assert calls == [], "no decoder or player may be spawned for a refused target"
+
+
+@pytest.mark.asyncio
+async def test_play_url_still_accepts_lan_and_public_targets():
+    """Home Assistant serves TTS and local media from a private address."""
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProcess()
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+
+    for url in (
+        "http://192.168.1.21:8123/api/tts_proxy/some-hash.mp3",
+        "https://example.com/stream.mp3",
+    ):
+        await bridge.play_url("10:22:33:44:55:66", url)
+        decoder_args = [call[0] for call in calls if call[0][0] == "ffmpeg"][-1]
+        assert decoder_args.count(url) == 1
 
 
 @pytest.mark.asyncio

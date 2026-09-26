@@ -1,6 +1,6 @@
 name: "BL-HAOS"
 slug: "bl_haos"
-version: "0.2.56"
+version: "0.2.57"
 description: "High-fidelity Bluetooth audio streaming adapter for Home Assistant OS"
 url: "https://github.com/Mahmoud-Eltabakh/BL-HAOS-Bridge"
 image: "ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge"
@@ -18,6 +18,9 @@ audio: true
 full_access: true
 udev: true
 stage: "experimental"
+# Restart the add-on if the container dies: the audio path is the product, and a
+# silent speaker with a healthy-looking UI is worse than a restart.
+watchdog: true
 options:
   log_level: "info"
   default_codec: "auto"

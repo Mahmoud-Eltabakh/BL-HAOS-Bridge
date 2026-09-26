@@ -75,17 +75,32 @@ def test_native_snapshot_filters_trusted_sinks(monkeypatch):
         headers = {"Authorization": f"{BEARER_PREFIX}{token}"}
         monkeypatch.setattr(app.state.bt_manager, "get_devices", lambda audio_only=True: speakers)
         identity = client.get(f"{NATIVE_API_PREFIX}/identity", headers=headers)
-        assert identity.json() == {"bridge_id": NATIVE_BRIDGE_ID, "version": NATIVE_BRIDGE_VERSION}
+        payload = identity.json()
         snapshot = client.get(f"{NATIVE_API_PREFIX}/speakers", headers=headers)
+
+    assert payload["bridge_id"] == NATIVE_BRIDGE_ID
+    assert payload["version"] == NATIVE_BRIDGE_VERSION
+    # Identity carries a digest of the credential, never the credential.
+    from backend.bl_haos.health import token_fingerprint
+
+    assert payload["credential_fingerprint"] == token_fingerprint(token)
+    assert token not in identity.text
 
     assert snapshot.status_code == 200
     assert list(snapshot.json()["speakers"]) == ["aa:bb:cc:dd:ee:ff"]
 
 
-def test_native_snapshot_includes_connected_speaker(monkeypatch):
+def test_native_snapshot_excludes_a_paired_but_untrusted_speaker(monkeypatch):
+    """Pairing alone is not consent: a rogue peer must not become an entity.
+
+    This mirrors the state that exposed the finding: a device in radio range
+    reaches paired+connected by itself (PIN 0000, auto-confirmed agent), and the
+    bridge used to publish it as a trusted speaker and accept commands for it.
+    See THREAT-MODEL.md, T3.
+    """
     speakers = [
         DeviceInfo(
-            path="/speaker",
+            path="/rogue",
             adapter_path="/adapter",
             address="EC:81:93:53:A9:16",
             trusted=False,
@@ -100,11 +115,39 @@ def test_native_snapshot_includes_connected_speaker(monkeypatch):
         headers = {"Authorization": f"{BEARER_PREFIX}{token}"}
         monkeypatch.setattr(app.state.bt_manager, "get_devices", lambda audio_only=True: speakers)
         snapshot = client.get(f"{NATIVE_API_PREFIX}/speakers", headers=headers)
+        refused = client.post(
+            f"{NATIVE_API_PREFIX}/speakers/ec:81:93:53:a9:16/command",
+            headers=headers,
+            json={"operation": "play"},
+        )
 
     assert snapshot.status_code == 200
-    assert "ec:81:93:53:a9:16" in snapshot.json()["speakers"]
-    assert snapshot.json()["speakers"]["ec:81:93:53:a9:16"]["connected"] is True
-    assert snapshot.json()["speakers"]["ec:81:93:53:a9:16"]["trusted"] is True
+    assert snapshot.json()["speakers"] == {}
+    assert refused.status_code == 409
+
+
+def test_native_snapshot_publishes_a_trusted_speaker(monkeypatch):
+    speakers = [
+        DeviceInfo(
+            path="/speaker",
+            adapter_path="/adapter",
+            address="EC:81:93:53:A9:16",
+            trusted=True,
+            is_audio_sink=True,
+            connected=True,
+        ),
+    ]
+
+    with TestClient(app) as client:
+        token = app.state.config_store.settings.native_token
+        headers = {"Authorization": f"{BEARER_PREFIX}{token}"}
+        monkeypatch.setattr(app.state.bt_manager, "get_devices", lambda audio_only=True: speakers)
+        snapshot = client.get(f"{NATIVE_API_PREFIX}/speakers", headers=headers)
+
+    assert snapshot.status_code == 200
+    record = snapshot.json()["speakers"]["ec:81:93:53:a9:16"]
+    assert record["trusted"] is True
+    assert record["connected"] is True
 
 
 def test_native_command_returns_bridge_record(monkeypatch):

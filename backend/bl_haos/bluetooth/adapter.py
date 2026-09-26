@@ -6,9 +6,10 @@ from typing import Any
 from dbus_fast import Variant
 from dbus_fast.aio import MessageBus
 
-from .constants import ADAPTER_INTERFACE, BLUEZ_SERVICE, DBUS_PROPERTIES_IFACE
+from .constants import ADAPTER_INTERFACE, BLUEZ_SERVICE, DBUS_PROPERTIES_IFACE, DISCOVERY_TRANSPORT_AUTO
 from .models import AdapterInfo
 from ..constants import ADDRESS_TYPE_PUBLIC, BLUETOOTH_ADAPTER_LABEL
+from ..health import safe_detail
 
 logger = logging.getLogger("bl_haos.bluetooth.adapter")
 
@@ -90,8 +91,27 @@ class BluetoothAdapter:
         await props_iface.call_set(ADAPTER_INTERFACE, "Powered", Variant("b", powered))
         self._properties["Powered"] = powered
 
+    async def set_pairable(self, pairable: bool) -> None:
+        """Control whether this adapter accepts incoming pairing requests."""
+        logger.debug("Setting adapter %s (%s) Pairable=%s", self.interface_name, self.path, pairable)
+        if not self.bus:
+            self._properties["Pairable"] = pairable
+            return
+        introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
+        proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
+        props_iface = proxy.get_interface(DBUS_PROPERTIES_IFACE)
+        await props_iface.call_set(ADAPTER_INTERFACE, "Pairable", Variant("b", pairable))
+        self._properties["Pairable"] = pairable
+
     async def start_discovery(self) -> None:
-        """Start discovery scan on this adapter."""
+        """Start discovery scan on this adapter.
+
+        The adapter's discovery filter is shared state: whatever the last client
+        set applies to every scan, including this one. Home Assistant Core's
+        Bluetooth integration leaves an LE-only transport filter behind, which
+        hides Classic (BR/EDR) speakers - so an operator scan claims both
+        transports before starting.
+        """
         logger.debug("Starting discovery scan on adapter %s (%s)", self.interface_name, self.path)
         if not self.bus:
             self._properties["Discovering"] = True
@@ -100,6 +120,18 @@ class BluetoothAdapter:
             introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
             proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
             adapter_iface = proxy.get_interface(ADAPTER_INTERFACE)
+            try:
+                await adapter_iface.call_set_discovery_filter(
+                    {"Transport": Variant("s", DISCOVERY_TRANSPORT_AUTO)}
+                )
+            except Exception as error:
+                # Another client's filter, or a BlueZ that refuses the change,
+                # must never stop the scan itself.
+                logger.debug(
+                    "Could not claim the discovery filter on %s: %s",
+                    self.interface_name,
+                    safe_detail(error),
+                )
             await adapter_iface.call_start_discovery()
         except Exception as e:
             if "InProgress" in str(e) or "already in progress" in str(e).lower():

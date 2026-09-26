@@ -36,6 +36,19 @@ The integration connects through Home Assistant's private add-on network before 
 4. When your speaker appears in the list with its signal strength (RSSI), click **Pair & Trust**.
 5. Once paired, click **Connect** on the speaker card.
 
+Pairing is answered only while the add-on is doing it. Clicking **Pair & Trust**
+opens a 90-second window for that one address: until it closes, the adapter is
+pairable and the BlueZ agent answers pairing prompts (using the PIN you supplied,
+or `0000`); everything outside the window is refused with
+`org.bluez.Error.Rejected`, and the adapter stops accepting pairing requests when
+the window closes or expires. If pairing fails, put the speaker back into pairing
+mode and try again — the window is per attempt, not permanent. The dashboard's
+native status shows the address that may currently pair (`pairing_authorized_address`).
+
+A speaker becomes a Home Assistant entity only once it is **Trusted** (what
+**Pair & Trust** records). A device that merely pairs or connects — which any
+device in radio range can arrange — is not published and is refused commands.
+
 ### Playing Audio from Home Assistant
 - Each connected trusted speaker appears as a native `media_player` entity after the BL-HAOS integration is configured.
 - Use standard Home Assistant Lovelace media cards, automation actions (`media_player.play_media`, `tts.speak`), or Music Assistant to send audio directly to your speaker.
@@ -94,6 +107,47 @@ The add-on log identifies BlueZ and PipeWire state; the Home Assistant log ident
 The Ingress dashboard keeps the operator workflow focused on adapter state, speaker discovery, connection, and native Home Assistant integration readiness. The standalone Diagnostics and Guided recovery panels are not part of the dashboard, and their operator-only routes are not exposed by the add-on. Runtime health telemetry remains available through the health endpoint for automated validation and support tooling.
 
 For offline demonstrations and SIL validation, set `BLHAOS_DEMO_MODE=true` and choose one of `healthy`, `pairing_failure`, `sink_missing`, `reconnect_exhausted`, `native_integration_unavailable`, or `restart_degraded` with `BLHAOS_DEMO_SCENARIO`. Demo mode is off by default and injects fixed adapters, speakers, events, timestamps, and recovery outcomes before live D-Bus, PipeWire, or Home Assistant clients are initialized. Unknown scenarios are rejected.
+
+## Security
+
+The add-on is deliberately privileged — it runs as root with `full_access` and
+host D-Bus access, because driving host Bluetooth and audio is what it does — so the
+release is built around keeping anything remote away from those privileges: pairing is
+operator-gated, media targets are constrained, and the native credential is never
+exposed by the API.
+
+**Pairing** is operator-gated, as described above.
+
+**The native credential.** The integration authenticates with a 32-byte token
+generated on first start and stored at `/data/bl_haos_config.json` (mode `0600`).
+It is never returned by the API. To rotate it:
+
+1. Stop the add-on.
+2. Delete `/data/bl_haos_config.json`, or set a new value in the add-on's
+   `BLHAOS_NATIVE_TOKEN` environment variable (take a backup of the file first if
+   you want to keep aliases, volumes and adapter pins — they live in the same
+   file; deleting it resets them).
+3. Start the add-on. On boot it publishes the new credential through Supervisor
+   discovery; the integration picks it up and reloads itself. If it does not,
+   reopen the integration's configuration and re-add the entry (Settings →
+   Devices & Services → BL-HAOS → **Reconfigure**/delete and re-add).
+4. Confirm the change: `GET /api/native/identity` (with the new token) reports
+   `credential_fingerprint`, the first 8 hex characters of the credential's
+   SHA-256 digest — the same value before and after means nothing rotated. The
+   integration also checks the endpoint identifies itself as `BL-HAOS` on
+   `/api/health` *before* it sends the token anywhere.
+
+Treat a token that has ever left the host — a screenshot, a chat message, a
+support bundle, a repository — as compromised and rotate it.
+
+**Media targets.** The add-on refuses to fetch audio from loopback, link-local
+(including the cloud metadata address), multicast, reserved or unspecified
+addresses, and pins the decoder to network protocols so a hostile playlist cannot
+read local files. Private LAN addresses stay usable because Home Assistant serves
+TTS and local media from one.
+
+**Reporting.** Use GitHub's private vulnerability reporting on the module
+repositories (**Security → Report a vulnerability**) rather than a public issue.
 
 ---
 

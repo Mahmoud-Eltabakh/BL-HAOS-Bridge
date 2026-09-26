@@ -21,6 +21,16 @@ ADAPTER_INTERFACE = "org.bluez.Adapter1"
 DEVICE_INTERFACE = "org.bluez.Device1"
 AGENT_INTERFACE = "org.bluez.Agent1"
 AGENT_MANAGER_INTERFACE = "org.bluez.AgentManager1"
+# BlueZ error raised for every pairing request that is not part of an
+# operator-initiated pairing window.
+AGENT_PAIRING_REFUSED_ERROR = "org.bluez.Error.Rejected: pairing is not authorized"
+# An operator-initiated scan must report both transports. The discovery filter is
+# *adapter* state, not per-client, and Home Assistant Core's Bluetooth integration
+# leaves an LE-only transport filter behind on the adapter both share (the add-on
+# talks to the host's BlueZ). A scan that inherits it can never see a Classic
+# (BR/EDR) speaker - observed on a live HAOS instance where the add-on had already
+# paired and streamed to exactly such a device.
+DISCOVERY_TRANSPORT_AUTO = "auto"
 MEDIA_INTERFACE = "org.bluez.Media1"
 MEDIA_CONTROL_INTERFACE = "org.bluez.MediaControl1"
 MEDIA_ENDPOINT_INTERFACE = "org.bluez.MediaEndpoint1"

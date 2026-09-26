@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -93,6 +94,93 @@ async def test_bluetooth_manager_device_pairing_and_removal():
     removed = await mgr.remove_device(dev_addr)
     assert removed is True
     assert mgr.get_device_by_address(dev_addr) is None
+
+
+@pytest.mark.asyncio
+async def test_pairing_window_only_authorizes_the_requested_device():
+    """Regression: any device in radio range used to be answered (THREAT-MODEL T3)."""
+    mgr = BluetoothManager()
+    requested_path = "/org/bluez/hci0/dev_10_22_33_44_55_66"
+    other_path = "/org/bluez/hci0/dev_EC_81_93_53_A9_16"
+
+    # Nothing is authorized before the operator asks for a pairing.
+    assert mgr.pairing_window_active("10:22:33:44:55:66") is False
+    assert mgr.pairing_is_authorized(requested_path) is False
+    assert mgr.authorized_pin(requested_path) is None
+    assert mgr.confirm_pairing(requested_path, 123456) is False
+
+    await mgr.open_pairing_window("10:22:33:44:55:66", "1234")
+
+    assert mgr.authorized_pin(requested_path) == "1234"
+    assert mgr.authorized_passkey(requested_path) == 1234
+    assert mgr.confirm_pairing(requested_path, 123456) is True
+
+    # A different device is still refused while the window is open.
+    assert mgr.pairing_window_active("ec:81:93:53:a9:16") is False
+    assert mgr.pairing_is_authorized(other_path) is False
+    assert mgr.authorized_pin(other_path) is None
+    assert mgr.confirm_pairing(other_path, 654321) is False
+
+    await mgr.close_pairing_window()
+    assert mgr.pairing_is_authorized(requested_path) is False
+    assert mgr.authorized_pin(requested_path) is None
+
+
+@pytest.mark.asyncio
+async def test_pairing_window_expires_without_closing_it():
+    mgr = BluetoothManager()
+    path = "/org/bluez/hci0/dev_10_22_33_44_55_66"
+
+    await mgr.open_pairing_window("10:22:33:44:55:66")
+    assert mgr.authorized_pin(path) == "0000"
+
+    mgr._pairing_expires_at = time.monotonic() - 1
+
+    assert mgr.pairing_window_active("10:22:33:44:55:66") is False
+    assert mgr.pairing_is_authorized(path) is False
+    assert mgr.authorized_pin(path) is None
+
+
+@pytest.mark.asyncio
+async def test_pair_and_trust_holds_the_window_open_and_always_closes_it(monkeypatch):
+    mgr = BluetoothManager()
+    observed = {}
+
+    async def successful_pair(address):
+        observed["open_during_pair"] = mgr.pairing_window_active(address)
+        observed["agent_authorized"] = mgr.pairing_is_authorized(
+            f"/org/bluez/hci0/dev_{address.replace(':', '_')}"
+        )
+        return True
+
+    monkeypatch.setattr(mgr, "_pair_and_trust", successful_pair)
+    assert await mgr.pair_and_trust("10:22:33:44:55:66", "9999") is True
+    assert observed == {"open_during_pair": True, "agent_authorized": True}
+    assert mgr.pairing_window_active("10:22:33:44:55:66") is False
+
+    async def failing_pair(address):
+        raise ValueError("Device not found")
+
+    monkeypatch.setattr(mgr, "_pair_and_trust", failing_pair)
+    with pytest.raises(ValueError, match="Device not found"):
+        await mgr.pair_and_trust("10:22:33:44:55:66", "9999")
+    assert mgr.pairing_window_active("10:22:33:44:55:66") is False
+
+
+@pytest.mark.asyncio
+async def test_manager_installs_a_deny_by_default_agent():
+    """The wired agent must refuse everything outside an operator's window."""
+    mgr = BluetoothManager()
+    agent = mgr.build_agent()
+    path = "/org/bluez/hci0/dev_EC_81_93_53_A9_16"
+
+    assert agent.get_pin(path) is None
+    assert agent.confirm_passkey(path, 111111) is False
+
+    await mgr.open_pairing_window("ec:81:93:53:a9:16")
+
+    assert agent.get_pin(path) == "0000"
+    assert agent.confirm_passkey(path, 111111) is True
 
 
 @pytest.mark.asyncio
