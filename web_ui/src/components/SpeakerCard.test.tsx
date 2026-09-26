@@ -72,6 +72,26 @@ describe('SpeakerCard', () => {
     });
   });
 
+  it('follows a volume change made elsewhere, e.g. from Home Assistant', () => {
+    // The dashboard slider must track the bridge, whichever surface changed the
+    // volume: HA updates the media_player, the bridge publishes playback_updated.
+    const { rerender } = render(
+      <SpeakerCard device={connectedDevice} onSettingsClick={() => {}} onRefresh={() => {}} />
+    );
+    const slider = screen.getByRole('slider', { name: 'Speaker volume' });
+    expect(slider).toHaveValue('70');
+
+    rerender(
+      <SpeakerCard
+        device={{ ...connectedDevice, playback: { state: 'idle', volume: 0.42 } }}
+        onSettingsClick={() => {}}
+        onRefresh={() => {}}
+      />
+    );
+
+    expect(slider).toHaveValue('42');
+  });
+
   it('surfaces an error message when the volume commit fails', async () => {
     vi.mocked(apiClient.setDeviceVolume).mockRejectedValue(new Error('bridge offline'));
     render(<SpeakerCard device={connectedDevice} onSettingsClick={() => {}} onRefresh={() => {}} />);

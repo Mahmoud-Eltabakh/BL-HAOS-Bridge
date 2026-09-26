@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from backend.bl_haos.api.ws import native_ws_manager, ws_manager
+from backend.bl_haos.api.ws import NATIVE_SPEAKER_UPDATED_EVENT, native_ws_manager, ws_manager
 from backend.bl_haos.bluetooth.models import DeviceInfo
 from backend.bl_haos.main import app
 
@@ -72,6 +72,9 @@ def test_websocket_device_discovery():
         "device_type": "Loudspeaker",
         "battery_percentage": None,
         "last_seen": event["data"]["last_seen"],
+        # Playback state is attached at the API boundary, not by BlueZ; a raw
+        # device event therefore carries the field as None.
+        "playback": None,
     }
 
 
@@ -230,6 +233,78 @@ def _register_native_speaker(client, address_no_colons: str):
             }
         },
     )
+
+
+def test_native_volume_change_reaches_the_ingress_dashboard(monkeypatch):
+    """A volume set from Home Assistant must show up on the dashboard's socket.
+
+    The dashboard binds its slider to playback.volume and follows
+    playback_updated events on /ws. The integration listens on /ws/native, so
+    publishing only there left the dashboard showing a stale volume.
+    """
+    broadcasts: list[tuple[str, dict]] = []
+    native_broadcasts: list[str] = []
+
+    async def record_ui(event_type, data):
+        broadcasts.append((event_type, data))
+
+    async def record_native(event_type, data):
+        native_broadcasts.append(event_type)
+
+    with TestClient(app) as client:
+        _register_native_speaker(client, "AA_BB_CC_DD_EE_05")
+        monkeypatch.setattr(ws_manager, "broadcast", record_ui)
+        monkeypatch.setattr(native_ws_manager, "broadcast", record_native)
+        token = app.state.config_store.settings.native_token
+
+        response = client.post(
+            "/api/native/speakers/aa:bb:cc:dd:ee:05/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"operation": "set_volume", "volume": 0.35},
+        )
+
+    assert response.status_code == 200
+    playback_events = [data for event, data in broadcasts if event == "playback_updated"]
+    assert playback_events, "the dashboard must be told about the new volume"
+    # The event carries the address exactly as the dashboard's device records do,
+    # so the dashboard can match it.
+    assert playback_events[-1]["address"] == "AA:BB:CC:DD:EE:05"
+    assert playback_events[-1]["playback"]["volume"] == 0.35
+    # The integration's own socket keeps working as before.
+    assert NATIVE_SPEAKER_UPDATED_EVENT in native_broadcasts
+
+
+def _set_native_volume(client, address: str, volume: float):
+    """Set a speaker's volume the way Home Assistant does."""
+    token = app.state.config_store.settings.native_token
+    return client.post(
+        f"/api/native/speakers/{address}/command",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"operation": "set_volume", "volume": volume},
+    )
+
+
+def test_devices_endpoint_reports_live_playback_volume(monkeypatch):
+    """The dashboard's initial slider value comes from /api/devices.
+
+    Two independent levels are applied, so the endpoint is proven to read the
+    bridge rather than echo a value that happens to be the stored default.
+    """
+    with TestClient(app) as client:
+        _register_native_speaker(client, "AA_BB_CC_DD_EE_06")
+        _set_native_volume(client, "aa:bb:cc:dd:ee:06", 0.11)
+        first = client.get("/api/devices").json()
+        _set_native_volume(client, "aa:bb:cc:dd:ee:06", 0.31)
+        second = client.get("/api/devices").json()
+
+    # BlueZ reports addresses upper-case, so match the way the dashboard does.
+    def volume_of(devices):
+        speaker = next(d for d in devices if d["address"].lower() == "aa:bb:cc:dd:ee:06")
+        return speaker["playback"]
+
+    assert volume_of(first)["volume"] == 0.11
+    assert volume_of(second)["volume"] == 0.31
+    assert volume_of(second)["state"] == "idle"
 
 
 def test_auto_reconnect_reports_bluez_failure_distinctly(monkeypatch):

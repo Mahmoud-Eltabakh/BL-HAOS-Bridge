@@ -55,6 +55,17 @@ export interface AdapterInfo {
   discovering: boolean;
 }
 
+export interface PlaybackInfo {
+  state: string;
+  /** Sink volume as a 0-1 ratio; the card renders it as a percentage. */
+  volume?: number | null;
+  position?: number | null;
+  duration?: number | null;
+  position_updated_at?: number | null;
+  title?: string | null;
+  artist?: string | null;
+}
+
 export interface DeviceInfo {
   path: string;
   adapter_name: string;
@@ -75,6 +86,8 @@ export interface DeviceInfo {
   is_audio_sink: boolean;
   device_type: string;
   last_seen?: number | null;
+  /** Live playback state for a connected audio sink (bridge-reported). */
+  playback?: PlaybackInfo | null;
 }
 
 export interface NativeDiagnostics {

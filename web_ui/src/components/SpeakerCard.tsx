@@ -15,9 +15,9 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
   const [showConfirmRemove, setShowConfirmRemove] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Seed the local volume from the bridge-reported playback volume when the
-  // device record changes, so the slider reflects reality after reconnects.
-  const playbackVolume = (device as DeviceInfo & { playback?: { volume?: number | null } }).playback?.volume;
+  // Seed the local volume from the bridge-reported playback volume whenever it
+  // changes (reconnects, and volume set from the Home Assistant media_player).
+  const playbackVolume = device.playback?.volume;
   const reportedVolume = device.connected
     ? Math.round((playbackVolume ?? 0.7) * 100)
     : null;

@@ -90,9 +90,14 @@ radio problem:
 ### Playing Audio from Home Assistant
 - Each connected trusted speaker appears as a native `media_player` entity after the BL-HAOS integration is configured.
 - Use standard Home Assistant Lovelace media cards, automation actions (`media_player.play_media`, `tts.speak`), or Music Assistant to send audio directly to your speaker.
-- Volume adjustments in Home Assistant automatically synchronize with physical speaker hardware buttons via AVRCP.
+- Volume adjustments in Home Assistant are written straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The dashboard's slider reads the same value, so it follows Home Assistant instead of keeping whatever it last set itself; see [Volume](#volume).
 
-### Multiple Speakers
+### Volume
+- Home Assistant, the dashboard and the speaker share one volume level: `media_player.set_volume` and the dashboard slider both write the speaker's A2DP sink, and both read back the level the bridge applied. A change on either surface moves the other.
+- The speaker's own volume buttons change the sink volume in the audio server, but the bridge does not read that value back, so a change made on the speaker itself is not reflected in Home Assistant or on the dashboard - set the level from either surface to bring them back in step.
+- Each speaker's `default_volume` from the dashboard settings is applied when the speaker registers, and the last level set from either surface is stored, so it survives a restart.
+
+
 - Every connected trusted speaker is an independent `media_player` entity and can stream its own media at its own volume.
 - To play the same source on several speakers, group those entities in Home Assistant (a media player group helper) or drive them from Music Assistant.
 - Bluetooth A2DP is a point-to-point link, so this add-on does not provide sample-accurate synchronized multi-room playback. If you need phase-aligned rooms, run the community Snapcast add-on alongside Music Assistant instead.

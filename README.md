@@ -16,7 +16,7 @@
 - **Embedded Ingress Web Dashboard**: Visual discovery scanner with real-time RSSI signal strength meters, one-click PIN/SSP pairing, speaker control cards, and volume sliders directly inside the Home Assistant sidebar.
 - **Native `media_player` Integration**: Trusted connected speakers are exposed through the separate [BL-HAOS HACS integration](https://github.com/Mahmoud-Eltabakh/BL-HAOS-Integration) over the private Supervisor add-on network.
 - **Audiophile Codec Priority**: Automatically negotiates the highest quality codec supported by your speaker: `LDAC` &rarr; `aptX HD` &rarr; `aptX` &rarr; `AAC` &rarr; `SBC-XQ` &rarr; `SBC`.
-- **Bidirectional AVRCP Volume Sync**: Physical volume buttons on the speaker update Home Assistant in real time, and Home Assistant automations adjust physical speaker volume.
+- **Volume control that stays in sync**: `media_player.set_volume` writes straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The dashboard's slider reads that same value, so Home Assistant, the dashboard and the speaker agree - see [Volume](DOCS.md#volume).
 - **Aggressive Auto-Reconnect Engine**: Background daemon actively monitors connection health and instantly reconnects speakers when they wake from sleep or re-enter range.
 - **Multi-Adapter Support**: Run multiple Bluetooth USB dongles alongside onboard Bluetooth controllers with independent speaker assignments.
 
@@ -84,7 +84,7 @@ After the first GitHub Actions build, set each package visibility to **Public** 
 │  ┌──────────────────────────────────────▼──────┐  ┌────────▼──────────────┐  │
 │  │        PipeWire & WirePlumber Audio         │  │ Independent Streams   │  │
 │  │   • SPA Bluetooth (LDAC, aptX, AAC, SBC-XQ) │◄─┤ • Per-Speaker Sink    │  │
-│  │   • AVRCP Hardware Volume Sync              │  │ • Bluetooth A2DP Link │  │
+│  │   • AVRCP Hardware Volume (write)           │  │ • Bluetooth A2DP Link │  │
 │  └───────────────────┬─────────────────────────┘  └───────────────────────┘  │
 │                      │ D-Bus / Audio PCM                                     │
 ├──────────────────────┴───────────────────────────────────────────────────────┤

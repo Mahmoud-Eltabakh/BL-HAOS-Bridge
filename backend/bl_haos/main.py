@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api.routes import native_speaker_record
+from .api.routes import native_speaker_record, playback_envelope
 from .api.routes import router as api_router
 from .api.ws import HEALTH_EVENT, NATIVE_SPEAKER_UPDATED_EVENT, native_ws_manager, ws_manager
 from .api.ws import router as ws_router
@@ -34,6 +34,7 @@ from .constants import (
     EVENT_DEVICE_DISCOVERED,
     EVENT_DEVICE_UPDATED,
     EVENT_HEALTH_OBSERVATION,
+    EVENT_PLAYBACK_UPDATED,
     EVENT_TELEMETRY,
     LOGGER_NAME,
     LOG_FORMAT,
@@ -200,7 +201,34 @@ async def lifespan(app: FastAPI):
             logger.debug("Broadcasting native speaker update for %s", address)
             await native_ws_manager.broadcast(NATIVE_SPEAKER_UPDATED_EVENT, native_speaker_record(app, device))
 
-    ha_bridge = MediaPlayerBridge(config_store=config_store, state_callback=_publish_native_speaker, health_registry=health)
+    async def _publish_playback_state(address: str) -> None:
+        """Publish a playback change to both surfaces.
+
+        Home Assistant and the Ingress dashboard listen on different sockets, so a
+        volume or state changed from the media_player entity has to be published on
+        both, or the dashboard keeps showing the stale level. Only playback changes
+        come through here; BlueZ property events still publish to Home Assistant
+        alone and reach the dashboard as ``device_updated``.
+        """
+        await _publish_native_speaker(address)
+        device = next(
+            (candidate for candidate in bt_manager.get_devices(audio_only=True)
+             if candidate.address.strip().lower().replace("-", ":").replace("_", ":") == address.strip().lower().replace("-", ":").replace("_", ":")),
+            None,
+        )
+        if device is None:
+            return
+        await ws_manager.broadcast(
+            EVENT_PLAYBACK_UPDATED,
+            {
+                # The device's own address, exactly as its record carries it: the
+                # dashboard matches this event against the records it already has.
+                "address": device.address,
+                "playback": playback_envelope(app.state.ha_bridge, device.address),
+            },
+        )
+
+    ha_bridge = MediaPlayerBridge(config_store=config_store, state_callback=_publish_playback_state, health_registry=health)
     app.state.ha_bridge = ha_bridge
     app.state.publish_native_speaker = _publish_native_speaker
     app.state.native_ws_manager = native_ws_manager

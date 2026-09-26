@@ -171,6 +171,21 @@ class NativeCommandRequest(BaseModel):
         return self
 
 
+def playback_envelope(bridge: Any, address: str) -> dict[str, Any]:
+    """Return the live playback state shared by the native API and the dashboard.
+
+    One builder for both surfaces keeps the volume the dashboard shows and the
+    volume the integration reports from drifting apart.
+    """
+    if bridge is None:
+        return {"state": PLAYBACK_IDLE, "volume": None}
+    return {
+        "state": bridge.get_state(address),
+        "volume": bridge.get_volume(address),
+        **native_playback_timeline(bridge, address),
+    }
+
+
 def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str, Any]:
     """Expose only operator-trusted audio-sink metadata for the native integration."""
     address = device.address.strip().lower().replace("-", ":")
@@ -187,12 +202,27 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
         # it must not be reported as trust (see THREAT-MODEL.md, T3).
         "trusted": bool(device.trusted),
         "is_audio_sink": device.is_audio_sink,
-        "playback": {
-            "state": bridge.get_state(device.address) if bridge else PLAYBACK_IDLE,
-            "volume": bridge.get_volume(device.address) if bridge else None,
-            **native_playback_timeline(bridge, device.address),
-        },
+        "playback": playback_envelope(bridge, device.address),
     }
+
+
+def ui_speaker_record(source: Request | Any, device: DeviceInfo) -> DeviceInfo:
+    """Return the device record the Ingress dashboard consumes.
+
+    BlueZ metadata alone cannot show volume: the slider binds to
+    ``playback.volume``, which only the media player bridge knows.
+    """
+    app = source.app if hasattr(source, "app") else source
+    bridge = getattr(app.state, "ha_bridge", None)
+    if bridge is None or not device.is_audio_sink:
+        return device
+    try:
+        playback = playback_envelope(bridge, device.address)
+    except ValueError:
+        # A synthetic or malformed address is never a real speaker; listing must
+        # not fail because one record cannot be looked up.
+        return device
+    return device.model_copy(update={"playback": playback})
 
 
 def native_playback_timeline(bridge: Any, address: str) -> dict[str, Any]:
@@ -402,7 +432,8 @@ async def stop_scan(request: Request, payload: ScanRequest | None = None):
 async def list_devices(request: Request, audio_only: bool = True):
     devices = request.app.state.bt_manager.get_devices(audio_only=audio_only)
     logger.debug("Listing devices (audio_only=%s): returning %d devices", audio_only, len(devices))
-    return devices
+    # Attach live playback state (the dashboard slider binds to playback.volume).
+    return [ui_speaker_record(request, device) for device in devices]
 
 
 @router.post("/devices/pair")

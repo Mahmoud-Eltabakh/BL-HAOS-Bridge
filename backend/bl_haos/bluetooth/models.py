@@ -1,6 +1,7 @@
 """Pydantic Data Models for Bluetooth Adapters and Devices."""
 
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -65,3 +66,8 @@ class DeviceInfo(BaseModel):
     device_type: str = UNKNOWN_DEVICE_TYPE
     battery_percentage: int | None = None
     last_seen: float | None = None
+    # Live playback state for a connected audio sink, filled at the API boundary
+    # from the media player bridge. The Ingress dashboard binds its volume slider
+    # to ``playback.volume`` and follows ``playback_updated`` socket events, so a
+    # record without this block cannot show the real volume.
+    playback: dict[str, Any] | None = None

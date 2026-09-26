@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.60
+
+- Mirror playback state on the dashboard. The dashboard's volume slider reads `playback.volume` from `/api/devices` and follows the bridge, but a volume set from Home Assistant arrives on the native socket, which the dashboard does not listen to - so the slider kept showing the level it last set itself (or the 70% fallback) while the speaker actually played the new one. Every playback change now also publishes `playback_updated` on the dashboard's own socket (`/ws`), and `/api/devices` carries the live `playback` envelope, so the card shows the real volume on load and follows Home Assistant afterwards.
+- Keep the volume the card already has when a BlueZ property event arrives: raw device events carry no playback block, so a connect or RSSI change used to clear it.
+- Correct the volume documentation. Nothing read the sink volume back, so the claim that the speaker's own volume buttons update Home Assistant in real time was never true: the bridge writes volume (`wpctl set-volume`, mapped onto the speaker's AVRCP volume by `bluez5.enable-hw-volume`) and now reports that value on both surfaces, but a change made with the speaker's buttons still has to be set from Home Assistant or the dashboard to be reflected there.
+
 ## 0.2.59
 
 - Stop the bridge from tearing down a link that is fine. Four changes target the churn behind "it disconnects and reconnects by itself":

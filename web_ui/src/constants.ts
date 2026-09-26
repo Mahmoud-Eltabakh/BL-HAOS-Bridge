@@ -41,6 +41,10 @@ export const EVENT_DEVICE_REMOVED = 'device_removed';
 export const EVENT_ADAPTER_ADDED = 'adapter_added';
 export const EVENT_ADAPTER_UPDATED = 'adapter_updated';
 export const EVENT_SPEAKER_UPDATED = 'speaker_updated';
+// Live playback state for one speaker. The bridge publishes this for every
+// playback change, including ones made from Home Assistant, so the dashboard's
+// volume slider follows the media_player entity instead of going stale.
+export const EVENT_PLAYBACK_UPDATED = 'playback_updated';
 
 // --- Reconnect / polling policy -----------------------------------------
 export const WS_RECONNECT_BASE_DELAY_MS = 1000;

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { getWebSocketUrl, apiClient, AdapterInfo, DeviceInfo } from '../api/client';
+import { getWebSocketUrl, apiClient, AdapterInfo, DeviceInfo, PlaybackInfo } from '../api/client';
 import {
   ERROR_MESSAGES,
   EVENT_ADAPTER_ADDED,
@@ -7,6 +7,7 @@ import {
   EVENT_DEVICE_DISCOVERED,
   EVENT_DEVICE_REMOVED,
   EVENT_DEVICE_UPDATED,
+  EVENT_PLAYBACK_UPDATED,
   SCAN_POLL_INTERVAL_MS,
   WS_RECONNECT_BASE_DELAY_MS,
   WS_RECONNECT_MAX_DELAY_MS,
@@ -77,7 +78,9 @@ export function useBluetoothEvents() {
               const index = prev.findIndex((d) => d.address === dev.address);
               if (index >= 0) {
                 const copy = [...prev];
-                copy[index] = dev;
+                // BlueZ property events carry no playback block; keep the one the
+                // bridge last published instead of clearing the card's volume.
+                copy[index] = { ...dev, playback: dev.playback ?? prev[index].playback };
                 return copy;
               }
               // New device found during a scan: append immediately so the UI
@@ -92,6 +95,18 @@ export function useBluetoothEvents() {
           } else if (msg.event === EVENT_DEVICE_REMOVED) {
             const removedPath = msg.data as string;
             setDevices((prev) => prev.filter((d) => d.path !== removedPath));
+          } else if (msg.event === EVENT_PLAYBACK_UPDATED) {
+            // Volume/state changed somewhere else - typically the Home Assistant
+            // media_player entity. Patch the matching device so the speaker card's
+            // slider follows it instead of showing the stale level.
+            const update = msg.data as { address?: string; playback?: PlaybackInfo };
+            if (!update?.address || !update.playback) return;
+            const target = update.address.trim().toLowerCase();
+            setDevices((prev) =>
+              prev.map((d) =>
+                d.address.trim().toLowerCase() === target ? { ...d, playback: update.playback } : d
+              )
+            );
           } else if (msg.event === EVENT_ADAPTER_UPDATED || msg.event === EVENT_ADAPTER_ADDED) {
             const adapter = msg.data as AdapterInfo;
             setAdapters((prev) => {

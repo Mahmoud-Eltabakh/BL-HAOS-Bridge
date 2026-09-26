@@ -17,7 +17,7 @@ ADDON_SLUG = "bl-haos"
 # Single source of truth for the runtime version. ``backend/tests/test_addon_config.py``
 # asserts it matches ``config.yaml`` so the add-on manifest and the daemon cannot
 # drift apart.
-VERSION = "0.2.59"
+VERSION = "0.2.60"
 
 # Logger namespace shared by every bridge module and the log format the daemon
 # installs at startup.
@@ -78,6 +78,10 @@ EVENT_HEALTH_OBSERVATION = "health_observation"
 EVENT_DEMO_SCENARIO = "demo_scenario"
 EVENT_DEVICE_UPDATED = "device_updated"
 EVENT_DEVICE_DISCOVERED = "device_discovered"
+# Playback state for the Ingress dashboard's own socket. The native integration
+# listens on /ws/native, so without this a volume set from Home Assistant never
+# reached the dashboard slider.
+EVENT_PLAYBACK_UPDATED = "playback_updated"
 EVENT_DBUS_DISCONNECTED = "dbus_disconnected"
 RECOVERY_HEALTHY = "healthy"
 RECOVERY_PENDING = "pending"
