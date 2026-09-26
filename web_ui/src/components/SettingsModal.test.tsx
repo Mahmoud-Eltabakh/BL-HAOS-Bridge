@@ -60,7 +60,7 @@ describe('SettingsModal', () => {
       />
     );
 
-    expect(screen.getByRole('slider', { name: 'Speaker volume' })).toHaveValue('35');
+    expect(screen.getByRole('slider', { name: 'Speaker volume setting' })).toHaveValue('35');
     // A connected speaker's live level needs no settings lookup.
     expect(apiClient.getSettings).not.toHaveBeenCalled();
   });
@@ -81,7 +81,7 @@ describe('SettingsModal', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('slider', { name: 'Speaker volume' })).toHaveValue('55');
+      expect(screen.getByRole('slider', { name: 'Speaker volume setting' })).toHaveValue('55');
     });
   });
 
@@ -96,7 +96,7 @@ describe('SettingsModal', () => {
       />
     );
 
-    const slider = screen.getByRole('slider', { name: 'Speaker volume' });
+    const slider = screen.getByRole('slider', { name: 'Speaker volume setting' });
     fireEvent.change(slider, { target: { value: '42' } });
     fireEvent.click(screen.getByRole('button', { name: /save settings/i }));
 
