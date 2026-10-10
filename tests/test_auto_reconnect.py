@@ -156,7 +156,7 @@ async def test_circuit_breaker_and_locking():
     profile = engine.profiles[dev_addr.lower()]
 
     # Simulate connect failure
-    async def mock_fail_connect(addr):
+    async def mock_fail_connect(addr, *, reset_existing=False):
         raise RuntimeError("Connection refused / Device unavailable")
 
     mgr.connect_device = mock_fail_connect
@@ -202,26 +202,19 @@ async def test_reconnect_recovers_stale_device_after_repeated_failures():
 
     calls = []
 
-    async def mock_remove(addr):
-        calls.append(("remove", addr))
-
-    async def mock_pair(addr):
-        calls.append(("pair", addr))
-
-    async def mock_connect(addr):
-        calls.append(("connect", addr))
+    async def mock_connect(addr, *, reset_existing=False):
+        calls.append(("connect", addr, reset_existing))
         if len([item for item in calls if item[0] == "connect"]) <= 1:
             raise RuntimeError("Device unavailable")
 
-    mgr.remove_device = mock_remove
-    mgr.pair_and_trust = mock_pair
     mgr.connect_device = mock_connect
 
     await engine._attempt_reconnect(profile)
 
-    assert ("remove", dev_addr.lower()) in calls
-    assert ("pair", dev_addr.lower()) in calls
-    assert ("connect", dev_addr.lower()) in calls
+    assert calls == [
+        ("connect", dev_addr.lower(), False),
+        ("connect", dev_addr.lower(), True),
+    ]
     assert profile.state == ReconnectState.CONNECTED
     assert profile.consecutive_failures == 0
 
@@ -248,14 +241,12 @@ async def test_successful_stale_recovery_publishes_connected_without_old_failure
 
     connect_calls = 0
 
-    async def connect(_address):
+    async def connect(_address, *, reset_existing=False):
         nonlocal connect_calls
         connect_calls += 1
         if connect_calls == 1:
             raise RuntimeError("stale proxy")
 
-    manager.remove_device = lambda _address: asyncio.sleep(0)
-    manager.pair_and_trust = lambda _address: asyncio.sleep(0)
     manager.connect_device = connect
 
     await engine._attempt_reconnect(profile)
@@ -265,6 +256,53 @@ async def test_successful_stale_recovery_publishes_connected_without_old_failure
     assert profile.consecutive_failures == 0
     assert speaker.state == SpeakerState.CONNECTED
     assert speaker.failure is None
+
+
+@pytest.mark.asyncio
+async def test_stale_recovery_preserves_pairing_for_a_speaker_not_in_pairing_mode():
+    address = "AA:BB:CC:11:22:33"
+    state = {"device_present": True, "trusted": True}
+    calls: list[tuple[str, bool | None]] = []
+
+    class RecoveryManager:
+        def add_event_listener(self, _listener):
+            pass
+
+        def get_device_by_address(self, _address):
+            if state["device_present"]:
+                return type("Device", (), {"adapter_name": "hci0"})()
+            return None
+
+        async def remove_device(self, _address):
+            calls.append(("remove", None))
+            state["device_present"] = False
+            state["trusted"] = False
+
+        async def pair_and_trust(self, _address):
+            calls.append(("pair", None))
+            if not state["device_present"]:
+                raise ValueError("Device not discoverable outside pairing mode")
+            state["trusted"] = True
+
+        async def connect_device(self, _address, *, reset_existing=False):
+            calls.append(("connect", reset_existing))
+            if not state["device_present"] or not state["trusted"]:
+                raise ValueError("Existing Bluetooth bond was removed")
+            if not reset_existing:
+                raise RuntimeError("br-connection-unknown")
+
+    manager = RecoveryManager()
+    engine = AutoReconnectEngine(manager, max_failures_before_breaker=5)
+    engine.register_speaker(address)
+    profile = engine.profiles[address.lower()]
+    profile.consecutive_failures = 2
+
+    await engine._attempt_reconnect(profile)
+
+    assert state == {"device_present": True, "trusted": True}
+    assert calls == [("connect", False), ("connect", True)]
+    assert profile.state == ReconnectState.CONNECTED
+    assert profile.consecutive_failures == 0
 
 
 def test_trusted_audio_sink_can_be_registered_at_startup():

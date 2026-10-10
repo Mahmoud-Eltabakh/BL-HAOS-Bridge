@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.64
+
+- Keep stale-link recovery from deleting a speaker's existing BlueZ pairing and trust. The reconnect worker now resets/refreshes the link instead of unpairing and attempting to pair again, so a powered trusted speaker can recover without entering pairing mode again.
+
 ## 0.2.63
 
 - Pin LDAC's encoding quality instead of leaving it adaptive. `bluez5.a2dp.ldac.quality` defaults to `auto`, which is Adaptive Bitrate: on a marginal link LDAC lowers its bitrate (990 -> 660 -> 330 kbps) rather than dropping out, so the quality of the *same song* changes while it plays. That is exactly what "the quality drops" is. The add-on now ships `sq` (a steady 660 kbps, still far above SBC, and less CPU to encode), and exposes the mode as the `ldac_quality` add-on option (`hq` 990, `sq` 660, `mq` 330, `auto` adaptive). It is a WirePlumber *device* property, so the wireplumber service writes it into a lua fragment that sorts after `50-bluez.lua`; an unusable value falls back to the shipped default.

@@ -331,28 +331,16 @@ class AutoReconnectEngine:
         )
 
     async def _recover_stale_device(self, profile: SpeakerReconnectProfile) -> bool:
-        """Clear stale BlueZ state and re-establish pairing for a blocked speaker."""
+        """Reset a stale Bluetooth link without deleting its trusted bond."""
         addr = profile.address
         logger.warning("Attempting self-healing recovery for stale Bluetooth speaker %s", addr)
 
         try:
-            await self.manager.remove_device(addr)
-        except Exception as exc:
-            logger.debug("Cleanup remove for %s failed during auto-recovery: %s", addr, exc)
-
-        try:
-            await self.manager.pair_and_trust(addr)
-        except Exception as exc:
-            logger.warning("Pair & trust recovery for %s failed: %s", addr, exc)
-            if self.health:
-                self.health.observe_speaker(addr, SpeakerState.RECONNECTING, failure=FailureClass.STALE_BLUEZ_OBJECT, detail=exc)
-
-        try:
-            await self.manager.connect_device(addr)
+            await self.manager.connect_device(addr, reset_existing=True)
             logger.info("Self-healing recovery succeeded for %s", addr)
             return True
         except Exception as exc:
-            logger.warning("Reconnect after recovery failed for %s: %s", addr, exc)
+            logger.warning("Stale-link reset failed for %s: %s", addr, exc)
             if self.health:
                 self.health.observe_speaker(addr, SpeakerState.UNAVAILABLE, failure=FailureClass.STALE_BLUEZ_OBJECT, detail=exc)
             return False

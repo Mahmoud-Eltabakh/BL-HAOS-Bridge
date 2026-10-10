@@ -75,9 +75,12 @@ The bridge deliberately does not fight for a link:
 - A link that has just come up is left alone for **15 seconds**, so a presence
   advertisement cannot fast-track a retry while the A2DP transport is still being
   negotiated.
-- **Connect** (the button, and the recovery after a failed play) resets a stale A2DP
-  transport on purpose. The automatic reconnect never does: a speaker that is already
-  connected is reported as success instead of being disconnected and reconnected.
+- **Connect** (the button, and the recovery after a failed play) can reset a stale
+  A2DP transport on purpose. Normal automatic reconnect does not tear down a link
+  that is already connected. After repeated BlueZ stale-link failures, one recovery
+  attempt refreshes/resets the link while preserving the existing pairing and trust;
+  it does not remove and re-pair the speaker. If BlueZ has actually lost the pairing,
+  use **Pair & Trust** with the speaker in pairing mode.
 
 Every one of those decisions is observable, so a software flap can be told from a
 radio problem:
