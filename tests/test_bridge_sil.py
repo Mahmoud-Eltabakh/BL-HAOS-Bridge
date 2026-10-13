@@ -161,7 +161,10 @@ def test_websocket_device_update_and_disconnect_cleanup():
                 "org.bluez.Device1",
                 {"Connected": True, "RSSI": -41},
             )
+            # The disconnected-speaker stop publishes a playback_updated event first.
             event = websocket.receive_json()
+            while event["event"] == "playback_updated":
+                event = websocket.receive_json()
 
         assert not ws_manager.active_connections
 
