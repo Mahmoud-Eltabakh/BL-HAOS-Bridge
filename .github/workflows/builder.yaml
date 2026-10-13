@@ -74,7 +74,7 @@ jobs:
           python3 -m pip install --disable-pip-version-check pip-audit==2.7.3
           python3 -m pip_audit --strict --requirement backend/requirements.txt
           npm --prefix web_ui ci --ignore-scripts
-          npm --prefix web_ui audit --omit=dev --audit-level=high
+          npm --prefix web_ui audit --audit-level=high
 
       - name: Scan repository dependency inputs
         # Suppressions live in .trivyignore (repository root): keep every entry
