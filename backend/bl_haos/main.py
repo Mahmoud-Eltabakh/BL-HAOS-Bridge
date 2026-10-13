@@ -29,6 +29,7 @@ from .constants import (
     COMPONENT_LIFECYCLE,
     COMPONENT_NATIVE_BRIDGE,
     COMPONENT_PIPEWIRE,
+    COMMAND_STOP,
     ENV_LOG_LEVEL,
     ENV_SUPERVISOR_TOKEN,
     EVENT_DEVICE_DISCOVERED,
@@ -39,7 +40,6 @@ from .constants import (
     LOGGER_NAME,
     LOG_FORMAT,
     LOG_LEVEL_INFO,
-    PLAYBACK_STOPPED,
     RECOVERY_HEALTHY,
     RECOVERY_PENDING,
     ROOT_PATH,
@@ -252,7 +252,7 @@ async def lifespan(app: FastAPI):
             if is_audio and not is_conn and (is_trust or is_paired):
                 # A speaker we may be streaming to just went away; end the stream
                 # instead of letting the decoder write into a dead sink.
-                _spawn(ha_bridge.execute(data.address, PLAYBACK_STOPPED), f"stop playback for {data.address}")
+                _spawn(ha_bridge.execute(data.address, COMMAND_STOP), f"stop playback for {data.address}")
                 ha_bridge.unregister_keepalive(data.address)
             if is_audio and is_trust:
                 # Publishing to Home Assistant and arming auto-reconnect are both
