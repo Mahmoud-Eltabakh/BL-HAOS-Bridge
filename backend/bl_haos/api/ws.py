@@ -18,6 +18,8 @@ from ..constants import (
 )
 from ..health import authorized_bearer, safe_detail
 
+from ..call_trace import trace_call
+
 logger = logging.getLogger("bl_haos.api.ws")
 router = APIRouter(tags=["websocket"])
 NATIVE_SPEAKER_UPDATED_EVENT = EVENT_SPEAKER_UPDATED
@@ -25,19 +27,23 @@ HEALTH_EVENT = EVENT_HEALTH
 
 
 class ConnectionManager:
+    @trace_call
     def __init__(self):
         self.active_connections: list[WebSocket] = []
 
+    @trace_call
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
         logger.debug("WebSocket client connected. Total clients: %d", len(self.active_connections))
 
+    @trace_call
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
             logger.debug("WebSocket client disconnected. Total clients: %d", len(self.active_connections))
 
+    @trace_call
     async def broadcast(self, event_type: str, data: Any):
         """Broadcast JSON message to all connected clients."""
         if not self.active_connections:
@@ -71,6 +77,7 @@ native_ws_manager = ConnectionManager()
 
 
 @router.websocket(WS_PUBLIC_PATH)
+@trace_call
 async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
     try:
@@ -88,6 +95,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @router.websocket(WS_NATIVE_PATH)
+@trace_call
 async def native_websocket_endpoint(websocket: WebSocket):
     """Serve native speaker updates on the private Supervisor network."""
     expected = websocket.app.state.config_store.settings.native_token

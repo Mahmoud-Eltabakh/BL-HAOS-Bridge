@@ -8,6 +8,8 @@ from dbus_fast.service import ServiceInterface, method
 
 from .constants import AGENT_INTERFACE, AGENT_PAIRING_REFUSED_ERROR
 
+from ..call_trace import trace_call
+
 logger = logging.getLogger("bl_haos.bluetooth.agent")
 
 
@@ -23,6 +25,7 @@ class BlueZAgent(ServiceInterface):
     supplying a credential.
     """
 
+    @trace_call
     def __init__(
         self,
         pin_callback: Callable[[str], str | None] | None = None,
@@ -38,24 +41,29 @@ class BlueZAgent(ServiceInterface):
         self.active_requests: dict[str, Any] = {}
 
     @staticmethod
+    @trace_call
     def _refuse(device: str, action: str) -> None:
         logger.warning("Refusing %s for unauthorized device %s", action, device)
         raise Exception(AGENT_PAIRING_REFUSED_ERROR)
 
+    @trace_call
     def get_pin(self, device: str) -> str | None:
         """Helper to invoke pin callback directly."""
         pin = self.pin_callback(device)
         return None if pin is None else str(pin)
 
+    @trace_call
     def confirm_passkey(self, device: str, passkey: int) -> bool:
         """Helper to invoke confirmation callback directly."""
         return bool(self.confirm_callback(device, passkey))
 
     @method()
+    @trace_call
     def Release(self):
         logger.info("Agent released by BlueZ")
 
     @method()
+    @trace_call
     def RequestPinCode(self, device: "o") -> "s":  # type: ignore[name-defined]
         logger.info("RequestPinCode received for device %s", device)
         pin = self.pin_callback(device)
@@ -64,11 +72,13 @@ class BlueZAgent(ServiceInterface):
         return str(pin)
 
     @method()
+    @trace_call
     def DisplayPinCode(self, device: "o", pincode: "s"):  # type: ignore[name-defined]
         logger.info("DisplayPinCode for %s: %s", device, pincode)
         self.active_requests[device] = {"type": "display_pin", "pincode": pincode}
 
     @method()
+    @trace_call
     def RequestPasskey(self, device: "o") -> "u":  # type: ignore[name-defined]
         logger.info("RequestPasskey received for device %s", device)
         passkey = self.passkey_callback(device)
@@ -77,6 +87,7 @@ class BlueZAgent(ServiceInterface):
         return int(passkey)
 
     @method()
+    @trace_call
     def DisplayPasskey(self, device: "o", passkey: "u", entered: "q"):  # type: ignore[name-defined]
         logger.info("DisplayPasskey for %s: %s (entered: %d)", device, passkey, entered)
         self.active_requests[device] = {
@@ -86,24 +97,28 @@ class BlueZAgent(ServiceInterface):
         }
 
     @method()
+    @trace_call
     def RequestConfirmation(self, device: "o", passkey: "u"):  # type: ignore[name-defined]
         logger.info("RequestConfirmation for %s with passkey %06d", device, passkey)
         if not self.confirm_callback(device, passkey):
             self._refuse(device, "pairing confirmation")
 
     @method()
+    @trace_call
     def RequestAuthorization(self, device: "o"):  # type: ignore[name-defined]
         logger.info("RequestAuthorization for %s", device)
         if not self.authorization_callback(device):
             self._refuse(device, "connection authorization")
 
     @method()
+    @trace_call
     def AuthorizeService(self, device: "o", uuid: "s"):  # type: ignore[name-defined]
         logger.info("AuthorizeService for %s (UUID: %s)", device, uuid)
         if not self.authorization_callback(device):
             self._refuse(device, "service authorization")
 
     @method()
+    @trace_call
     def Cancel(self):
         logger.info("Agent request cancelled by BlueZ")
         self.active_requests.clear()

@@ -188,6 +188,21 @@ the difference diagnosable.
 
 For an incident, temporarily set the add-on `log_level` to `debug`, restart the add-on, reproduce the issue once, and export its log with the Home Assistant Terminal & SSH add-on:
 
+At `debug` (or `trace`), named backend functions emit `call enter` followed by
+`call exit`, `call error`, or `call cancel`. Each line names the function, its
+`span`, and its `parent` span; completion lines include `elapsed_ms`, and failures
+include only `error_type`. Match the span identifiers within the same runtime
+to follow nested calls through API handlers, BlueZ operations, reconnects,
+audio-sink probes, playback, and background callbacks. A cancelled async task
+is logged as cancellation, not as a successful return or an ordinary failure.
+Long-running functions complete their span only when they return or stop.
+These traces cover project functions, not every internal call inside third-party
+libraries, and identifiers are not shared across the add-on and Home Assistant.
+Tracing excludes arguments, return values, exception text, and tracebacks.
+It adds no trace lines at `info` or higher. DEBUG tracing can be verbose and add
+overhead, especially for audio-processing callbacks; enable it only while
+collecting evidence.
+
 ```sh
 ha addons logs bl_haos > /config/bl-haos-addon.log
 ```
@@ -205,7 +220,7 @@ logger:
 ha core logs > /config/bl-haos-integration.log
 ```
 
-The add-on log identifies BlueZ and PipeWire state; the Home Assistant log identifies native integration commands and entity state transitions. Remove the temporary debug logger after collecting evidence. Redact access tokens, media URLs, and complete Bluetooth addresses before sharing logs.
+The add-on log identifies BlueZ and PipeWire state; the Home Assistant log identifies native integration commands and entity state transitions. Integration 0.2.19 and later also traces named integration functions using the same call-span format, excluding the logger plumbing itself to prevent recursive logging. Remove the temporary debug logger and restore the add-on's `info` level after collecting evidence. Existing operational messages can still contain media URLs or device identifiers: redact access tokens, media URLs, and complete Bluetooth addresses before sharing logs.
 
 ## Native Integration Verification
 

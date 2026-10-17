@@ -31,6 +31,8 @@ from ..constants import (
     SPEAKER_DEVICE_TYPE,
 )
 
+from ..call_trace import trace_call
+
 logger = logging.getLogger("bl_haos.bluetooth.device")
 
 
@@ -39,6 +41,7 @@ class BluetoothOperationInProgress(RuntimeError):
 
 
 class BluetoothDevice:
+    @trace_call
     def __init__(self, bus: MessageBus | None, path: str, properties: dict[str, Any]):
         self.bus = bus
         self.path = path
@@ -51,6 +54,7 @@ class BluetoothDevice:
         # the dashboard and Home Assistant.
         self.detached = False
 
+    @trace_call
     def _get_prop(self, key: str, default: Any = None) -> Any:
         val = self._properties.get(key, default)
         if isinstance(val, Variant):
@@ -58,34 +62,42 @@ class BluetoothDevice:
         return val
 
     @property
+    @trace_call
     def address(self) -> str:
         return self._get_prop("Address", "")
 
     @property
+    @trace_call
     def name(self) -> str | None:
         return self._get_prop("Name")
 
     @property
+    @trace_call
     def alias(self) -> str:
         return self._get_prop("Alias", self.name or self.address)
 
     @property
+    @trace_call
     def adapter_path(self) -> str:
         return self._get_prop("Adapter", "")
 
     @property
+    @trace_call
     def adapter_name(self) -> str:
         return self.adapter_path.split("/")[-1] if self.adapter_path else ADAPTER_NAME_FALLBACK
 
     @property
+    @trace_call
     def paired(self) -> bool:
         return bool(self._get_prop("Paired", False))
 
     @property
+    @trace_call
     def trusted(self) -> bool:
         return bool(self._get_prop("Trusted", False))
 
     @property
+    @trace_call
     def connected(self) -> bool:
         # A detached record keeps its last known properties, so ``Connected`` can
         # still read True after BlueZ withdrew the object. The device is offline
@@ -94,22 +106,27 @@ class BluetoothDevice:
         return bool(self._get_prop("Connected", False)) and not self.detached
 
     @property
+    @trace_call
     def blocked(self) -> bool:
         return bool(self._get_prop("Blocked", False))
 
     @property
+    @trace_call
     def rssi(self) -> int | None:
         return self._get_prop("RSSI")
 
     @property
+    @trace_call
     def class_of_device(self) -> int | None:
         return self._get_prop("Class")
 
     @property
+    @trace_call
     def uuids(self) -> list[str]:
         return [str(u).lower() for u in self._get_prop("UUIDs", [])]
 
     @property
+    @trace_call
     def is_audio_sink(self) -> bool:
         """Determine if this device functions as a Bluetooth audio sink (speaker/headphone)."""
         # Check UUIDs
@@ -147,6 +164,7 @@ class BluetoothDevice:
         return False
 
     @property
+    @trace_call
     def device_type(self) -> str:
         """Human-readable device classification."""
         if self.class_of_device is not None:
@@ -163,17 +181,20 @@ class BluetoothDevice:
 
         return SPEAKER_DEVICE_TYPE if self.is_audio_sink else BLUETOOTH_DEVICE_LABEL
 
+    @trace_call
     def update_properties(self, changed: dict[str, Any]):
         """Update properties and timestamp from PropertiesChanged signal."""
         for k, v in changed.items():
             self._properties[k] = v.value if isinstance(v, Variant) else v
         self.last_seen = time.time()
 
+    @trace_call
     def mark_detached(self) -> None:
         """Keep the last known record after BlueZ withdrew the device object."""
         self.detached = True
         self._properties["Connected"] = False
 
+    @trace_call
     def to_info(self) -> DeviceInfo:
         return DeviceInfo(
             path=self.path,
@@ -199,6 +220,7 @@ class BluetoothDevice:
             detached=self.detached,
         )
 
+    @trace_call
     async def connect(self) -> None:
         """Connect to device."""
         logger.debug("Executing BlueZ connect on device %s (%s)", self.address, self.path)
@@ -240,6 +262,7 @@ class BluetoothDevice:
         self._properties["Connected"] = True
         logger.debug("BlueZ connect succeeded for %s", self.address)
 
+    @trace_call
     async def disconnect(self) -> None:
         """Disconnect from device."""
         logger.debug("Executing BlueZ disconnect on device %s (%s)", self.address, self.path)
@@ -256,6 +279,7 @@ class BluetoothDevice:
         self._properties["Connected"] = False
         logger.debug("BlueZ disconnect completed for %s", self.address)
 
+    @trace_call
     async def pair(self) -> None:
         """Initiate pairing."""
         logger.debug("Executing BlueZ pair on device %s (%s)", self.address, self.path)
@@ -280,6 +304,7 @@ class BluetoothDevice:
         self._properties["Paired"] = True
         logger.debug("BlueZ pair succeeded for %s", self.address)
 
+    @trace_call
     async def set_trusted(self, trusted: bool) -> None:
         """Set trusted flag on device."""
         logger.debug("Setting Trusted=%s on BlueZ Device %s (%s)", trusted, self.address, self.path)

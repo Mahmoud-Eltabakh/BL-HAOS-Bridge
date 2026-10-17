@@ -51,6 +51,8 @@ from ..health import (
     validate_media_url,
 )
 
+from ..call_trace import trace_call
+
 logger = logging.getLogger("bl_haos.ha.player")
 PULSE_SOCKET = PlayerSettings.model_fields["pulse_socket"].default
 PULSE_SERVER = f"unix:{PULSE_SOCKET}"
@@ -58,6 +60,7 @@ PULSE_SERVER = f"unix:{PULSE_SOCKET}"
 _CODEC_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
 
 
+@trace_call
 def _codec_token(value: Any) -> str | None:
     """A codec name in the settings schema spelling, or None when unusable.
 
@@ -72,6 +75,7 @@ def _codec_token(value: Any) -> str | None:
     return candidate if _CODEC_PATTERN.fullmatch(candidate) else None
 
 
+@trace_call
 def codec_from_props(props: Any, address: str) -> str | None:
     """The A2DP codec one audio-graph object reports for a speaker, if any.
 
@@ -96,6 +100,7 @@ def codec_from_props(props: Any, address: str) -> str | None:
     return None
 
 
+@trace_call
 def _positive_int(value: Any) -> int | None:
     """A sample rate from a property that may be an int or a fraction string.
 
@@ -119,6 +124,7 @@ def _positive_int(value: Any) -> int | None:
     return None
 
 
+@trace_call
 def node_rate_from_props(props: Any, node: Any) -> int | None:
     """The rate an audio-graph object is running at, when the graph says.
 
@@ -153,6 +159,7 @@ def node_rate_from_props(props: Any, node: Any) -> int | None:
     return None
 
 
+@trace_call
 def codec_from_graph(graph: Any, address: str) -> str | None:
     """The codec a ``pw-dump`` graph reports for a speaker, if any."""
     if not isinstance(graph, list):
@@ -213,6 +220,7 @@ class MediaPlayerError(RuntimeError):
 
 
 class MediaPlayerBridge:
+    @trace_call
     def __init__(
         self,
         config_store: ConfigStore | None = None,
@@ -279,9 +287,11 @@ class MediaPlayerBridge:
                 self.volumes[normalized] = speaker.default_volume / 100
 
     @staticmethod
+    @trace_call
     def _address(address: str) -> str:
         return normalize_address(address)
 
+    @trace_call
     def _address_lock(self, address: str) -> asyncio.Lock:
         """Return the serialization lock for one speaker's command stream."""
         lock = self._address_locks.get(address)
@@ -290,9 +300,11 @@ class MediaPlayerBridge:
             self._address_locks[address] = lock
         return lock
 
+    @trace_call
     def get_state(self, address: str) -> str:
         return self.states.get(self._address(address), PLAYBACK_IDLE)
 
+    @trace_call
     def get_timeline(self, address: str) -> dict[str, Any]:
         """Return the position/duration/title envelope Home Assistant renders."""
         entry = self.timelines.get(self._address(address))
@@ -318,6 +330,7 @@ class MediaPlayerBridge:
         }
 
     @staticmethod
+    @trace_call
     def _text(value: Any) -> str | None:
         """Return a bounded display string, or None when there is nothing to show."""
         if not isinstance(value, str):
@@ -326,6 +339,7 @@ class MediaPlayerBridge:
         return cleaned[:TITLE_MAX_LENGTH] or None
 
     @staticmethod
+    @trace_call
     def _title_from_url(url: str) -> str | None:
         """Best-effort display name for a stream, taken from its final path segment."""
         try:
@@ -342,6 +356,7 @@ class MediaPlayerBridge:
         return name.replace("_", " ").strip()[:TITLE_MAX_LENGTH] or None
 
     @staticmethod
+    @trace_call
     def _timeline_position(entry: dict[str, Any]) -> float:
         """Elapsed playing time, ignoring time spent paused."""
         position = float(entry.get("position") or 0.0)
@@ -350,6 +365,7 @@ class MediaPlayerBridge:
             position += time.time() - clock_started_at
         return max(position, 0.0)
 
+    @trace_call
     def _start_timeline(self, address: str, url: str, title: str | None = None) -> None:
         self.timelines[address] = {
             "position": 0.0,
@@ -361,6 +377,7 @@ class MediaPlayerBridge:
             "artist": None,
         }
 
+    @trace_call
     def _pause_timeline(self, address: str) -> None:
         entry = self.timelines.get(address)
         if not entry or not isinstance(entry.get("clock_started_at"), (int, float)):
@@ -368,15 +385,18 @@ class MediaPlayerBridge:
         entry["position"] = self._timeline_position(entry)
         entry["clock_started_at"] = None
 
+    @trace_call
     def _resume_timeline(self, address: str) -> None:
         entry = self.timelines.get(address)
         if not entry or isinstance(entry.get("clock_started_at"), (int, float)):
             return
         entry["clock_started_at"] = time.time()
 
+    @trace_call
     def _clear_timeline(self, address: str) -> None:
         self.timelines.pop(address, None)
 
+    @trace_call
     def get_volume(self, address: str) -> float:
         """The level Home Assistant and the dashboard should show.
 
@@ -391,6 +411,7 @@ class MediaPlayerBridge:
             return self.volumes[addr]
         return self._stored_default_volume(addr)
 
+    @trace_call
     def _stored_default_volume(self, address: str) -> float:
         """The startup level configured for one speaker, or the global default."""
         if self.config_store:
@@ -399,12 +420,14 @@ class MediaPlayerBridge:
                 return speaker.default_volume / VOLUME_MAX_PERCENT
         return self.player_settings.default_volume
 
+    @trace_call
     async def _notify(self, address: str) -> None:
         if self._state_callback:
             result = self._state_callback(address)
             if result is not None:
                 await result
 
+    @trace_call
     def _track_task(self, coro: Awaitable[Any], description: str) -> asyncio.Task | None:
         """Create a background task with a strong reference and error logging.
 
@@ -426,6 +449,7 @@ class MediaPlayerBridge:
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
 
+        @trace_call
         def _on_done(completed: asyncio.Task) -> None:
             self._background_tasks.discard(completed)
             if completed.cancelled():
@@ -437,6 +461,7 @@ class MediaPlayerBridge:
         task.add_done_callback(_on_done)
         return task
 
+    @trace_call
     async def _drain_process_output(self, process: asyncio.subprocess.Process, label: str, address: str) -> None:
         """Continuously drain child stderr so the OS pipe buffer can never fill.
 
@@ -467,6 +492,7 @@ class MediaPlayerBridge:
         except Exception:
             logger.debug("%s stderr drain failed for %s", label, address, exc_info=True)
 
+    @trace_call
     async def execute(self, address: str, operation: str, *, volume: float | None = None, url: str | None = None) -> None:
         """Execute one validated native operation and publish only confirmed state."""
         address = self._address(address)
@@ -519,6 +545,7 @@ class MediaPlayerBridge:
             raise MediaPlayerError("Unsupported media player operation")
         await self._notify(address)
 
+    @trace_call
     async def handle_command(self, address: str, command: str) -> None:
         """Adapt an optional legacy command topic to the native operation dispatcher."""
         cmd = command.strip()
@@ -539,6 +566,7 @@ class MediaPlayerBridge:
             except ValueError:
                 raise MediaPlayerError("Volume must be numeric")
 
+    @trace_call
     async def play_url(self, address: str, url: str) -> None:
         """Decode one validated URL and route it to the selected A2DP sink."""
         addr = self._address(address)
@@ -552,6 +580,7 @@ class MediaPlayerBridge:
         async with self._address_lock(addr):
             await self._play_url_locked(addr, url)
 
+    @trace_call
     async def _play_url_locked(self, addr: str, url: str) -> None:
         """Start a stream for one speaker; the caller holds that speaker's lock."""
         await self._cancel_sink_warmup(addr)
@@ -632,16 +661,19 @@ class MediaPlayerBridge:
         self._track_task(self._watch_processes(addr, decoder, player), f"playback watch {addr}")
         await self._notify(addr)
 
+    @trace_call
     async def set_volume(self, address: str, volume: float) -> None:
         """Set volume level (0.0 - 1.0)."""
         await self.execute(address, "set_volume", volume=volume)
 
+    @trace_call
     def register_keepalive(self, address: str) -> None:
         """Track a connected speaker so its BT radio is periodically nudged awake."""
         addr = self._address(address)
         self.keepalive_addresses.add(addr)
         self._start_sink_warmup(addr)
 
+    @trace_call
     def unregister_keepalive(self, address: str) -> None:
         """Stop nudging a speaker that is no longer connected/trusted."""
         addr = self._address(address)
@@ -650,6 +682,7 @@ class MediaPlayerBridge:
         if pending and not pending.done():
             pending.cancel()
 
+    @trace_call
     def _start_sink_warmup(self, addr: str) -> None:
         """Open the A2DP sink in the background so the first play does not pay for it.
 
@@ -665,6 +698,7 @@ class MediaPlayerBridge:
         if task is not None:
             self._warmup_tasks[addr] = task
 
+    @trace_call
     async def _async_warm_sink(self, addr: str) -> None:
         """Send one silent pulse as soon as the speaker's sink is available."""
         started = time.monotonic()
@@ -691,6 +725,7 @@ class MediaPlayerBridge:
         finally:
             self._warmup_tasks.pop(addr, None)
 
+    @trace_call
     async def _apply_startup_volume(self, addr: str) -> None:
         """Put a freshly connected speaker at its configured level, then read it back.
 
@@ -709,6 +744,7 @@ class MediaPlayerBridge:
             logger.debug("Startup volume could not be applied to %s", addr, exc_info=True)
         await self.refresh_volume(addr, sink)
 
+    @trace_call
     async def _cancel_sink_warmup(self, addr: str) -> None:
         """Give way to a real play before it starts.
 
@@ -724,11 +760,13 @@ class MediaPlayerBridge:
         except asyncio.CancelledError:
             pass
 
+    @trace_call
     async def start_keepalive(self) -> None:
         """Start the background low-duty-cycle keep-alive loop."""
         if self._keepalive_task is None:
             self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
+    @trace_call
     async def stop_keepalive(self) -> None:
         """Stop the keep-alive loop."""
         if self._keepalive_task:
@@ -739,6 +777,7 @@ class MediaPlayerBridge:
                 pass
             self._keepalive_task = None
 
+    @trace_call
     async def _keepalive_loop(self) -> None:
         """Send a brief silent pulse to idle speakers so they don't auto-sleep."""
         try:
@@ -749,6 +788,7 @@ class MediaPlayerBridge:
         except asyncio.CancelledError:
             pass
 
+    @trace_call
     async def _send_keepalive_pulse(self, address: str) -> bool:
         """Play a short, silent PCM burst to the sink without touching playback state.
 
@@ -798,6 +838,7 @@ class MediaPlayerBridge:
                     await process.wait()
         return True
 
+    @trace_call
     async def _async_probe_duration(self, address: str, url: str) -> None:
         """Resolve duration and display metadata in the background.
 
@@ -843,6 +884,7 @@ class MediaPlayerBridge:
             await self._notify(address)
 
     @classmethod
+    @trace_call
     def _parse_probe_metadata(cls, output: str) -> dict[str, Any]:
         """Read ffprobe `key=value` output, tolerating a bare numeric duration."""
         metadata: dict[str, Any] = {"duration": None, "title": None, "artist": None}
@@ -865,6 +907,7 @@ class MediaPlayerBridge:
         return metadata
 
     @staticmethod
+    @trace_call
     def _parse_duration(output: str) -> float | None:
         """Read one numeric duration value, ignoring anything not positive."""
         for line in output.splitlines():
@@ -877,6 +920,7 @@ class MediaPlayerBridge:
                 return duration
         return None
 
+    @trace_call
     def _configured_codec(self, address: str) -> str | None:
         """The operator's codec pin for this speaker, when one is configured."""
         store = getattr(self, "config_store", None)
@@ -885,6 +929,7 @@ class MediaPlayerBridge:
         speaker = speakers.get(address) if isinstance(speakers, dict) else None
         return getattr(speaker, "codec_override", None)
 
+    @trace_call
     async def _report_codec(self, address: str, transport: str) -> None:
         """Record and log the codec the sink is actually running.
 
@@ -915,6 +960,7 @@ class MediaPlayerBridge:
             address, transport, codec, timing, self.player_settings.latency_msec,
         )
 
+    @trace_call
     async def _async_available_profiles(self, card: str) -> list[str]:
         """The A2DP profile names the audio server offers for one BlueZ card."""
         try:
@@ -942,6 +988,7 @@ class MediaPlayerBridge:
         return profiles
 
     @staticmethod
+    @trace_call
     def _profile_for_codec(profiles: list[str], codec: str) -> str | None:
         """The profile name that selects a codec, or None when it is not offered."""
         for name in profiles:
@@ -951,6 +998,7 @@ class MediaPlayerBridge:
                 return name
         return None
 
+    @trace_call
     async def _apply_codec_override(self, address: str) -> None:
         """Pin the A2DP codec when the operator asked for one.
 
@@ -992,6 +1040,7 @@ class MediaPlayerBridge:
             return
         logger.info("Pinned A2DP codec %s for %s (profile %s)", requested, address, profile)
 
+    @trace_call
     async def _async_resolve_sink(self, address: str) -> str | None:
         graph = []
         try:
@@ -1069,15 +1118,18 @@ class MediaPlayerBridge:
         return None
 
     @staticmethod
+    @trace_call
     def _decode_output(output: bytes | str) -> str:
         return output.decode(errors="replace") if isinstance(output, bytes) else output
 
     @staticmethod
+    @trace_call
     def _parse_sink(sink: str) -> tuple[str, str]:
         if sink.startswith("pulse:"):
             return "pulse", validate_identifier(sink.removeprefix("pulse:"), "PulseAudio sink")
         return "pipewire", validate_identifier(sink, "PipeWire sink")
 
+    @trace_call
     def _player_command(self, transport: str, sink: str) -> tuple[str, ...]:
         # ``resample.quality`` is a stream property: it applies to the adapter this
         # client's stream runs through, so it is honoured whether the stream ends up
@@ -1115,10 +1167,12 @@ class MediaPlayerBridge:
             "-",
         )
 
+    @trace_call
     def _player_environment(self, transport: str) -> dict[str, Any]:
         pulse_server = f"unix:{self.player_settings.pulse_socket}"
         return {"env": {**os.environ, "PULSE_SERVER": pulse_server}} if transport == "pulse" else {}
 
+    @trace_call
     async def refresh_volume(self, address: str, sink: str | None = None) -> float | None:
         """Read the sink's real volume and publish it when it changed.
 
@@ -1155,6 +1209,7 @@ class MediaPlayerBridge:
             await self._notify(addr)
         return volume
 
+    @trace_call
     async def _read_sink_volume(self, transport: str, sink_name: str) -> float | None:
         """Ask the audio server for one sink's volume, or None when it cannot say."""
         if transport == "pulse":
@@ -1192,6 +1247,7 @@ class MediaPlayerBridge:
         return self.parse_sink_volume(transport, output)
 
     @staticmethod
+    @trace_call
     def parse_sink_volume(transport: str, output: str) -> float | None:
         """The volume an audio-server listing reports, as a 0-1 ratio.
 
@@ -1214,11 +1270,13 @@ class MediaPlayerBridge:
             return None
         return min(max(value, VOLUME_MIN_RATIO), VOLUME_MAX_RATIO)
 
+    @trace_call
     def start_volume_watch(self) -> None:
         """Start reading every connected speaker's real volume back."""
         if self._volume_watch_task is None:
             self._volume_watch_task = self._track_task(self._volume_watch_loop(), "volume watch")
 
+    @trace_call
     async def stop_volume_watch(self) -> None:
         task = self._volume_watch_task
         self._volume_watch_task = None
@@ -1230,6 +1288,7 @@ class MediaPlayerBridge:
         except asyncio.CancelledError:
             pass
 
+    @trace_call
     async def _volume_watch_loop(self) -> None:
         """Poll the sinks of connected speakers so their reported level stays true."""
         try:
@@ -1243,6 +1302,7 @@ class MediaPlayerBridge:
         except asyncio.CancelledError:
             pass
 
+    @trace_call
     async def _apply_volume(self, address: str, volume: float, sink: str | None = None) -> None:
         sink = sink or await self._sink_resolver(address)
         if sink:
@@ -1263,6 +1323,7 @@ class MediaPlayerBridge:
             except Exception as e:
                 logger.debug("Sink volume update notice for %s (%s): %s", address, sink_name, e)
 
+    @trace_call
     async def _signal_processes(self, address: str, signal_number: signal.Signals) -> None:
         for process in self.active_processes.get(address, ()):
             try:
@@ -1276,6 +1337,7 @@ class MediaPlayerBridge:
             except (ProcessLookupError, PermissionError, OSError):
                 logger.debug("Playback process for %s already exited before signal", address)
 
+    @trace_call
     async def _pipe_audio(self, decoder: asyncio.subprocess.Process, player: asyncio.subprocess.Process) -> None:
         """Copy decoded PCM without introducing a shell pipeline."""
         try:
@@ -1293,6 +1355,7 @@ class MediaPlayerBridge:
                 except ProcessLookupError:
                     pass
 
+    @trace_call
     async def _stop_processes(self, address: str) -> None:
         """Stop one speaker's playback pair with a hard upper bound on waiting.
 
@@ -1333,6 +1396,7 @@ class MediaPlayerBridge:
             asyncio.get_running_loop().time() - started,
         )
 
+    @trace_call
     async def _async_wait_for_exits(
         self, processes: tuple[asyncio.subprocess.Process, ...], timeout: float
     ) -> None:
@@ -1345,6 +1409,7 @@ class MediaPlayerBridge:
         except asyncio.TimeoutError:
             pass
 
+    @trace_call
     async def _async_reap_processes(
         self, address: str, processes: tuple[asyncio.subprocess.Process, ...]
     ) -> None:
@@ -1364,6 +1429,7 @@ class MediaPlayerBridge:
                 )
 
     @staticmethod
+    @trace_call
     def _continue_process(process: asyncio.subprocess.Process) -> None:
         """Resume a stopped child so a pending termination signal can land."""
         pid = getattr(process, "pid", None)
@@ -1375,6 +1441,7 @@ class MediaPlayerBridge:
             logger.debug("Playback process %s already exited before SIGCONT", pid)
 
     @staticmethod
+    @trace_call
     def _terminate_process(process: asyncio.subprocess.Process) -> None:
         try:
             process.terminate()
@@ -1382,6 +1449,7 @@ class MediaPlayerBridge:
             pass
 
     @staticmethod
+    @trace_call
     def _kill_process(process: asyncio.subprocess.Process) -> None:
         try:
             process.kill()
@@ -1389,6 +1457,7 @@ class MediaPlayerBridge:
             pass
 
     @staticmethod
+    @trace_call
     async def _async_wait_for_exit(process: asyncio.subprocess.Process, timeout: float) -> bool:
         """Wait for one child to exit without ever blocking the caller."""
         try:
@@ -1400,6 +1469,7 @@ class MediaPlayerBridge:
             return True
         return True
 
+    @trace_call
     async def _watch_processes(self, address: str, decoder: asyncio.subprocess.Process, player: asyncio.subprocess.Process) -> None:
         await asyncio.gather(decoder.wait(), player.wait(), return_exceptions=True)
         if self.active_processes.get(address) == (decoder, player):
@@ -1416,6 +1486,7 @@ class MediaPlayerBridge:
             self._clear_timeline(address)
             await self._notify(address)
 
+    @trace_call
     async def async_shutdown(self) -> None:
         logger.debug("Shutting down MediaPlayerBridge...")
         await self.stop_keepalive()

@@ -33,6 +33,8 @@ from ..constants import (
 )
 from ..health import FailureClass, HealthRegistry, SpeakerState, normalize_address
 
+from ..call_trace import trace_call
+
 logger = logging.getLogger("bl_haos.bluetooth.reconnect")
 
 
@@ -64,6 +66,7 @@ class SpeakerReconnectProfile(BaseModel):
 
 
 class AutoReconnectEngine:
+    @trace_call
     def __init__(
         self,
         manager: BluetoothManager,
@@ -91,16 +94,19 @@ class AutoReconnectEngine:
         # Subscribe to BluetoothManager events
         self.manager.add_event_listener(self._handle_bluetooth_event)
 
+    @trace_call
     def _get_adapter_lock(self, adapter_name: str) -> asyncio.Lock:
         if adapter_name not in self.adapter_locks:
             self.adapter_locks[adapter_name] = asyncio.Lock()
         return self.adapter_locks[adapter_name]
 
+    @trace_call
     def _release_inflight(self, address: str, task: asyncio.Task) -> None:
         """Release ownership only when the completed task is still current."""
         if self._inflight.get(address) is task:
             self._inflight.pop(address, None)
 
+    @trace_call
     def register_speaker(self, address: str, enabled: bool = True, preferred_adapter: str | None = None) -> None:
         """Register a trusted speaker for automatic reconnection tracking."""
         addr = normalize_address(address)
@@ -116,6 +122,7 @@ class AutoReconnectEngine:
             if preferred_adapter:
                 self.profiles[addr].preferred_adapter = preferred_adapter
 
+    @trace_call
     def unregister_speaker(self, address: str) -> None:
         """Unregister a speaker from auto-reconnection."""
         addr = normalize_address(address)
@@ -126,12 +133,14 @@ class AutoReconnectEngine:
         if addr in self.profiles:
             del self.profiles[addr]
 
+    @trace_call
     def _calculate_backoff_delay(self, step: int) -> float:
         """Calculate exponential backoff with random jitter."""
         delay = min(self.max_backoff, self.initial_backoff * (self.backoff_multiplier ** step))
         jitter = delay * random.uniform(-RECONNECT_BACKOFF_JITTER, RECONNECT_BACKOFF_JITTER)
         return max(RECONNECT_MIN_BACKOFF_SECONDS, delay + jitter)
 
+    @trace_call
     def _handle_bluetooth_event(self, event_type: str, data: Any):
         """React to live Bluetooth events from the manager."""
         if not self._running:
@@ -141,6 +150,7 @@ class AutoReconnectEngine:
             if isinstance(data, DeviceInfo):
                 self._on_device_event(data)
 
+    @trace_call
     def _on_device_event(self, device: DeviceInfo):
         try:
             addr = normalize_address(device.address)
@@ -213,6 +223,7 @@ class AutoReconnectEngine:
                     logger.info("Presence advertisement detected for %s (RSSI %d). Fast-tracking reconnect.", addr, device.rssi)
                     profile.next_retry_time = now
 
+    @trace_call
     async def start(self) -> None:
         """Start the background auto-reconnect worker."""
         if self._running:
@@ -221,6 +232,7 @@ class AutoReconnectEngine:
         self._loop_task = asyncio.create_task(self._reconnect_loop())
         logger.info("AutoReconnectEngine started.")
 
+    @trace_call
     async def stop(self) -> None:
         """Stop the background auto-reconnect worker."""
         self._running = False
@@ -238,6 +250,7 @@ class AutoReconnectEngine:
                 pass
         logger.info("AutoReconnectEngine stopped.")
 
+    @trace_call
     async def _reconnect_loop(self) -> None:
         """Continuous background tick checking for pending reconnects."""
         while self._running:
@@ -247,6 +260,7 @@ class AutoReconnectEngine:
                 logger.error("Error in reconnect loop tick: %s", e)
             await asyncio.sleep(RECONNECT_POLL_INTERVAL_SECONDS)
 
+    @trace_call
     async def _tick(self) -> None:
         now = time.time()
         for addr, profile in list(self.profiles.items()):
@@ -287,11 +301,13 @@ class AutoReconnectEngine:
                         lambda completed, address=addr: self._release_inflight(address, completed)
                     )
 
+    @trace_call
     def _attempt_in_progress(self, address: str) -> bool:
         """Is a connect attempt already running for this speaker?"""
         task = self._inflight.get(address)
         return task is not None and not task.done()
 
+    @trace_call
     def _arm_backoff(self, profile: SpeakerReconnectProfile, now: float) -> None:
         """Start reconnect handling for a dropout that survived the grace window."""
         addr = profile.address
@@ -306,6 +322,7 @@ class AutoReconnectEngine:
             delay = max(delay, profile.cooldown_until - now)
         profile.next_retry_time = now + delay
 
+    @trace_call
     def _record_flap(self, profile: SpeakerReconnectProfile, now: float) -> None:
         """Count dropouts in a sliding window and cool down a flapping link.
 
@@ -331,6 +348,7 @@ class AutoReconnectEngine:
             int(RECONNECT_FLAP_COOLDOWN_SECONDS),
         )
 
+    @trace_call
     def _defer_busy_connection(self, profile: SpeakerReconnectProfile, busy: BluetoothOperationInProgress) -> None:
         logger.info(
             "Speaker %s already has a connection in progress (%s); leaving it to settle.",
@@ -343,6 +361,7 @@ class AutoReconnectEngine:
         profile.backoff_step = 0
         profile.next_retry_time = time.time() + RECONNECT_POST_CONNECT_SETTLE_SECONDS
 
+    @trace_call
     async def _recover_stale_device(self, profile: SpeakerReconnectProfile) -> bool:
         """Reset a stale Bluetooth link without deleting its trusted bond."""
         addr = profile.address
@@ -360,6 +379,7 @@ class AutoReconnectEngine:
                 self.health.observe_speaker(addr, SpeakerState.UNAVAILABLE, failure=FailureClass.STALE_BLUEZ_OBJECT, detail=exc)
             return False
 
+    @trace_call
     async def _attempt_reconnect(self, profile: SpeakerReconnectProfile) -> None:
         addr = profile.address
         dev = self.manager.get_device_by_address(addr)

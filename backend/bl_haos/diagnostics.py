@@ -21,6 +21,8 @@ from .constants import (
 )
 from .health import HealthRegistry, redact_value, safe_detail
 
+from .call_trace import trace_call
+
 
 class DiagnosticsService:
     """Project canonical health observations into bounded support-facing data."""
@@ -34,12 +36,14 @@ class DiagnosticsService:
 
     _OMITTED_KEYS = {"dbus_payload", "raw_dbus", "raw_output", "media", "media_url", "output"}
 
+    @trace_call
     def __init__(self, health: HealthRegistry, clock: Callable[[], float] = time.time) -> None:
         self.health = health
         self.clock = clock
         self._events: deque[dict[str, Any]] = deque(maxlen=self.MAX_EVENTS)
 
     @classmethod
+    @trace_call
     def _bounded(cls, value: Any, depth: int = 0) -> Any:
         if depth > MAX_DIAGNOSTICS_DEPTH:
             return OMITTED_PLACEHOLDER
@@ -63,9 +67,11 @@ class DiagnosticsService:
         return safe_detail(value)
 
     @classmethod
+    @trace_call
     def _event_size(cls, event: Mapping[str, Any]) -> int:
         return len(json.dumps(event, sort_keys=True, separators=(",", ":")).encode())
 
+    @trace_call
     def record_event(
         self,
         name: str,
@@ -103,10 +109,12 @@ class DiagnosticsService:
         self._events.append(event)
         return dict(event)
 
+    @trace_call
     def events(self) -> list[dict[str, Any]]:
         cutoff = self.clock() - self.MAX_EVENT_AGE
         return [dict(event) for event in self._events if event["timestamp"] >= cutoff]
 
+    @trace_call
     def _failure_records(self, snapshot: Any) -> list[dict[str, Any]]:
         failures: list[dict[str, Any]] = []
         for component in snapshot.components.values():
@@ -128,6 +136,7 @@ class DiagnosticsService:
                 })
         return sorted(failures, key=lambda item: item["observed_at"], reverse=True)[: self.MAX_COLLECTION_ITEMS]
 
+    @trace_call
     def snapshot(self, *, adapters: Any = None, sinks: Any = None) -> dict[str, Any]:
         health = self.health.snapshot()
         failures = self._failure_records(health)

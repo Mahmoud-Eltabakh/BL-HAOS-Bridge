@@ -56,6 +56,8 @@ from .demo import DemoRuntime
 from .ha.player import MediaPlayerBridge
 from .health import FailureClass, HealthRegistry, HealthState, SpeakerState, safe_detail
 
+from .call_trace import trace_call, trace_scope
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL_INFO),
     format=LOG_FORMAT,
@@ -63,6 +65,7 @@ logging.basicConfig(
 logger = logging.getLogger("bl_haos.main")
 
 
+@trace_call
 async def _publish_supervisor_discovery(native_token: str, log_level: str) -> None:
     """Push the native bridge token to Supervisor so the integration can auto-connect."""
     supervisor_token = os.environ.get(ENV_SUPERVISOR_TOKEN)
@@ -90,6 +93,7 @@ async def _publish_supervisor_discovery(native_token: str, log_level: str) -> No
         logger.warning("Supervisor discovery registration failed: %s", err)
 
 
+@trace_call
 def _spawn(coro, description: str) -> asyncio.Task | None:
     """Schedule one background publish, or dispose of it when there is no loop.
 
@@ -112,6 +116,7 @@ def _spawn(coro, description: str) -> asyncio.Task | None:
     task = loop.create_task(coro)
     tracked.add(task)
 
+    @trace_call
     def _on_done(completed: asyncio.Task) -> None:
         tracked.discard(completed)
         if completed.cancelled():
@@ -127,180 +132,187 @@ def _spawn(coro, description: str) -> asyncio.Task | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    logger.info("Starting BL-HAOS backend daemon...")
-    health = HealthRegistry()
-    app.state.health_registry = health
-    diagnostics = DiagnosticsService(health)
-    app.state.diagnostics = diagnostics
+    with trace_scope(logger, f"{__name__}.lifespan"):
+        logger.info("Starting BL-HAOS backend daemon...")
+        health = HealthRegistry()
+        app.state.health_registry = health
+        diagnostics = DiagnosticsService(health)
+        app.state.diagnostics = diagnostics
 
-    async def _publish_health_telemetry(snapshot):
-        logger.debug(
-            "Health telemetry broadcast: status=%s, lifecycle=%s",
-            snapshot.status.value,
-            snapshot.lifecycle.value,
-        )
-        event = diagnostics.record_event(
-            EVENT_HEALTH_OBSERVATION,
-            component=COMPONENT_HEALTH,
-            detail={"status": snapshot.status.value, "lifecycle": snapshot.lifecycle.value},
-            recovery=RECOVERY_HEALTHY if snapshot.status == HealthState.HEALTHY else RECOVERY_PENDING,
-        )
-        await ws_manager.broadcast(EVENT_TELEMETRY, event)
+        @trace_call
+        async def _publish_health_telemetry(snapshot):
+            logger.debug(
+                "Health telemetry broadcast: status=%s, lifecycle=%s",
+                snapshot.status.value,
+                snapshot.lifecycle.value,
+            )
+            event = diagnostics.record_event(
+                EVENT_HEALTH_OBSERVATION,
+                component=COMPONENT_HEALTH,
+                detail={"status": snapshot.status.value, "lifecycle": snapshot.lifecycle.value},
+                recovery=RECOVERY_HEALTHY if snapshot.status == HealthState.HEALTHY else RECOVERY_PENDING,
+            )
+            await ws_manager.broadcast(EVENT_TELEMETRY, event)
 
-    health.add_listener(_publish_health_telemetry)
-    await health.publish(ws_manager)
-    config_store = ConfigStore()
-    app.state.config_store = config_store
-    log_level = os.environ.get(ENV_LOG_LEVEL, config_store.settings.log_level).upper()
-    logging.getLogger(LOGGER_NAME).setLevel(getattr(logging, log_level, getattr(logging, LOG_LEVEL_INFO)))
-    logger.debug(
-        "Configuration loaded: demo_mode=%s, log_level=%s, speakers_count=%d",
-        config_store.settings.demo_mode,
-        log_level.lower(),
-        len(config_store.settings.speakers),
-    )
-    _spawn(_publish_supervisor_discovery(config_store.settings.native_token, log_level.lower()), "supervisor discovery")
-
-    if config_store.settings.demo_mode:
-        logger.debug("Running in demo mode with scenario '%s'", config_store.settings.demo_scenario)
-        demo_runtime = DemoRuntime(config_store.settings.demo_scenario, health)
-        app.state.demo_runtime = demo_runtime
-        app.state.bt_manager = demo_runtime
-        app.state.ha_bridge = demo_runtime
-        app.state.native_ws_manager = native_ws_manager
-        async def _publish_demo_speaker(address: str) -> None:
-            return None
-
-        app.state.publish_native_speaker = _publish_demo_speaker
+        health.add_listener(_publish_health_telemetry)
         await health.publish(ws_manager)
-        yield
-        health.set_lifecycle(HealthState.STOPPED)
-        return
-
-    bt_manager = BluetoothManager(health_registry=health)
-    await bt_manager.initialize()
-    app.state.bt_manager = bt_manager
-    health.observe_component(
-        COMPONENT_BLUETOOTH,
-        HealthState.HEALTHY if bt_manager.bus is not None else HealthState.UNAVAILABLE,
-        failure=None if bt_manager.bus is not None else FailureClass.DBUS_UNAVAILABLE,
-        detail=None if bt_manager.bus is not None else "System D-Bus unavailable",
-        source=SOURCE_BLUEZ,
-    )
-
-    async def _publish_native_speaker(address: str) -> None:
-        device = next(
-            (candidate for candidate in bt_manager.get_devices(audio_only=True)
-             if candidate.address.strip().lower().replace("-", ":").replace("_", ":") == address.strip().lower().replace("-", ":").replace("_", ":")),
-            None,
+        config_store = ConfigStore()
+        app.state.config_store = config_store
+        log_level = os.environ.get(ENV_LOG_LEVEL, config_store.settings.log_level).upper()
+        logging.getLogger(LOGGER_NAME).setLevel(getattr(logging, log_level, getattr(logging, LOG_LEVEL_INFO)))
+        logger.debug(
+            "Configuration loaded: demo_mode=%s, log_level=%s, speakers_count=%d",
+            config_store.settings.demo_mode,
+            log_level.lower(),
+            len(config_store.settings.speakers),
         )
-        # Only an operator-trusted speaker is published to Home Assistant.
-        # Pairing alone is not consent: a device in radio range reaches
-        # "paired" without the operator doing anything (THREAT-MODEL.md, T3).
-        if device and device.trusted and device.is_audio_sink:
-            logger.debug("Broadcasting native speaker update for %s", address)
-            await native_ws_manager.broadcast(NATIVE_SPEAKER_UPDATED_EVENT, native_speaker_record(app, device))
+        _spawn(_publish_supervisor_discovery(config_store.settings.native_token, log_level.lower()), "supervisor discovery")
 
-    async def _publish_playback_state(address: str) -> None:
-        """Publish a playback change to both surfaces.
+        if config_store.settings.demo_mode:
+            logger.debug("Running in demo mode with scenario '%s'", config_store.settings.demo_scenario)
+            demo_runtime = DemoRuntime(config_store.settings.demo_scenario, health)
+            app.state.demo_runtime = demo_runtime
+            app.state.bt_manager = demo_runtime
+            app.state.ha_bridge = demo_runtime
+            app.state.native_ws_manager = native_ws_manager
+            @trace_call
+            async def _publish_demo_speaker(address: str) -> None:
+                return None
 
-        Home Assistant and the Ingress dashboard listen on different sockets, so a
-        volume or state changed from the media_player entity has to be published on
-        both, or the dashboard keeps showing the stale level. Only playback changes
-        come through here; BlueZ property events still publish to Home Assistant
-        alone and reach the dashboard as ``device_updated``.
-        """
-        await _publish_native_speaker(address)
-        device = next(
-            (candidate for candidate in bt_manager.get_devices(audio_only=True)
-             if candidate.address.strip().lower().replace("-", ":").replace("_", ":") == address.strip().lower().replace("-", ":").replace("_", ":")),
-            None,
-        )
-        if device is None:
+            app.state.publish_native_speaker = _publish_demo_speaker
+            await health.publish(ws_manager)
+            yield
+            health.set_lifecycle(HealthState.STOPPED)
             return
-        await ws_manager.broadcast(
-            EVENT_PLAYBACK_UPDATED,
-            {
-                # The device's own address, exactly as its record carries it: the
-                # dashboard matches this event against the records it already has.
-                "address": device.address,
-                "playback": playback_envelope(app.state.ha_bridge, device.address),
-            },
+
+        bt_manager = BluetoothManager(health_registry=health)
+        await bt_manager.initialize()
+        app.state.bt_manager = bt_manager
+        health.observe_component(
+            COMPONENT_BLUETOOTH,
+            HealthState.HEALTHY if bt_manager.bus is not None else HealthState.UNAVAILABLE,
+            failure=None if bt_manager.bus is not None else FailureClass.DBUS_UNAVAILABLE,
+            detail=None if bt_manager.bus is not None else "System D-Bus unavailable",
+            source=SOURCE_BLUEZ,
         )
 
-    ha_bridge = MediaPlayerBridge(config_store=config_store, state_callback=_publish_playback_state, health_registry=health)
-    app.state.ha_bridge = ha_bridge
-    app.state.publish_native_speaker = _publish_native_speaker
-    app.state.native_ws_manager = native_ws_manager
-    health.observe_component(COMPONENT_NATIVE_BRIDGE, HealthState.HEALTHY, required=False, source=SOURCE_STARTUP)
+        @trace_call
+        async def _publish_native_speaker(address: str) -> None:
+            device = next(
+                (candidate for candidate in bt_manager.get_devices(audio_only=True)
+                 if candidate.address.strip().lower().replace("-", ":").replace("_", ":") == address.strip().lower().replace("-", ":").replace("_", ":")),
+                None,
+            )
+            # Only an operator-trusted speaker is published to Home Assistant.
+            # Pairing alone is not consent: a device in radio range reaches
+            # "paired" without the operator doing anything (THREAT-MODEL.md, T3).
+            if device and device.trusted and device.is_audio_sink:
+                logger.debug("Broadcasting native speaker update for %s", address)
+                await native_ws_manager.broadcast(NATIVE_SPEAKER_UPDATED_EVENT, native_speaker_record(app, device))
 
-    health.observe_component(COMPONENT_PIPEWIRE, HealthState.UNKNOWN, required=False, source=SOURCE_STARTUP)
+        @trace_call
+        async def _publish_playback_state(address: str) -> None:
+            """Publish a playback change to both surfaces.
 
-    # Wire event broadcaster to WebSocket manager and HA Discovery
-    def _broadcast_bt_event(event_type: str, data):
-        logger.debug("Bluetooth event received: %s (data=%s)", event_type, data)
-        return ws_manager.broadcast(event_type, data)
+            Home Assistant and the Ingress dashboard listen on different sockets, so a
+            volume or state changed from the media_player entity has to be published on
+            both, or the dashboard keeps showing the stale level. Only playback changes
+            come through here; BlueZ property events still publish to Home Assistant
+            alone and reach the dashboard as ``device_updated``.
+            """
+            await _publish_native_speaker(address)
+            device = next(
+                (candidate for candidate in bt_manager.get_devices(audio_only=True)
+                 if candidate.address.strip().lower().replace("-", ":").replace("_", ":") == address.strip().lower().replace("-", ":").replace("_", ":")),
+                None,
+            )
+            if device is None:
+                return
+            await ws_manager.broadcast(
+                EVENT_PLAYBACK_UPDATED,
+                {
+                    # The device's own address, exactly as its record carries it: the
+                    # dashboard matches this event against the records it already has.
+                    "address": device.address,
+                    "playback": playback_envelope(app.state.ha_bridge, device.address),
+                },
+            )
 
-    def _on_bt_event(event_type: str, data):
-        _spawn(_broadcast_bt_event(event_type, data), f"broadcast {event_type}")
-        if event_type in (EVENT_DEVICE_UPDATED, EVENT_DEVICE_DISCOVERED) and hasattr(data, "address"):
-            is_audio = getattr(data, "is_audio_sink", False)
-            is_conn = getattr(data, "connected", False)
-            is_trust = getattr(data, "trusted", False)
-            is_paired = getattr(data, "paired", False)
+        ha_bridge = MediaPlayerBridge(config_store=config_store, state_callback=_publish_playback_state, health_registry=health)
+        app.state.ha_bridge = ha_bridge
+        app.state.publish_native_speaker = _publish_native_speaker
+        app.state.native_ws_manager = native_ws_manager
+        health.observe_component(COMPONENT_NATIVE_BRIDGE, HealthState.HEALTHY, required=False, source=SOURCE_STARTUP)
 
-            if is_audio and not is_conn and (is_trust or is_paired):
-                # A speaker we may be streaming to just went away; end the stream
-                # instead of letting the decoder write into a dead sink.
-                _spawn(ha_bridge.execute(data.address, COMMAND_STOP), f"stop playback for {data.address}")
-                ha_bridge.unregister_keepalive(data.address)
-            if is_audio and is_trust:
-                # Publishing to Home Assistant and arming auto-reconnect are both
-                # consequences of the operator trusting a speaker, never of a
-                # device that merely paired or connected.
-                _spawn(_publish_native_speaker(data.address), f"native speaker update for {data.address}")
-                reconnect_engine.register_speaker(data.address)
-                if is_conn:
-                    ha_bridge.register_keepalive(data.address)
+        health.observe_component(COMPONENT_PIPEWIRE, HealthState.UNKNOWN, required=False, source=SOURCE_STARTUP)
 
-    bt_manager.add_event_listener(_on_bt_event)
+        # Wire event broadcaster to WebSocket manager and HA Discovery
+        @trace_call
+        def _broadcast_bt_event(event_type: str, data):
+            logger.debug("Bluetooth event received: %s (data=%s)", event_type, data)
+            return ws_manager.broadcast(event_type, data)
 
-    # Initialize and start AutoReconnectEngine
-    reconnect_engine = AutoReconnectEngine(bt_manager, health_registry=health)
-    app.state.reconnect_engine = reconnect_engine
+        @trace_call
+        def _on_bt_event(event_type: str, data):
+            _spawn(_broadcast_bt_event(event_type, data), f"broadcast {event_type}")
+            if event_type in (EVENT_DEVICE_UPDATED, EVENT_DEVICE_DISCOVERED) and hasattr(data, "address"):
+                is_audio = getattr(data, "is_audio_sink", False)
+                is_conn = getattr(data, "connected", False)
+                is_trust = getattr(data, "trusted", False)
+                is_paired = getattr(data, "paired", False)
 
-    for device in bt_manager.get_devices():
-        if device.trusted:
-            reconnect_engine.register_speaker(device.address)
-            if device.connected and device.is_audio_sink:
-                ha_bridge.register_keepalive(device.address)
+                if is_audio and not is_conn and (is_trust or is_paired):
+                    # A speaker we may be streaming to just went away; end the stream
+                    # instead of letting the decoder write into a dead sink.
+                    _spawn(ha_bridge.execute(data.address, COMMAND_STOP), f"stop playback for {data.address}")
+                    ha_bridge.unregister_keepalive(data.address)
+                if is_audio and is_trust:
+                    # Publishing to Home Assistant and arming auto-reconnect are both
+                    # consequences of the operator trusting a speaker, never of a
+                    # device that merely paired or connected.
+                    _spawn(_publish_native_speaker(data.address), f"native speaker update for {data.address}")
+                    reconnect_engine.register_speaker(data.address)
+                    if is_conn:
+                        ha_bridge.register_keepalive(data.address)
 
-    # Register known speakers from config
-    for addr, spk in config_store.settings.speakers.items():
-        if spk.auto_reconnect:
-            try:
-                reconnect_engine.register_speaker(addr, preferred_adapter=spk.preferred_adapter)
-            except ValueError:
-                logger.warning("Ignoring invalid persisted reconnect speaker identifier")
+        bt_manager.add_event_listener(_on_bt_event)
 
-    logger.debug("Starting AutoReconnectEngine and keepalive tasks...")
-    await reconnect_engine.start()
-    await ha_bridge.start_keepalive()
-    ha_bridge.start_volume_watch()
-    health.set_lifecycle(HealthState.HEALTHY)
-    await health.publish(ws_manager)
-    logger.info("BL-HAOS backend daemon is ready.")
+        # Initialize and start AutoReconnectEngine
+        reconnect_engine = AutoReconnectEngine(bt_manager, health_registry=health)
+        app.state.reconnect_engine = reconnect_engine
 
-    yield
+        for device in bt_manager.get_devices():
+            if device.trusted:
+                reconnect_engine.register_speaker(device.address)
+                if device.connected and device.is_audio_sink:
+                    ha_bridge.register_keepalive(device.address)
 
-    # Shutdown
-    logger.info("Stopping BL-HAOS backend daemon...")
-    health.set_lifecycle(HealthState.STOPPING)
-    await health.publish(ws_manager)
-    await reconnect_engine.stop()
-    await ha_bridge.async_shutdown()
-    health.set_lifecycle(HealthState.STOPPED)
-    await health.publish(ws_manager)
+        # Register known speakers from config
+        for addr, spk in config_store.settings.speakers.items():
+            if spk.auto_reconnect:
+                try:
+                    reconnect_engine.register_speaker(addr, preferred_adapter=spk.preferred_adapter)
+                except ValueError:
+                    logger.warning("Ignoring invalid persisted reconnect speaker identifier")
+
+        logger.debug("Starting AutoReconnectEngine and keepalive tasks...")
+        await reconnect_engine.start()
+        await ha_bridge.start_keepalive()
+        ha_bridge.start_volume_watch()
+        health.set_lifecycle(HealthState.HEALTHY)
+        await health.publish(ws_manager)
+        logger.info("BL-HAOS backend daemon is ready.")
+
+        yield
+
+        # Shutdown
+        logger.info("Stopping BL-HAOS backend daemon...")
+        health.set_lifecycle(HealthState.STOPPING)
+        await health.publish(ws_manager)
+        await reconnect_engine.stop()
+        await ha_bridge.async_shutdown()
+        health.set_lifecycle(HealthState.STOPPED)
+        await health.publish(ws_manager)
 
 
 app = FastAPI(
@@ -313,6 +325,7 @@ app = FastAPI(
 
 
 @app.exception_handler(RequestValidationError)
+@trace_call
 async def handle_request_validation_error(request: Request, exc: RequestValidationError):
     """Return stable validation failures without reflecting untrusted values."""
     return JSONResponse(status_code=422, content={"detail": "Invalid request payload"})

@@ -23,6 +23,8 @@ from .constants import (
 from .diagnostics import DiagnosticsService
 from .health import FailureClass, HealthRegistry, HealthState, SpeakerState
 
+from .call_trace import trace_call
+
 # The demonstration speaker the dashboard focuses on in every scenario.
 DEMO_PRIMARY_SPEAKER = "aa:bb:cc:11:22:33"
 
@@ -37,26 +39,32 @@ DEMO_SCENARIOS = {
 
 
 class _DemoAgent:
+    @trace_call
     def __init__(self) -> None:
         self.pin_callback = None
 
 
 class _DemoAdapterWrapper:
+    @trace_call
     def __init__(self, adapter_info: AdapterInfo) -> None:
         self._info = adapter_info
 
     @property
+    @trace_call
     def interface(self) -> str:
         return self._info.interface
 
     @property
+    @trace_call
     def powered(self) -> bool:
         return self._info.powered
 
     @property
+    @trace_call
     def discovering(self) -> bool:
         return self._info.discovering
 
+    @trace_call
     async def set_power(self, powered: bool) -> None:
         self._info.powered = powered
 
@@ -66,6 +74,7 @@ class DemoRuntime:
 
     CLOCK = 1700000000.0
 
+    @trace_call
     def __init__(self, scenario: str, health: HealthRegistry | None = None) -> None:
         if scenario not in DEMO_SCENARIOS:
             raise ValueError("Unknown demo scenario")
@@ -142,6 +151,7 @@ class DemoRuntime:
         self._volumes: dict[str, float] = {DEMO_PRIMARY_SPEAKER: DEFAULT_VOLUME_RATIO}
         self._prepare_health()
 
+    @trace_call
     def _prepare_health(self) -> None:
         self.health.observe_component(COMPONENT_BLUETOOTH, HealthState.HEALTHY, source=SOURCE_DEMO)
         self.health.observe_component(COMPONENT_PIPEWIRE, HealthState.HEALTHY if self.scenario not in {"sink_missing"} else HealthState.UNAVAILABLE, source=SOURCE_DEMO)
@@ -163,30 +173,37 @@ class DemoRuntime:
             correlation_id="demo-event-0001",
         )
 
+    @trace_call
     def get_adapters(self) -> list[AdapterInfo]:
         return [self.adapter]
 
+    @trace_call
     def get_adapter_by_name(self, name: str) -> _DemoAdapterWrapper | None:
         if name in (self.adapter.interface, self.adapter.name):
             return _DemoAdapterWrapper(self.adapter)
         return None
 
+    @trace_call
     async def start_scan(self, adapter_name: str | None = None) -> None:
         self.adapter.discovering = True
 
+    @trace_call
     async def stop_scan(self, adapter_name: str | None = None) -> None:
         self.adapter.discovering = False
 
+    @trace_call
     def get_devices(self, audio_only: bool = True) -> list[DeviceInfo]:
         results = list(self.devices.values())
         if audio_only:
             results = [d for d in results if d.is_audio_sink]
         return results
 
+    @trace_call
     def get_device_by_address(self, address: str) -> DeviceInfo | None:
         normalized = address.lower().replace("-", ":")
         return self.devices.get(normalized)
 
+    @trace_call
     async def pair_and_trust(self, address: str) -> bool:
         normalized = address.lower().replace("-", ":")
         dev = self.devices.get(normalized)
@@ -200,6 +217,7 @@ class DemoRuntime:
             return True
         return False
 
+    @trace_call
     async def connect_device(self, address: str) -> bool:
         normalized = address.lower().replace("-", ":")
         dev = self.devices.get(normalized)
@@ -209,6 +227,7 @@ class DemoRuntime:
             return True
         return False
 
+    @trace_call
     async def disconnect_device(self, address: str) -> bool:
         normalized = address.lower().replace("-", ":")
         dev = self.devices.get(normalized)
@@ -218,6 +237,7 @@ class DemoRuntime:
             return True
         return False
 
+    @trace_call
     async def remove_device(self, address: str) -> bool:
         normalized = address.lower().replace("-", ":")
         dev = self.devices.get(normalized)
@@ -228,20 +248,25 @@ class DemoRuntime:
             return True
         return False
 
+    @trace_call
     async def ensure_device(self, address: str) -> DeviceInfo | None:
         return self.get_device_by_address(address)
 
+    @trace_call
     async def recover_dbus(self) -> bool:
         return True
 
+    @trace_call
     def get_state(self, address: str) -> str:
         normalized = address.lower().replace("-", ":")
         return self._states.get(normalized, PLAYBACK_IDLE)
 
+    @trace_call
     def get_volume(self, address: str) -> float:
         normalized = address.lower().replace("-", ":")
         return self._volumes.get(normalized, DEFAULT_VOLUME_RATIO)
 
+    @trace_call
     async def execute(self, address: str, operation: str, **kwargs: Any) -> None:
         normalized = address.lower().replace("-", ":")
         if operation == COMMAND_SET_VOLUME:
@@ -254,18 +279,23 @@ class DemoRuntime:
             self._states[normalized] = PLAYBACK_IDLE
         return None
 
+    @trace_call
     async def start_keepalive(self) -> None:
         return None
 
+    @trace_call
     def start_volume_watch(self) -> None:
         return None
 
+    @trace_call
     async def async_shutdown(self) -> None:
         return None
 
+    @trace_call
     def add_event_listener(self, listener: Any) -> None:
         return None
 
+    @trace_call
     def snapshot(self) -> dict[str, Any]:
         data = self.diagnostics_service.snapshot(
             adapters=[{"name": self.adapter.interface, "powered": self.adapter.powered, "discovering": self.adapter.discovering}],
@@ -276,8 +306,10 @@ class DemoRuntime:
         return data
 
     @property
+    @trace_call
     def diagnostics(self) -> dict[str, Any]:
         return self.snapshot()
 
+    @trace_call
     def export(self) -> dict[str, Any]:
         return {"diagnostics": self.snapshot(), "events": self.diagnostics_service.events()}

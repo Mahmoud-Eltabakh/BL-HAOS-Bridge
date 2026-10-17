@@ -41,10 +41,13 @@ from ..constants import (
 )
 from ..health import FailureClass, HealthRegistry, HealthState, SpeakerState, normalize_address, safe_detail, validate_adapter_name
 
+from ..call_trace import trace_call
+
 logger = logging.getLogger("bl_haos.bluetooth.manager")
 
 
 class BluetoothManager:
+    @trace_call
     def __init__(self, health_registry: HealthRegistry | None = None):
         self.bus: MessageBus | None = None
         self.agent: BlueZAgent | None = None
@@ -60,10 +63,12 @@ class BluetoothManager:
         self._pairing_pin: str | None = None
         self._pairing_expires_at: float = 0.0
 
+    @trace_call
     def add_event_listener(self, listener: Callable[[str, Any], None]):
         """Subscribe to live Bluetooth state and discovery events."""
         self._listeners.append(listener)
 
+    @trace_call
     def _notify(self, event_type: str, data: Any):
         for listener in self._listeners:
             try:
@@ -80,6 +85,7 @@ class BluetoothManager:
                     safe_detail(e),
                 )
 
+    @trace_call
     def _observe_bluetooth(
         self,
         state: HealthState,
@@ -93,6 +99,7 @@ class BluetoothManager:
                 COMPONENT_BLUETOOTH, state, failure=failure, detail=detail, source=SOURCE_BLUEZ
             )
 
+    @trace_call
     async def initialize(self) -> None:
         """Connect to system D-Bus, register Agent, and discover initial adapters/devices."""
         try:
@@ -137,6 +144,7 @@ class BluetoothManager:
             self._initialized = False
             self._observe_bluetooth(HealthState.UNAVAILABLE, failure=FailureClass.DBUS_UNAVAILABLE, detail=e)
 
+    @trace_call
     async def _subscribe_signals(self):
         if not self.bus:
             return
@@ -152,6 +160,7 @@ class BluetoothManager:
         self.bus.add_message_handler(self._handle_dbus_message)
         self._signal_bus = self.bus
 
+    @trace_call
     async def _add_match_rule(self, match_rule: str) -> bool:
         """Ask the D-Bus daemon to deliver a matching BlueZ signal to us."""
         if not self.bus:
@@ -176,6 +185,7 @@ class BluetoothManager:
         logger.debug("Registered BlueZ signal match rule: %s", match_rule)
         return True
 
+    @trace_call
     def mark_dbus_disconnected(self, detail: Any = None) -> None:
         """Invalidate transport readiness and publish a bounded loss observation."""
         self.bus = None
@@ -189,6 +199,7 @@ class BluetoothManager:
         )
         self._notify(EVENT_DBUS_DISCONNECTED, detail)
 
+    @trace_call
     async def recover_dbus(self) -> bool:
         """Perform one bounded D-Bus reinitialization attempt."""
         if self.bus is not None and self._initialized:
@@ -202,6 +213,7 @@ class BluetoothManager:
             )
         return self.bus is not None
 
+    @trace_call
     def _handle_dbus_message(self, msg):
         try:
             if msg.member == "InterfacesAdded" and msg.interface == DBUS_OM_IFACE and len(msg.body) >= 2:
@@ -217,6 +229,7 @@ class BluetoothManager:
             logger.debug("Non-fatal D-Bus message handler notice: %s", e)
         return False
 
+    @trace_call
     def _on_interfaces_added(self, path: str, interfaces: dict[str, Any]):
         if ADAPTER_INTERFACE in interfaces:
             adapter = BluetoothAdapter(self.bus, path, interfaces[ADAPTER_INTERFACE])
@@ -236,6 +249,7 @@ class BluetoothManager:
             )
             self._notify("device_discovered", device.to_info())
 
+    @trace_call
     def _on_interfaces_removed(self, path: str, interfaces: list[str]):
         if ADAPTER_INTERFACE in interfaces and path in self.adapters:
             logger.debug("BlueZ adapter removed: %s", path)
@@ -258,6 +272,7 @@ class BluetoothManager:
             del self.devices[path]
             self._notify("device_removed", path)
 
+    @trace_call
     def _on_properties_changed(self, path: str, iface: str, changed: dict[str, Any]):
         if iface == ADAPTER_INTERFACE and path in self.adapters:
             self.adapters[path].update_properties(changed)
@@ -276,6 +291,7 @@ class BluetoothManager:
                 self._notify(EVENT_DEVICE_DISCOVERED, dev.to_info())
 
     @staticmethod
+    @trace_call
     def _is_known_speaker(device: BluetoothDevice) -> bool:
         """Is this record worth keeping after BlueZ withdraws the object?
 
@@ -287,6 +303,7 @@ class BluetoothManager:
         """
         return bool(device.trusted or device.paired)
 
+    @trace_call
     def _drop_detached_duplicates(self, device: BluetoothDevice) -> None:
         """Forget offline records for the same address at another object path.
 
@@ -298,6 +315,7 @@ class BluetoothManager:
                 logger.debug("Dropping superseded offline record for %s (%s)", device.address, other_path)
                 del self.devices[other_path]
 
+    @trace_call
     def _observe_speaker_offline(self, device: BluetoothDevice) -> None:
         """Record the transition to offline for the health snapshot."""
         if not self.health:
@@ -308,6 +326,7 @@ class BluetoothManager:
             # A malformed address cannot be observed; it is already unusable.
             return
 
+    @trace_call
     async def _load_managed_objects(self):
         if not self.bus:
             return
@@ -322,15 +341,18 @@ class BluetoothManager:
             if DEVICE_INTERFACE in interfaces:
                 self.devices[path] = BluetoothDevice(self.bus, path, interfaces[DEVICE_INTERFACE])
 
+    @trace_call
     def get_adapters(self) -> list[AdapterInfo]:
         return [adapter.to_info() for adapter in self.adapters.values()]
 
+    @trace_call
     def get_devices(self, audio_only: bool = True) -> list[DeviceInfo]:
         devices = [dev.to_info() for dev in self.devices.values()]
         if audio_only:
             return [d for d in devices if d.is_audio_sink]
         return devices
 
+    @trace_call
     def get_device_by_address(self, address: str) -> BluetoothDevice | None:
         target = normalize_address(address)
         for dev in self.devices.values():
@@ -341,6 +363,7 @@ class BluetoothManager:
                 continue
         return None
 
+    @trace_call
     async def ensure_device(self, address: str) -> BluetoothDevice | None:
         """Look up device in local cache or query BlueZ D-Bus directly by MAC."""
         dev = self.get_device_by_address(address)
@@ -372,6 +395,7 @@ class BluetoothManager:
                 continue
         return None
 
+    @trace_call
     def get_adapter_by_name(self, name: str = ADAPTER_NAME_FALLBACK) -> BluetoothAdapter | None:
         name = validate_adapter_name(name)
         for adapter in self.adapters.values():
@@ -379,6 +403,7 @@ class BluetoothManager:
                 return adapter
         return None
 
+    @trace_call
     async def start_scan(self, adapter_name: str | None = None) -> None:
         """Start discovery on specified adapter or all adapters."""
         if adapter_name:
@@ -390,6 +415,7 @@ class BluetoothManager:
             for adapter in self.adapters.values():
                 await adapter.start_discovery()
 
+    @trace_call
     async def stop_scan(self, adapter_name: str | None = None) -> None:
         """Stop discovery on specified adapter or all adapters."""
         if adapter_name:
@@ -411,6 +437,7 @@ class BluetoothManager:
     # Home Assistant as a speaker. Consent is now explicit, per device, and
     # bounded in time.
     # ------------------------------------------------------------------
+    @trace_call
     def build_agent(self) -> BlueZAgent:
         """Create the BlueZ agent wired to this manager's pairing window."""
         return BlueZAgent(
@@ -420,6 +447,7 @@ class BluetoothManager:
             authorization_callback=self.pairing_is_authorized,
         )
 
+    @trace_call
     def address_from_device_path(self, device_path: str) -> str | None:
         """Resolve a BlueZ object path to the address of the device it names."""
         device = self.devices.get(device_path)
@@ -432,6 +460,7 @@ class BluetoothManager:
         except ValueError:
             return None
 
+    @trace_call
     def pairing_window_active(self, address: str) -> bool:
         """True while the operator's pairing request for this address is open."""
         if self._pairing_address is None:
@@ -442,6 +471,7 @@ class BluetoothManager:
             return False
         return self._pairing_address == address
 
+    @trace_call
     async def open_pairing_window(self, address: str, pin: str | None = None) -> None:
         """Allow one specific device to pair, for a bounded time."""
         address = normalize_address(address)
@@ -455,6 +485,7 @@ class BluetoothManager:
         )
         await self._set_adapters_pairable(True)
 
+    @trace_call
     async def close_pairing_window(self) -> None:
         """Close the window and stop the adapters accepting pairing requests."""
         was_open = self._pairing_address is not None
@@ -465,6 +496,7 @@ class BluetoothManager:
             logger.info("Pairing window closed")
         await self._set_adapters_pairable(False)
 
+    @trace_call
     async def _set_adapters_pairable(self, pairable: bool) -> None:
         """Best-effort adapter posture change; a failure must not fail pairing."""
         for adapter in self.adapters.values():
@@ -478,12 +510,14 @@ class BluetoothManager:
                     safe_detail(error),
                 )
 
+    @trace_call
     def current_pairing_address(self) -> str | None:
         """The address that may currently pair, if any (surfaced in diagnostics)."""
         if self._pairing_address is None:
             return None
         return self._pairing_address if self.pairing_window_active(self._pairing_address) else None
 
+    @trace_call
     def pairing_is_authorized(self, device_path: str) -> bool:
         """Whether BlueZ may complete a pairing or authorization for this device."""
         address = self.address_from_device_path(device_path)
@@ -494,6 +528,7 @@ class BluetoothManager:
         device = self.devices.get(device_path)
         return bool(device is not None and device.trusted)
 
+    @trace_call
     def authorized_pin(self, device_path: str) -> str | None:
         """The PIN to answer with, only for the device the operator asked to pair."""
         address = self.address_from_device_path(device_path)
@@ -501,6 +536,7 @@ class BluetoothManager:
             return None
         return self._pairing_pin
 
+    @trace_call
     def authorized_passkey(self, device_path: str) -> int | None:
         """Numeric passkey pairing, only when the operator supplied such a PIN."""
         pin = self.authorized_pin(device_path)
@@ -508,6 +544,7 @@ class BluetoothManager:
             return None
         return int(pin)
 
+    @trace_call
     def confirm_pairing(self, device_path: str, passkey: int) -> bool:
         """Answer BlueZ's confirmation prompt only for an authorized pairing."""
         authorized = self.pairing_is_authorized(device_path)
@@ -515,6 +552,7 @@ class BluetoothManager:
             logger.warning("Refusing pairing confirmation for unauthorized device %s", device_path)
         return authorized
 
+    @trace_call
     async def pair_and_trust(self, address: str, pin: str | None = None) -> bool:
         """Pair with a device the operator asked for, then trust it for reconnects.
 
@@ -529,6 +567,7 @@ class BluetoothManager:
         finally:
             await self.close_pairing_window()
 
+    @trace_call
     async def _pair_and_trust(self, address: str) -> bool:
         """Pair and trust one address; the caller holds its pairing window."""
         try:
@@ -573,6 +612,7 @@ class BluetoothManager:
         logger.info("Device %s successfully paired, connected, and trusted", address)
         return True
 
+    @trace_call
     async def connect_device(self, address: str, *, reset_existing: bool = False) -> bool:
         """Connect to a device.
 
@@ -673,6 +713,7 @@ class BluetoothManager:
                 )
             raise first_error
 
+    @trace_call
     async def disconnect_device(self, address: str) -> bool:
         """Disconnect from device."""
         address = normalize_address(address)
@@ -684,6 +725,7 @@ class BluetoothManager:
         logger.debug("Disconnected device %s", address)
         return True
 
+    @trace_call
     async def remove_device(self, address: str) -> bool:
         """Untrust, unpair, disconnect, and completely remove device from adapter cache."""
         address = normalize_address(address)

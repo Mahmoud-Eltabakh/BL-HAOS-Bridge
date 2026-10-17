@@ -11,10 +11,13 @@ from .models import AdapterInfo
 from ..constants import ADDRESS_TYPE_PUBLIC, BLUETOOTH_ADAPTER_LABEL
 from ..health import safe_detail
 
+from ..call_trace import trace_call
+
 logger = logging.getLogger("bl_haos.bluetooth.adapter")
 
 
 class BluetoothAdapter:
+    @trace_call
     def __init__(self, bus: MessageBus | None, path: str, properties: dict[str, Any]):
         self.bus = bus
         self.path = path
@@ -22,9 +25,11 @@ class BluetoothAdapter:
         self.interface_name = path.split("/")[-1]
 
     @property
+    @trace_call
     def interface(self) -> str:
         return self.interface_name
 
+    @trace_call
     def _get_prop(self, key: str, default: Any = None) -> Any:
         val = self._properties.get(key, default)
         if isinstance(val, Variant):
@@ -32,38 +37,47 @@ class BluetoothAdapter:
         return val
 
     @property
+    @trace_call
     def address(self) -> str:
         return self._get_prop("Address", "")
 
     @property
+    @trace_call
     def name(self) -> str:
         return self._get_prop("Name", f"{BLUETOOTH_ADAPTER_LABEL} ({self.interface_name})")
 
     @property
+    @trace_call
     def alias(self) -> str:
         return self._get_prop("Alias", self.name)
 
     @property
+    @trace_call
     def powered(self) -> bool:
         return bool(self._get_prop("Powered", False))
 
     @property
+    @trace_call
     def discovering(self) -> bool:
         return bool(self._get_prop("Discovering", False))
 
     @property
+    @trace_call
     def discoverable(self) -> bool:
         return bool(self._get_prop("Discoverable", False))
 
     @property
+    @trace_call
     def pairable(self) -> bool:
         return bool(self._get_prop("Pairable", False))
 
+    @trace_call
     def update_properties(self, changed: dict[str, Any]):
         """Update cached properties from D-Bus PropertiesChanged signal."""
         for k, v in changed.items():
             self._properties[k] = v.value if isinstance(v, Variant) else v
 
+    @trace_call
     def to_info(self) -> AdapterInfo:
         return AdapterInfo(
             path=self.path,
@@ -79,6 +93,7 @@ class BluetoothAdapter:
             uuids=self._get_prop("UUIDs", []),
         )
 
+    @trace_call
     async def set_power(self, powered: bool) -> None:
         """Set adapter powered state."""
         logger.debug("Setting adapter %s (%s) Powered=%s", self.interface_name, self.path, powered)
@@ -91,6 +106,7 @@ class BluetoothAdapter:
         await props_iface.call_set(ADAPTER_INTERFACE, "Powered", Variant("b", powered))
         self._properties["Powered"] = powered
 
+    @trace_call
     async def set_pairable(self, pairable: bool) -> None:
         """Control whether this adapter accepts incoming pairing requests."""
         logger.debug("Setting adapter %s (%s) Pairable=%s", self.interface_name, self.path, pairable)
@@ -103,6 +119,7 @@ class BluetoothAdapter:
         await props_iface.call_set(ADAPTER_INTERFACE, "Pairable", Variant("b", pairable))
         self._properties["Pairable"] = pairable
 
+    @trace_call
     async def start_discovery(self) -> None:
         """Start discovery scan on this adapter.
 
@@ -140,6 +157,7 @@ class BluetoothAdapter:
                 raise e
         self._properties["Discovering"] = True
 
+    @trace_call
     async def stop_discovery(self) -> None:
         """Stop discovery scan on this adapter."""
         logger.debug("Stopping discovery scan on adapter %s (%s)", self.interface_name, self.path)
@@ -158,6 +176,7 @@ class BluetoothAdapter:
                 pass
         self._properties["Discovering"] = False
 
+    @trace_call
     async def connect_device(self, address: str, address_type: str = ADDRESS_TYPE_PUBLIC) -> str | None:
         """Connect directly to a device by MAC address, creating the D-Bus object if needed."""
         logger.debug("Connecting device %s via Adapter1 on %s", address, self.interface_name)

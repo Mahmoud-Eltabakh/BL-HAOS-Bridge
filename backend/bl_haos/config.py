@@ -37,6 +37,8 @@ from .constants import (
     VOLUME_READBACK_TOLERANCE,
 )
 
+from .call_trace import trace_call
+
 logger = logging.getLogger("bl_haos.config")
 
 _MISSING = object()
@@ -54,6 +56,7 @@ class SpeakerSettings(BaseModel):
 
     @field_validator("custom_alias")
     @classmethod
+    @trace_call
     def valid_alias(cls, value: str | None) -> str | None:
         if value is not None and (len(value) > MAX_ALIAS_LENGTH or any(ord(char) < 32 for char in value)):
             raise ValueError("Speaker alias is invalid")
@@ -61,6 +64,7 @@ class SpeakerSettings(BaseModel):
 
     @field_validator("codec_override")
     @classmethod
+    @trace_call
     def valid_codec(cls, value: str | None) -> str | None:
         if value is not None and value not in SUPPORTED_CODECS:
             raise ValueError("Codec override is invalid")
@@ -120,6 +124,7 @@ LEGACY_ROOT_KEYS = ("multiroom_sync_enabled",)
 LEGACY_SPEAKER_KEYS = ("latency_offset_ms",)
 
 
+@trace_call
 def _drop_legacy_keys(data: dict) -> dict:
     """Strip settings that a previous release wrote but this build no longer models."""
     dropped: list[str] = [key for key in LEGACY_ROOT_KEYS if data.pop(key, _MISSING) is not _MISSING]
@@ -138,6 +143,7 @@ def _drop_legacy_keys(data: dict) -> dict:
 
 
 class ConfigStore:
+    @trace_call
     def __init__(self, config_file: str | None = None):
         if config_file:
             self.file_path = Path(config_file)
@@ -149,6 +155,7 @@ class ConfigStore:
         self.settings: SystemSettings = SystemSettings()
         self.load()
 
+    @trace_call
     def load(self) -> SystemSettings:
         """Load settings from JSON file."""
         if self.file_path.exists():
@@ -178,6 +185,7 @@ class ConfigStore:
         return self.settings
 
     @staticmethod
+    @trace_call
     def _configured_token() -> str:
         configured = os.environ.get(ENV_NATIVE_TOKEN, "")
         if configured and not any(ord(char) < 32 for char in configured):
@@ -185,14 +193,17 @@ class ConfigStore:
         return secrets.token_urlsafe(TOKEN_ENTROPY_BYTES)
 
     @staticmethod
+    @trace_call
     def _configured_demo_mode() -> bool:
         return os.environ.get(ENV_DEMO_MODE, "").strip().lower() in TRUTHY_FLAGS
 
     @staticmethod
+    @trace_call
     def _configured_demo_scenario() -> str:
         return os.environ.get(ENV_DEMO_SCENARIO, DEFAULT_DEMO_SCENARIO).strip() or DEFAULT_DEMO_SCENARIO
 
     @staticmethod
+    @trace_call
     def _configured_playback_buffer_ms() -> int:
         """The buffer the audio clients hold, in milliseconds.
 
@@ -222,6 +233,7 @@ class ConfigStore:
             return PLAYBACK_BUFFER_DEFAULT_MS
         return value
 
+    @trace_call
     def save(self) -> None:
         """Atomically persist settings to JSON file."""
         try:
@@ -237,10 +249,12 @@ class ConfigStore:
         except Exception as e:
             logger.error("Failed to save config to %s", self.file_path)
 
+    @trace_call
     def get_speaker(self, address: str) -> SpeakerSettings | None:
         """Look up a speaker without creating or persisting anything."""
         return self.settings.speakers.get(address.strip().lower())
 
+    @trace_call
     def get_or_create_speaker(self, address: str) -> SpeakerSettings:
         """Create and persist a speaker record only for explicit configuration writes."""
         addr = address.strip().lower()
@@ -249,6 +263,7 @@ class ConfigStore:
             self.save()
         return self.settings.speakers[addr]
 
+    @trace_call
     def update_speaker(self, address: str, **kwargs) -> SpeakerSettings:
         speaker = self.get_or_create_speaker(address)
         updates = {key: value for key, value in kwargs.items() if value is not None}
@@ -258,6 +273,7 @@ class ConfigStore:
         self.save()
         return self.settings.speakers[speaker.address]
 
+    @trace_call
     def remove_speaker(self, address: str) -> bool:
         addr = address.strip().lower()
         if addr in self.settings.speakers:

@@ -46,10 +46,13 @@ from ..health import (
     safe_detail,
 )
 
+from ..call_trace import trace_call
+
 logger = logging.getLogger("bl_haos.api.routes")
 router = APIRouter(prefix=API_PREFIX, tags=["api"])
 
 
+@trace_call
 def require_native_auth(authorization: str | None, request: Request) -> None:
     """Reject native transport requests without the installation credential."""
     expected = request.app.state.config_store.settings.native_token
@@ -58,6 +61,7 @@ def require_native_auth(authorization: str | None, request: Request) -> None:
         raise HTTPException(status_code=401, detail="Native bridge authentication required")
 
 
+@trace_call
 def native_diagnostics(app: Any) -> dict[str, Any]:
     """Return only bounded, non-secret native bridge readiness details."""
     devices = app.state.bt_manager.get_devices(audio_only=True)
@@ -85,11 +89,13 @@ class PairRequest(BaseModel):
 
     @field_validator("address")
     @classmethod
+    @trace_call
     def valid_address(cls, value: str) -> str:
         return normalize_address(value)
 
     @field_validator("pin")
     @classmethod
+    @trace_call
     def valid_pin(cls, value: str | None) -> str | None:
         return validate_pin(value)
 
@@ -103,6 +109,7 @@ class ScanRequest(BaseModel):
 
     @field_validator("adapter_name")
     @classmethod
+    @trace_call
     def valid_adapter(cls, value: str | None) -> str | None:
         return validate_adapter_name(value) if value is not None else None
 
@@ -124,11 +131,13 @@ class SpeakerUpdateRequest(BaseModel):
 
     @field_validator("preferred_adapter")
     @classmethod
+    @trace_call
     def valid_preferred_adapter(cls, value: str | None) -> str | None:
         return validate_adapter_name(value) if value is not None else None
 
     @field_validator("custom_alias")
     @classmethod
+    @trace_call
     def valid_alias(cls, value: str | None) -> str | None:
         if value is not None and (len(value) > MAX_ALIAS_LENGTH or any(ord(char) < 32 for char in value)):
             raise ValueError("Speaker alias is invalid")
@@ -136,6 +145,7 @@ class SpeakerUpdateRequest(BaseModel):
 
     @field_validator("codec_override")
     @classmethod
+    @trace_call
     def valid_codec(cls, value: str | None) -> str | None:
         if value is not None and value not in SUPPORTED_CODECS:
             raise ValueError("Codec override is invalid")
@@ -153,15 +163,18 @@ class NativeCommandRequest(BaseModel):
 
     @field_validator("url")
     @classmethod
+    @trace_call
     def valid_url(cls, value: str | None) -> str | None:
         return validate_media_url(value) if value is not None else None
 
     @field_validator("media_type")
     @classmethod
+    @trace_call
     def valid_media_type(cls, value: str | None) -> str | None:
         return validate_media_type(value)
 
     @model_validator(mode="after")
+    @trace_call
     def validate_operation_payload(self):
         if self.operation == "set_volume" and self.volume is None:
             raise ValueError("Volume is required")
@@ -172,6 +185,7 @@ class NativeCommandRequest(BaseModel):
         return self
 
 
+@trace_call
 def playback_envelope(bridge: Any, address: str) -> dict[str, Any]:
     """Return the live playback state shared by the native API and the dashboard.
 
@@ -187,6 +201,7 @@ def playback_envelope(bridge: Any, address: str) -> dict[str, Any]:
     }
 
 
+@trace_call
 def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str, Any]:
     """Expose only operator-trusted audio-sink metadata for the native integration."""
     address = device.address.strip().lower().replace("-", ":")
@@ -213,6 +228,7 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
     }
 
 
+@trace_call
 def ui_speaker_record(source: Request | Any, device: DeviceInfo) -> DeviceInfo:
     """Return the device record the Ingress dashboard consumes.
 
@@ -232,6 +248,7 @@ def ui_speaker_record(source: Request | Any, device: DeviceInfo) -> DeviceInfo:
     return device.model_copy(update={"playback": playback})
 
 
+@trace_call
 def native_playback_timeline(bridge: Any, address: str) -> dict[str, Any]:
     """Add the position/duration envelope when the bridge can provide one."""
     getter = getattr(bridge, "get_timeline", None)
@@ -242,6 +259,7 @@ def native_playback_timeline(bridge: Any, address: str) -> dict[str, Any]:
 
 
 @router.get("/health")
+@trace_call
 async def get_health(request: Request):
     diagnostics = native_diagnostics(request.app)
     registry: HealthRegistry | None = getattr(request.app.state, "health_registry", None)
@@ -263,6 +281,7 @@ async def get_health(request: Request):
 
 
 @router.get("/diagnostics/native")
+@trace_call
 async def get_native_diagnostics(request: Request):
     """Expose sanitized native bridge readiness for the Ingress dashboard."""
     logger.debug("Native diagnostics requested")
@@ -270,6 +289,7 @@ async def get_native_diagnostics(request: Request):
 
 
 @router.get("/native/identity")
+@trace_call
 async def get_native_identity(request: Request, authorization: str | None = Header(default=None)):
     """Return the fixed, versioned native bridge identity."""
     require_native_auth(authorization, request)
@@ -286,6 +306,7 @@ async def get_native_identity(request: Request, authorization: str | None = Head
 
 
 @router.get("/native/speakers")
+@trace_call
 async def list_native_speakers(request: Request, authorization: str | None = Header(default=None)):
     """Return the current operator-trusted Bluetooth audio-sink snapshot."""
     require_native_auth(authorization, request)
@@ -300,6 +321,7 @@ async def list_native_speakers(request: Request, authorization: str | None = Hea
 
 
 @router.post("/native/speakers/{address}/command")
+@trace_call
 async def command_native_speaker(
     address: str,
     payload: NativeCommandRequest,
@@ -395,6 +417,7 @@ async def command_native_speaker(
 # ==============================================================================
 
 @router.get("/adapters", response_model=list[AdapterInfo])
+@trace_call
 async def list_adapters(request: Request):
     adapters = request.app.state.bt_manager.get_adapters()
     logger.debug("Listing adapters: %d adapters found", len(adapters))
@@ -402,6 +425,7 @@ async def list_adapters(request: Request):
 
 
 @router.post("/adapters/{adapter_name}/power")
+@trace_call
 async def set_adapter_power(adapter_name: str, payload: PowerRequest, request: Request):
     try:
         adapter_name = validate_adapter_name(adapter_name)
@@ -416,6 +440,7 @@ async def set_adapter_power(adapter_name: str, payload: PowerRequest, request: R
 
 
 @router.post("/scan/start")
+@trace_call
 async def start_scan(request: Request, payload: ScanRequest | None = None):
     adapter_name = payload.adapter_name if payload else None
     logger.debug("Starting Bluetooth scan on adapter: %s", adapter_name or "all")
@@ -424,6 +449,7 @@ async def start_scan(request: Request, payload: ScanRequest | None = None):
 
 
 @router.post("/scan/stop")
+@trace_call
 async def stop_scan(request: Request, payload: ScanRequest | None = None):
     adapter_name = payload.adapter_name if payload else None
     logger.debug("Stopping Bluetooth scan on adapter: %s", adapter_name or "all")
@@ -436,6 +462,7 @@ async def stop_scan(request: Request, payload: ScanRequest | None = None):
 # ==============================================================================
 
 @router.get("/devices", response_model=list[DeviceInfo])
+@trace_call
 async def list_devices(request: Request, audio_only: bool = True):
     devices = request.app.state.bt_manager.get_devices(audio_only=audio_only)
     logger.debug("Listing devices (audio_only=%s): returning %d devices", audio_only, len(devices))
@@ -444,6 +471,7 @@ async def list_devices(request: Request, audio_only: bool = True):
 
 
 @router.post("/devices/pair")
+@trace_call
 async def pair_device(payload: PairRequest, request: Request):
     logger.debug("Pairing request received for %s", payload.address)
     try:
@@ -472,6 +500,7 @@ async def pair_device(payload: PairRequest, request: Request):
 
 
 @router.post("/devices/{address}/connect")
+@trace_call
 async def connect_device(address: str, request: Request):
     try:
         address = normalize_address(address)
@@ -495,6 +524,7 @@ async def connect_device(address: str, request: Request):
 
 
 @router.post("/devices/{address}/disconnect")
+@trace_call
 async def disconnect_device(address: str, request: Request):
     try:
         address = normalize_address(address)
@@ -508,6 +538,7 @@ async def disconnect_device(address: str, request: Request):
 
 
 @router.post("/devices/{address}/volume")
+@trace_call
 async def set_device_volume(address: str, payload: VolumeRequest, request: Request):
     """Apply a live volume level (0-100) to one speaker's PipeWire/PulseAudio sink."""
     try:
@@ -532,6 +563,7 @@ async def set_device_volume(address: str, payload: VolumeRequest, request: Reque
 
 
 @router.delete("/devices/{address}")
+@trace_call
 async def remove_device(address: str, request: Request):
     try:
         address = normalize_address(address)
@@ -553,12 +585,14 @@ async def remove_device(address: str, request: Request):
 # ==============================================================================
 
 @router.get("/settings", response_model=SystemSettings)
+@trace_call
 async def get_settings(request: Request):
     logger.debug("System settings requested")
     return request.app.state.config_store.settings
 
 
 @router.put("/settings/speakers/{address}", response_model=SpeakerSettings)
+@trace_call
 async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, request: Request):
     try:
         address = normalize_address(address)

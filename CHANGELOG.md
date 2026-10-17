@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.66
+
+- Add DEBUG-only function entry, exit, failure, and cancellation tracing throughout the bridge backend, with nested call identifiers and elapsed time to investigate Bluetooth and playback failures. Call traces exclude arguments, results, exception messages, and tracebacks; normal INFO logging is unchanged.
+
 ## 0.2.65
 
 - Honor the reconnect circuit breaker even when stale-link recovery keeps failing. Repeated failures now pause automatic attempts instead of retrying indefinitely.

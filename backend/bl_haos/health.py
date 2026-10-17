@@ -40,7 +40,10 @@ from .constants import (
     URL_REDACTION_PLACEHOLDER,
 )
 
+from .call_trace import trace_call
 
+
+@trace_call
 def safe_codec(value: Any) -> str | None:
     """A bounded codec name, or None when the value is not one.
 
@@ -94,6 +97,7 @@ _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _PIN_PATTERN = re.compile(rf"^[0-9]{{{PIN_DIGITS_MIN},{PIN_DIGITS_MAX}}}$")
 
 
+@trace_call
 def normalize_address(address: str) -> str:
     if not isinstance(address, str):
         raise ValueError("Invalid Bluetooth address")
@@ -109,18 +113,21 @@ def normalize_address(address: str) -> str:
     return normalized
 
 
+@trace_call
 def validate_adapter_name(name: str) -> str:
     if not isinstance(name, str) or not _ADAPTER_PATTERN.fullmatch(name):
         raise ValueError("Invalid Bluetooth adapter")
     return name
 
 
+@trace_call
 def validate_identifier(value: str, label: str = "Identifier") -> str:
     if not isinstance(value, str) or not _IDENTIFIER_PATTERN.fullmatch(value):
         raise ValueError(f"{label} is invalid")
     return value
 
 
+@trace_call
 def token_fingerprint(token: str) -> str:
     """Return a short digest that identifies a credential without revealing it.
 
@@ -134,6 +141,7 @@ def token_fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:TOKEN_FINGERPRINT_CHARS]
 
 
+@trace_call
 def media_host_is_blocked(hostname: str | None) -> bool:
     """Reject audio targets that can only be the bridge itself or a dead end.
 
@@ -162,6 +170,7 @@ def media_host_is_blocked(hostname: str | None) -> bool:
     )
 
 
+@trace_call
 def _media_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     """Parse a host as an IP literal, including the legacy numeric spellings.
 
@@ -182,6 +191,7 @@ def _media_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address |
     return ipaddress.IPv4Address(numeric)
 
 
+@trace_call
 def validate_media_url(url: str) -> str:
     if not isinstance(url, str) or not url or len(url) > MAX_MEDIA_URL_LENGTH:
         raise ValueError("Media URL must be a safe HTTP(S) URL")
@@ -203,6 +213,7 @@ def validate_media_url(url: str) -> str:
 _MEDIA_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*(?:/[A-Za-z0-9!#$&^_.+-]+)?$")
 
 
+@trace_call
 def validate_media_type(media_type: str | None) -> str | None:
     """Accept any bounded, structurally safe media type token.
 
@@ -222,12 +233,14 @@ def validate_media_type(media_type: str | None) -> str | None:
     return candidate.lower()
 
 
+@trace_call
 def validate_pin(pin: str | None) -> str | None:
     if pin is not None and not _PIN_PATTERN.fullmatch(pin):
         raise ValueError(f"PIN must contain {PIN_DIGITS_MIN} to {PIN_DIGITS_MAX} digits")
     return pin
 
 
+@trace_call
 def safe_detail(detail: Any) -> str | None:
     if detail is None:
         return None
@@ -243,10 +256,12 @@ def safe_detail(detail: Any) -> str | None:
     return text[:MAX_DETAIL_LENGTH]
 
 
+@trace_call
 def _redact_url_match(match: re.Match[str]) -> str:
     return URL_REDACTION_PLACEHOLDER
 
 
+@trace_call
 def redact_value(value: Any) -> Any:
     """Recursively remove credentials from support-facing values."""
     if isinstance(value, dict):
@@ -261,6 +276,7 @@ def redact_value(value: Any) -> Any:
     return value
 
 
+@trace_call
 def authorized_bearer(authorization: str | None, expected: str) -> bool:
     """Compare bearer credentials without exposing the expected token."""
     supplied = authorization.removeprefix(BEARER_PREFIX) if isinstance(authorization, str) else ""
@@ -306,6 +322,7 @@ class SpeakerHealth(BaseModel):
 
     @field_validator("codec")
     @classmethod
+    @trace_call
     def valid_codec(cls, value: str | None) -> str | None:
         """Keep only a bounded codec token, or report the codec as unknown."""
         return safe_codec(value)
@@ -323,6 +340,7 @@ class HealthSnapshot(BaseModel):
 class HealthRegistry:
     """Own observations and publish one canonical snapshot to all consumers."""
 
+    @trace_call
     def __init__(self, clock: Any = time.time):
         self.components: dict[str, ComponentHealth] = {}
         self.speakers: dict[str, SpeakerHealth] = {}
@@ -330,9 +348,11 @@ class HealthRegistry:
         self._listeners: list[Any] = []
         self.clock = clock
 
+    @trace_call
     def add_listener(self, listener: Any) -> None:
         self._listeners.append(listener)
 
+    @trace_call
     def observe_component(
         self,
         name: str,
@@ -353,6 +373,7 @@ class HealthRegistry:
         )
         return self.snapshot()
 
+    @trace_call
     def observe_speaker(
         self,
         address: str,
@@ -395,6 +416,7 @@ class HealthRegistry:
         )
         return self.snapshot()
 
+    @trace_call
     def record_suppressed_flap(self, address: str, reason: Any = None) -> HealthSnapshot:
         """Count a dropout the bridge deliberately did not act on.
 
@@ -414,6 +436,7 @@ class HealthRegistry:
         )
         return self.snapshot()
 
+    @trace_call
     def record_speaker_codec(self, address: str, codec: Any) -> HealthSnapshot:
         """Record the A2DP codec BlueZ negotiated for this speaker.
 
@@ -434,6 +457,7 @@ class HealthRegistry:
             )
         return self.snapshot()
 
+    @trace_call
     def set_lifecycle(self, state: HealthState, *, failure: FailureClass | str | None = None, detail: Any = None) -> HealthSnapshot:
         self.lifecycle = state
         if failure:
@@ -442,6 +466,7 @@ class HealthRegistry:
             )
         return self.snapshot()
 
+    @trace_call
     def snapshot(self) -> HealthSnapshot:
         states = [component.state for component in self.components.values() if component.required]
         if any(state == HealthState.UNAVAILABLE for state in states):
@@ -464,6 +489,7 @@ class HealthRegistry:
             updated_at=self.clock(),
         )
 
+    @trace_call
     async def publish(self, event_bus: Any = None) -> HealthSnapshot:
         snapshot = self.snapshot()
         for listener in self._listeners:
