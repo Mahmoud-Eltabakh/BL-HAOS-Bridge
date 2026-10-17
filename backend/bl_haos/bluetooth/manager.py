@@ -23,7 +23,7 @@ from .constants import (
     DBUS_PROPERTIES_IFACE,
     DEVICE_INTERFACE,
 )
-from .device import BluetoothDevice
+from .device import BluetoothDevice, BluetoothOperationInProgress
 from .models import AdapterInfo, DeviceInfo
 from ..constants import (
     ADAPTER_NAME_FALLBACK,
@@ -621,6 +621,8 @@ class BluetoothManager:
                     logger.debug("Connect attempt %d for %s", attempt + 1, address)
                     await dev.connect()
                     break
+                except BluetoothOperationInProgress:
+                    raise
                 except Exception:
                     if attempt == 2:
                         raise
@@ -631,6 +633,8 @@ class BluetoothManager:
                 logger.debug("Failed to set trusted flag on connect: %s", e)
             logger.debug("Device %s connected successfully", address)
             return True
+        except BluetoothOperationInProgress:
+            raise
         except Exception as first_error:
             logger.debug("First connect attempt failed for %s: %s", address, first_error)
             # BlueZ can replace a discovered device object while scanning or
@@ -643,6 +647,8 @@ class BluetoothManager:
                 try:
                     logger.debug("Retrying connect on refreshed BlueZ proxy for %s", address)
                     await refreshed.connect()
+                except BluetoothOperationInProgress:
+                    raise
                 except Exception as refresh_error:
                     if self.health:
                         self.health.observe_speaker(

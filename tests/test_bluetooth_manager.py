@@ -1,5 +1,6 @@
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from dbus_fast import Variant
@@ -8,8 +9,37 @@ from backend.bl_haos.bluetooth.constants import (
     ADAPTER_INTERFACE,
     DEVICE_INTERFACE,
 )
+from backend.bl_haos.bluetooth.device import BluetoothDevice, BluetoothOperationInProgress
 from backend.bl_haos.bluetooth.manager import BluetoothManager
 from backend.bl_haos.health import FailureClass, HealthRegistry, HealthState, SpeakerState
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy_on_refresh", [False, True])
+async def test_connect_defers_busy_operation_without_retry_or_failure_observation(monkeypatch, busy_on_refresh):
+    health = HealthRegistry()
+    manager = BluetoothManager(health_registry=health)
+    address = "AA:BB:CC:11:22:33"
+    path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+    device = BluetoothDevice(None, path, {"Address": address, "Connected": False})
+    busy = BluetoothOperationInProgress("Bluetooth connection already in progress")
+    errors = [RuntimeError("stale proxy")] * 3 + [busy] if busy_on_refresh else [busy] * 4
+    connect = AsyncMock(side_effect=errors)
+    monkeypatch.setattr(device, "connect", connect)
+    ensure = AsyncMock(return_value=device)
+    monkeypatch.setattr(manager, "ensure_device", ensure)
+    monkeypatch.setattr(manager, "stop_scan", AsyncMock())
+    monkeypatch.setattr("backend.bl_haos.bluetooth.manager.asyncio.sleep", AsyncMock())
+    manager.devices[path] = device
+
+    with pytest.raises(BluetoothOperationInProgress):
+        await manager.connect_device(address)
+
+    assert connect.await_count == (4 if busy_on_refresh else 1)
+    assert ensure.await_count == (2 if busy_on_refresh else 1)
+    assert address.lower() not in health.speakers
+    if not busy_on_refresh:
+        assert manager.devices[path] is device
 
 
 @pytest.mark.asyncio
@@ -594,4 +624,3 @@ async def test_operator_connect_still_resets_an_existing_link():
     assert await mgr.connect_device(dev_addr, reset_existing=True) is True
     assert resets == [dev_addr], "the operator reset must drop the stale link first"
     assert dev.connected is True
-

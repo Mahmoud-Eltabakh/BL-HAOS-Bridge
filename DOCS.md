@@ -72,9 +72,13 @@ The bridge deliberately does not fight for a link:
   that returns inside it is a *flap*: nothing is reconnected and the event is counted.
 - A speaker that drops **6 times in 2 minutes** gets a **60-second cooldown** instead
   of a reconnect loop.
-- A link that has just come up is left alone for **15 seconds**, so a presence
-  advertisement cannot fast-track a retry while the A2DP transport is still being
-  negotiated.
+- A link that has just come up is left alone for **15 seconds**, including after
+  successful stale-link recovery. Neither scheduled retries nor presence
+  advertisements can start an automatic retry during this settle window.
+- If BlueZ reports a connection already in progress, the bridge defers the
+  automatic attempt rather than retrying the busy operation or treating it as a
+  stale-device failure. Repeated connection failures open a circuit breaker for
+  **10 seconds**, even when stale-link recovery also fails, before retries resume.
 - **Connect** (the button, and the recovery after a failed play) can reset a stale
   A2DP transport on purpose. Normal automatic reconnect does not tear down a link
   that is already connected. After repeated BlueZ stale-link failures, one recovery

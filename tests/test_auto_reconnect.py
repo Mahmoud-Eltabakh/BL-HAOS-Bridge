@@ -1,7 +1,10 @@
 import asyncio
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from backend.bl_haos.bluetooth.device import BluetoothOperationInProgress
 from backend.bl_haos.bluetooth.manager import BluetoothManager
 from backend.bl_haos.bluetooth.models import DeviceInfo
 from backend.bl_haos.bluetooth.reconnect import AutoReconnectEngine, ReconnectState
@@ -10,7 +13,7 @@ from backend.bl_haos.constants import (
     RECONNECT_FLAP_LIMIT,
     RECONNECT_POST_CONNECT_SETTLE_SECONDS,
 )
-from backend.bl_haos.health import HealthRegistry, SpeakerState
+from backend.bl_haos.health import FailureClass, HealthRegistry, SpeakerState
 
 
 def _device_info(address: str, *, connected: bool, rssi: int | None = None) -> DeviceInfo:
@@ -96,6 +99,107 @@ async def test_presence_does_not_fast_track_while_the_link_settles():
 
 
 @pytest.mark.asyncio
+async def test_scheduled_retry_waits_for_the_full_settle_window(monkeypatch):
+    engine = AutoReconnectEngine(BluetoothManager())
+    address = "AA:BB:CC:11:22:33"
+    engine.register_speaker(address)
+    profile = engine.profiles[address.lower()]
+    attempt = AsyncMock()
+    monkeypatch.setattr(engine, "_attempt_reconnect", attempt)
+    now = 1000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+
+    engine._on_device_event(_device_info(address, connected=True))
+    now += 1
+    engine._on_device_event(_device_info(address, connected=False))
+    now += RECONNECT_DISCONNECT_GRACE_SECONDS + 1
+    await engine._tick()
+    profile.next_retry_time = now
+
+    now = 1000 + RECONNECT_POST_CONNECT_SETTLE_SECONDS - 0.1
+    engine._on_device_event(_device_info(address, connected=False, rssi=-55))
+    await engine._tick()
+    assert not engine._inflight
+    attempt.assert_not_awaited()
+
+    now = 1000 + RECONNECT_POST_CONNECT_SETTLE_SECONDS
+    await engine._tick()
+    await asyncio.gather(*engine._inflight.values())
+    attempt.assert_awaited_once_with(profile)
+
+
+@pytest.mark.asyncio
+async def test_default_breaker_opens_even_when_stale_recovery_keeps_failing(monkeypatch):
+    connect = AsyncMock(side_effect=RuntimeError("br-connection-unknown"))
+    manager = SimpleNamespace(
+        add_event_listener=lambda listener: None,
+        get_device_by_address=lambda address: SimpleNamespace(adapter_name="hci0"),
+        connect_device=connect,
+    )
+    health = HealthRegistry()
+    engine = AutoReconnectEngine(manager, health_registry=health)
+    engine.register_speaker("AA:BB:CC:11:22:33")
+    profile = engine.profiles["aa:bb:cc:11:22:33"]
+    now = 1000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+
+    for _ in range(engine.max_failures):
+        await engine._attempt_reconnect(profile)
+        if profile.state == ReconnectState.CIRCUIT_BROKEN:
+            break
+
+    assert profile.state == ReconnectState.CIRCUIT_BROKEN
+    assert profile.circuit_broken_until == now + engine.breaker_cooldown
+    speaker = health.snapshot().speakers[profile.address]
+    assert speaker.state == SpeakerState.UNAVAILABLE
+    assert speaker.failure.classification == FailureClass.RECONNECT_EXHAUSTED
+    calls_before = connect.await_count
+    now = profile.circuit_broken_until - 0.1
+    await engine._tick()
+    assert connect.await_count == calls_before
+    assert not engine._inflight
+
+    now = profile.circuit_broken_until
+    await engine._tick()
+    await asyncio.gather(*engine._inflight.values())
+    assert connect.await_count == calls_before + 1
+    assert profile.state == ReconnectState.BACKOFF
+    assert profile.consecutive_failures == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy_during_recovery", [False, True])
+async def test_busy_reconnect_defers_without_stale_failure(monkeypatch, busy_during_recovery):
+    busy = BluetoothOperationInProgress("Bluetooth connection already in progress")
+    errors = [RuntimeError("stale proxy"), busy] if busy_during_recovery else [busy]
+    connect = AsyncMock(side_effect=errors)
+    manager = SimpleNamespace(
+        add_event_listener=lambda listener: None,
+        get_device_by_address=lambda address: SimpleNamespace(adapter_name="hci0"),
+        connect_device=connect,
+    )
+    health = HealthRegistry()
+    engine = AutoReconnectEngine(manager, health_registry=health)
+    engine.register_speaker("AA:BB:CC:11:22:33")
+    profile = engine.profiles["aa:bb:cc:11:22:33"]
+    if busy_during_recovery:
+        profile.consecutive_failures = 1
+    now = 1000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+
+    await engine._attempt_reconnect(profile)
+
+    assert profile.state == ReconnectState.BACKOFF
+    assert profile.next_retry_time == now + RECONNECT_POST_CONNECT_SETTLE_SECONDS
+    assert profile.consecutive_failures == 0
+    assert health.snapshot().speakers[profile.address].failure is None
+    assert connect.await_count == (2 if busy_during_recovery else 1)
+    now = profile.next_retry_time - 0.1
+    await engine._tick()
+    assert not engine._inflight
+
+
+@pytest.mark.asyncio
 async def test_repeated_flaps_earn_a_cooldown_instead_of_a_retry_loop(monkeypatch):
     """A marginal link is left alone instead of being reconnected in a loop."""
     mgr = BluetoothManager()
@@ -161,9 +265,6 @@ async def test_circuit_breaker_and_locking():
 
     mgr.connect_device = mock_fail_connect
 
-    # The reconnect engine now self-heals once a stale device is detected, so
-    # the second failure triggers recovery and the breaker is reached only after
-    # the recovery path itself is exhausted.
     await engine._attempt_reconnect(profile)
     assert profile.consecutive_failures == 1
     assert profile.state == ReconnectState.BACKOFF
@@ -174,7 +275,7 @@ async def test_circuit_breaker_and_locking():
 
     await engine._attempt_reconnect(profile)
     assert profile.consecutive_failures >= 3
-    assert profile.state in (ReconnectState.BACKOFF, ReconnectState.CIRCUIT_BROKEN)
+    assert profile.state == ReconnectState.CIRCUIT_BROKEN
 
 
 @pytest.mark.asyncio
@@ -256,6 +357,8 @@ async def test_successful_stale_recovery_publishes_connected_without_old_failure
     assert profile.consecutive_failures == 0
     assert speaker.state == SpeakerState.CONNECTED
     assert speaker.failure is None
+    assert profile.connected_at > 0
+    assert profile.disconnected_since is None
 
 
 @pytest.mark.asyncio

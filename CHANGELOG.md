@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.65
+
+- Honor the reconnect circuit breaker even when stale-link recovery keeps failing. Repeated failures now pause automatic attempts instead of retrying indefinitely.
+- Defer connections BlueZ already has in progress without retrying or reporting a stale-device failure, and enforce the full 15-second settle window for scheduled automatic retries as well as presence-triggered retries, including after successful stale-link recovery.
+
 ## 0.2.64
 
 - Keep stale-link recovery from deleting a speaker's existing BlueZ pairing and trust. The reconnect worker now resets/refreshes the link instead of unpairing and attempting to pair again, so a powered trusted speaker can recover without entering pairing mode again.

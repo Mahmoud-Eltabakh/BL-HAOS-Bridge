@@ -277,6 +277,7 @@ class AutoReconnectEngine:
                 profile.state == ReconnectState.BACKOFF
                 and now >= profile.next_retry_time
                 and now >= profile.cooldown_until
+                and now - profile.connected_at >= RECONNECT_POST_CONNECT_SETTLE_SECONDS
             ):
                 current = self._inflight.get(addr)
                 if current is None or current.done():
@@ -330,6 +331,18 @@ class AutoReconnectEngine:
             int(RECONNECT_FLAP_COOLDOWN_SECONDS),
         )
 
+    def _defer_busy_connection(self, profile: SpeakerReconnectProfile, busy: BluetoothOperationInProgress) -> None:
+        logger.info(
+            "Speaker %s already has a connection in progress (%s); leaving it to settle.",
+            profile.address,
+            busy,
+        )
+        profile.disconnected_since = None
+        profile.state = ReconnectState.BACKOFF
+        profile.consecutive_failures = 0
+        profile.backoff_step = 0
+        profile.next_retry_time = time.time() + RECONNECT_POST_CONNECT_SETTLE_SECONDS
+
     async def _recover_stale_device(self, profile: SpeakerReconnectProfile) -> bool:
         """Reset a stale Bluetooth link without deleting its trusted bond."""
         addr = profile.address
@@ -339,6 +352,8 @@ class AutoReconnectEngine:
             await self.manager.connect_device(addr, reset_existing=True)
             logger.info("Self-healing recovery succeeded for %s", addr)
             return True
+        except BluetoothOperationInProgress:
+            raise
         except Exception as exc:
             logger.warning("Stale-link reset failed for %s: %s", addr, exc)
             if self.health:
@@ -383,30 +398,20 @@ class AutoReconnectEngine:
                 profile.backoff_step = 0
                 profile.next_retry_time = 0.0
             except BluetoothOperationInProgress as busy:
-                # BlueZ - or another client - is already bringing this link up.
-                # Retrying now is exactly what made the two connect requests race,
-                # so wait for the outcome instead of counting a failure.
-                logger.info(
-                    "Speaker %s already has a connection in progress (%s); leaving it to settle.",
-                    addr,
-                    busy,
-                )
-                profile.disconnected_since = None
-                profile.state = ReconnectState.BACKOFF
-                profile.consecutive_failures = 0
-                profile.backoff_step = 0
-                profile.next_retry_time = time.time() + RECONNECT_POST_CONNECT_SETTLE_SECONDS
+                self._defer_busy_connection(profile, busy)
             except Exception as e:
                 profile.consecutive_failures += 1
                 profile.backoff_step += 1
                 logger.warning("Failed to reconnect to %s: %s (Failures: %d)", addr, e, profile.consecutive_failures)
                 logger.debug("Auto-reconnect next retry calculation for %s (backoff_step=%d)", addr, profile.backoff_step)
 
-                if profile.consecutive_failures >= RECONNECT_SELF_HEAL_FAILURE_THRESHOLD:
+                if RECONNECT_SELF_HEAL_FAILURE_THRESHOLD <= profile.consecutive_failures < self.max_failures:
                     try:
                         recovered = await self._recover_stale_device(profile)
                         if recovered:
                             profile.state = ReconnectState.CONNECTED
+                            profile.connected_at = time.time()
+                            profile.disconnected_since = None
                             profile.consecutive_failures = 0
                             profile.backoff_step = 0
                             profile.next_retry_time = 0.0
@@ -418,6 +423,9 @@ class AutoReconnectEngine:
                             profile.next_retry_time = time.time() + self.initial_backoff
                             profile.consecutive_failures = max(profile.consecutive_failures, RECONNECT_MIN_FAILURES_AFTER_HEAL)
                             logger.info("Triggered self-healing recovery for stale speaker %s", addr)
+                        return
+                    except BluetoothOperationInProgress as busy:
+                        self._defer_busy_connection(profile, busy)
                         return
                     except Exception as recovery_exc:
                         logger.warning("Auto-recovery failed for %s: %s", addr, recovery_exc)
