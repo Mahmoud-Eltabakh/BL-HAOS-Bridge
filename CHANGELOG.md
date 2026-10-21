@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.67
+
+- Add opt-in, host-resident incident recording: aggregate backend warning patterns with speaker, audio-health, and native-client observations every five seconds, retaining bounded local evidence for 30 UTC calendar days without notifications or recovery actions.
+
 ## 0.2.66
 
 - Add DEBUG-only function entry, exit, failure, and cancellation tracing throughout the bridge backend, with nested call identifiers and elapsed time to investigate Bluetooth and playback failures. Call traces exclude arguments, results, exception messages, and tracebacks; normal INFO logging is unchanged.

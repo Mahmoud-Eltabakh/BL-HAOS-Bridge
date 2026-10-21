@@ -8,6 +8,7 @@ export XDG_RUNTIME_DIR=/var/run/pipewire
 export PYTHONPATH=/backend:$PYTHONPATH
 
 configured_log_level="$(bashio::config 'log_level')"
+export BLHAOS_INCIDENT_MONITOR="$(bashio::config 'incident_monitor')"
 case "${configured_log_level,,}" in
 	trace) export LOG_LEVEL="debug" ;;
 	fatal) export LOG_LEVEL="critical" ;;

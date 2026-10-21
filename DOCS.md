@@ -180,6 +180,7 @@ the difference diagnosable.
 | Option | Default | Description |
 |---|---|---|
 | `log_level` | `info` | Logging verbosity (`trace`, `debug`, `info`, `warning`, `error`). |
+| `incident_monitor` | `false` | Record local incident observations continuously while the add-on runs; see [Persistent incident recording](#persistent-incident-recording). |
 | `default_codec` | `auto` | Preferred Bluetooth A2DP audio codec. `auto` prioritizes highest fidelity supported by speaker: LDAC -> aptX HD -> aptX -> AAC -> SBC-XQ -> SBC. |
 | `playback_buffer_ms` | `500` | Audio held ahead of the speaker, 50-2000 ms. Raise it if playback breaks up; more buffer also means audio keeps playing slightly longer after a pause. See [Audio stutters, flutters, or the quality changes](#audio-stutters-flutters-or-the-quality-changes). |
 | `ldac_quality` | `sq` | LDAC encoding quality: `hq` 990 kbps, `sq` 660 kbps (steady), `mq` 330 kbps, `auto` adaptive (upstream's default, which changes the bitrate while a song plays). See the same section. |
@@ -221,6 +222,45 @@ ha core logs > /config/bl-haos-integration.log
 ```
 
 The add-on log identifies BlueZ and PipeWire state; the Home Assistant log identifies native integration commands and entity state transitions. Integration 0.2.19 and later also traces named integration functions using the same call-span format, excluding the logger plumbing itself to prevent recursive logging. Remove the temporary debug logger and restore the add-on's `info` level after collecting evidence. Existing operational messages can still contain media URLs or device identifiers: redact access tokens, media URLs, and complete Bluetooth addresses before sharing logs.
+
+### Persistent incident recording
+
+Enable `incident_monitor` in the add-on options and restart the add-on. The
+recorder runs on the Home Assistant host independently of a browser, this chat,
+or a Windows PC. It works at INFO level; DEBUG tracing is not required.
+
+Every five seconds it aggregates backend WARNING/ERROR messages into fixed
+categories (reconnect exhaustion, busy connection, unreachable link, sink,
+playback, or other backend warning) and correlates them with canonical
+component/speaker health and the native integration client count. These are
+rule-based observations, not AI diagnoses or proof of root cause. Health is
+sampled, not actively probed: a stale health observation stays stale, and brief
+transitions between samples may only appear in warning counts.
+
+Changed state and warning batches are recorded, with an hourly heartbeat and
+startup/shutdown observations. No notifications are sent; no pairing, playback,
+restart, or recovery action is performed. Raw log messages, tokens, URLs,
+arguments, exception details and Bluetooth addresses are not stored. Speakers
+use stable pseudonymous identifiers (not anonymous against a known address).
+
+Daily JSONL files live under `/data/incidents/` in the add-on's persistent
+storage. Keep the current UTC date and preceding 29 dates, pruning on writes.
+Each day is capped at 2 MiB (at most approximately 60 MiB across 30 days).
+Further observations that day are dropped, counted, and reported in the add-on
+log. Thirty days is a retention maximum, not a promise to retain every event.
+Storage errors are logged explicitly and retried at the next sample.
+
+`GET /api/incidents`, through the authenticated Home Assistant Ingress session,
+returns `enabled`, recorder `status`, and at most 100 recent observations from
+the bounded tail of the latest daily file. Status includes running state,
+storage error type, lifetime dropped-observation count, sample interval and
+storage limits. It does not export the full archive.
+
+The recorder stops when the add-on or host stops and resumes on add-on startup
+when enabled. It cannot analyse Home Assistant Core or host Bluetooth journal
+logs directly, or explain outages while it was stopped. Native client counts
+can indicate an integration connection loss but do not identify its cause.
+Use the existing Core/host logs alongside recorded incidents for deeper analysis.
 
 ## Native Integration Verification
 

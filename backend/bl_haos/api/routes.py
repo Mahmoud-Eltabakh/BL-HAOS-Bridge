@@ -52,6 +52,21 @@ logger = logging.getLogger("bl_haos.api.routes")
 router = APIRouter(prefix=API_PREFIX, tags=["api"])
 
 
+@router.get("/incidents")
+@trace_call
+async def incident_observations(request: Request):
+    """Return monitor status and the bounded latest incident observations."""
+    recorder = getattr(request.app.state, "incident_recorder", None)
+    if recorder is None:
+        return {"enabled": False, "status": None, "observations": []}
+    try:
+        observations = await recorder.recent()
+    except (OSError, ValueError) as error:
+        logger.error("Incident history read failed: %s", type(error).__name__)
+        raise HTTPException(status_code=503, detail="Incident history could not be read") from error
+    return {"enabled": True, "status": recorder.status(), "observations": observations}
+
+
 @trace_call
 def require_native_auth(authorization: str | None, request: Request) -> None:
     """Reject native transport requests without the installation credential."""

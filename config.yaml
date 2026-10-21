@@ -1,6 +1,6 @@
 name: "BL-HAOS"
 slug: "bl_haos"
-version: "0.2.66"
+version: "0.2.67"
 description: "High-fidelity Bluetooth audio streaming adapter for Home Assistant OS"
 url: "https://github.com/Mahmoud-Eltabakh/BL-HAOS-Bridge"
 image: "ghcr.io/mahmoud-eltabakh/{arch}-bl-haos-bridge"
@@ -26,6 +26,7 @@ stage: "experimental"
 # whenever the daemon is alive, so a degraded bridge is not restarted in a loop.
 watchdog: "http://[HOST]:[PORT:8099]/api/health"
 options:
+  incident_monitor: false
   log_level: "info"
   default_codec: "auto"
   playback_buffer_ms: 500
@@ -33,6 +34,7 @@ options:
 discovery:
   - bl_haos
 schema:
+  incident_monitor: bool?
   log_level: "list(trace|debug|info|notice|warning|error|fatal)?"
   default_codec: "list(auto|sbc|sbc_xq|aac|aptx|aptx_hd|ldac)?"
   # Bounded on purpose: the audio held ahead of a speaker is what a stutter-free

@@ -54,6 +54,7 @@ from .constants import (
 from .diagnostics import DiagnosticsService
 from .demo import DemoRuntime
 from .ha.player import MediaPlayerBridge
+from .incidents import IncidentRecorder
 from .health import FailureClass, HealthRegistry, HealthState, SpeakerState, safe_detail
 
 from .call_trace import trace_call, trace_scope
@@ -303,16 +304,32 @@ async def lifespan(app: FastAPI):
         await health.publish(ws_manager)
         logger.info("BL-HAOS backend daemon is ready.")
 
-        yield
+        recorder = None
+        if os.environ.get("BLHAOS_INCIDENT_MONITOR", "").lower() == "true":
+            recorder = IncidentRecorder(
+                Path("/data/incidents"), health,
+                lambda: len(native_ws_manager.active_connections),
+            )
+            app.state.incident_recorder = recorder
+            await recorder.start()
+        else:
+            app.state.incident_recorder = None
 
-        # Shutdown
-        logger.info("Stopping BL-HAOS backend daemon...")
-        health.set_lifecycle(HealthState.STOPPING)
-        await health.publish(ws_manager)
-        await reconnect_engine.stop()
-        await ha_bridge.async_shutdown()
-        health.set_lifecycle(HealthState.STOPPED)
-        await health.publish(ws_manager)
+        try:
+            yield
+        finally:
+            # Shutdown
+            try:
+                logger.info("Stopping BL-HAOS backend daemon...")
+                health.set_lifecycle(HealthState.STOPPING)
+                await health.publish(ws_manager)
+                await reconnect_engine.stop()
+                await ha_bridge.async_shutdown()
+                health.set_lifecycle(HealthState.STOPPED)
+                await health.publish(ws_manager)
+            finally:
+                if recorder is not None:
+                    await recorder.stop()
 
 
 app = FastAPI(
