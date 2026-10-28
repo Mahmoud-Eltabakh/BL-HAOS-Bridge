@@ -9,6 +9,8 @@ from backend.bl_haos.constants import (
     NATIVE_API_PREFIX,
     NATIVE_BRIDGE_ID,
     NATIVE_BRIDGE_VERSION,
+    MINIMUM_INTEGRATION_VERSION,
+    VERSION,
     WS_NATIVE_PATH,
     WS_PING,
     WS_POLICY_VIOLATION_CODE,
@@ -79,7 +81,9 @@ def test_native_snapshot_filters_trusted_sinks(monkeypatch):
         snapshot = client.get(f"{NATIVE_API_PREFIX}/speakers", headers=headers)
 
     assert payload["bridge_id"] == NATIVE_BRIDGE_ID
-    assert payload["version"] == NATIVE_BRIDGE_VERSION
+    assert payload["version"] == NATIVE_BRIDGE_VERSION == 1
+    assert payload["addon_version"] == VERSION
+    assert payload["min_integration_version"] == MINIMUM_INTEGRATION_VERSION == "0.2.22"
     assert payload["queue_version"] == 1
     # Identity carries a digest of the credential, never the credential.
     from backend.bl_haos.health import token_fingerprint

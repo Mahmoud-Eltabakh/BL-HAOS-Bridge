@@ -17,7 +17,8 @@ ADDON_SLUG = "bl-haos"
 # Single source of truth for the runtime version. ``backend/tests/test_addon_config.py``
 # asserts it matches ``config.yaml`` so the add-on manifest and the daemon cannot
 # drift apart.
-VERSION = "0.2.70"
+VERSION = "0.2.71"
+MINIMUM_INTEGRATION_VERSION = "0.2.22"
 
 # Logger namespace shared by every bridge module and the log format the daemon
 # installs at startup.
@@ -78,7 +79,7 @@ EVENT_HEALTH_OBSERVATION = "health_observation"
 EVENT_DEMO_SCENARIO = "demo_scenario"
 EVENT_DEVICE_UPDATED = "device_updated"
 EVENT_DEVICE_DISCOVERED = "device_discovered"
-# Playback state for the Ingress dashboard's own socket. The native integration
+# Playback events on the retained operational socket. The native integration
 # listens on /ws/native, so without this a volume set from Home Assistant never
 # reached the dashboard slider.
 EVENT_PLAYBACK_UPDATED = "playback_updated"
@@ -96,8 +97,6 @@ DEFAULT_CONFIG_PATH = f"{CONFIG_DIRECTORY}/{CONFIG_FILE_NAME}"
 FALLBACK_CONFIG_PATH = f"{CONFIG_FALLBACK_DIRECTORY}/{CONFIG_FILE_NAME}"
 CONFIG_TEMP_SUFFIX = ".tmp"
 CONFIG_FILE_MODE = 0o600
-STATIC_INDEX_FILE = "index.html"
-STATIC_DIRECTORY_CANDIDATES = ("web_ui/dist", "/var/www/bl-haos", "frontend/dist")
 BLUEZ_ROOT_PATH = "/org/bluez"
 BLUEZ_ROOT_PATH_TRAILER = "/"
 SUPERVISOR_DISCOVERY_URL = "http://supervisor/discovery"

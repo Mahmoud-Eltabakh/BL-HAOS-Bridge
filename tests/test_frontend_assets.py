@@ -1,88 +1,12 @@
-import re
 from pathlib import Path
 
 
-def test_ingress_relative_paths():
-    vite_conf = Path("web_ui/vite.config.ts")
-    assert vite_conf.exists(), "web_ui/vite.config.ts must exist"
-
-    content = vite_conf.read_text(encoding="utf-8")
-    assert 'base: "./"' in content or "base: './'" in content, "Vite base must be relative './' for Ingress support"
-
-    html = Path("web_ui/index.html")
-    assert html.exists(), "web_ui/index.html must exist"
-    html_content = html.read_text(encoding="utf-8")
-    assert "./src/main.tsx" in html_content, "index.html script reference must be relative './src/main.tsx'"
-
-def test_ui_components_exist():
-    expected_components = [
-        "web_ui/src/App.tsx",
-        "web_ui/src/components/SpeakerCard.tsx",
-        "web_ui/src/components/DiscoveryModal.tsx",
-        "web_ui/src/components/AdapterStatus.tsx",
-        "web_ui/src/components/SettingsModal.tsx",
-        "web_ui/src/api/client.ts",
-        "web_ui/src/hooks/useBluetoothEvents.ts",
-    ]
-    for comp in expected_components:
-        p = Path(comp)
-        assert p.exists(), f"Component {comp} must exist"
-        assert len(p.read_text(encoding="utf-8")) > 50, f"Component {comp} must not be empty"
-
-def test_dynamic_ws_url_calculation():
-    client_ts = Path("web_ui/src/api/client.ts").read_text(encoding="utf-8")
-    assert "getWebSocketUrl" in client_ts
-    assert "window.location" in client_ts
-    assert "window.location.pathname" in client_ts
-
-
-def test_ingress_shows_native_diagnostics_and_relative_api_error_state():
-    client_ts = Path("web_ui/src/api/client.ts").read_text(encoding="utf-8")
-    constants_ts = Path("web_ui/src/constants.ts").read_text(encoding="utf-8")
-    app = Path("web_ui/src/App.tsx").read_text(encoding="utf-8")
-
-    assert "getNativeDiagnostics" in client_ts
-    # The endpoint and its message come from the single shared constants module.
-    assert "API_DIAGNOSTICS_NATIVE" in client_ts
-    assert "API_DIAGNOSTICS_NATIVE = " in constants_ts
-    assert "/api/diagnostics/native" in constants_ts
-    assert "Native diagnostics are unavailable" in constants_ts
-    assert "Native integration" in app
-    assert "diagnosticsError" in app
-    assert "refreshDiagnostics" in app
-
-
-def test_modal_hooks_are_declared_before_early_returns():
-    """React hooks must never sit below an early `return null`.
-
-    A hook declared after the early return makes the modal crash with
-    "Rendered more hooks than during the previous render" the first time it
-    opens, which is exactly how the Add Speaker dialog used to break.
-    """
-    hook_call = re.compile(r"^\s*(?:const|let)\s+.*\buse(?:State|Ref|Effect|Callback|Memo)\s*\(")
-
-    for name in ("DiscoveryModal.tsx", "SettingsModal.tsx"):
-        lines = Path(f"web_ui/src/components/{name}").read_text(encoding="utf-8").splitlines()
-        early_return = next(
-            (
-                index
-                for index, line in enumerate(lines)
-                if "if (!isOpen" in line and "return null" in line
-            ),
-            None,
-        )
-        assert early_return is not None, f"{name} must keep its isOpen early return"
-
-        trailing_hooks = [
-            line.strip() for line in lines[early_return + 1 :] if hook_call.match(line)
-        ]
-        assert not trailing_hooks, f"{name} declares hooks after its early return: {trailing_hooks}"
-
-    client_ts = Path("web_ui/src/api/client.ts").read_text(encoding="utf-8")
-    app = Path("web_ui/src/App.tsx").read_text(encoding="utf-8")
-    assert "getDiagnostics" not in client_ts
-    assert "executeRecovery" not in client_ts
-    assert "support/bundle" not in client_ts
-    assert "DiagnosticsPanel" not in app
-    assert "RecoveryPanel" not in app
-    assert "demo_mode" not in app
+def test_retired_ingress_frontend_sources_are_absent():
+    assert not Path("web_ui").exists()
+    constants = Path("backend/bl_haos/constants.py").read_text(encoding="utf-8")
+    main = Path("backend/bl_haos/main.py").read_text(encoding="utf-8")
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    assert "STATIC_DIRECTORY_CANDIDATES" not in constants + main
+    assert "StaticFiles" not in main
+    assert "web_ui_build" not in dockerfile
+    assert "COPY --from=web_ui_build" not in dockerfile

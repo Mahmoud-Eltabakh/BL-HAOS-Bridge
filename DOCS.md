@@ -1,47 +1,31 @@
 # Home Assistant Add-on: BL-HAOS (Bluetooth Audio Adapter)
 
+## Phase 38 headless migration — local candidate, not a published release
+
+Bridge 0.2.71 and integration 0.2.22 are synchronized local candidates only. The add-on's old Ingress application, static UI, and legacy `/api/scan/*`, `/api/devices*`, `/api/settings*`, and `/api/adapters*` management routes are removed. The Home Assistant-native integration panel remains. Use its **Speakers** view, admin-only `bl_haos.*` services, and speaker options flow for pairing, speaker management, adapter actions, and settings. The bridge's authenticated `/api/native/*` API replaces the removed management routes. `/ws` remains an operational event transport; it is not an alternate UI. Health, watchdog, and Supervisor discovery remain on internal port 8099, with no host-port mapping.
+
+The bridge identity advertises `addon_version` and `min_integration_version` separately from integer native protocol `version: 1`. The supported candidate pair is bridge 0.2.71 with integration 0.2.22. The integration requires add-on 0.2.70 or newer; bridge releases can require a newer integration. Thus add-on 0.2.69 and integration 0.2.21 are known-too-old for this candidate pair. Versions below an advertised minimum, malformed or partial product metadata, prereleases, and unsupported protocol versions are incompatible and create an HA Repair error. If both product-version fields are absent on protocol 1, the integration reports a warning (`unknown_legacy`) and allows existing behavior. An old integration cannot enforce requirements that a newer bridge advertises.
+
+### Staged upgrade and rollback
+
+1. Back up Home Assistant configuration and existing add-on/integration data before maintenance.
+2. Under separately authorized maintenance, update the integration first to 0.2.22. Confirm its native controls still work with the existing bridge; an older bridge without product metadata may show the documented legacy warning.
+3. Update the bridge to 0.2.71. Confirm native identity is healthy and the compatibility repair clears. If a mismatch remains, use Home Assistant **Repairs** to see which package needs updating.
+4. If rollback is necessary, restore the previously working bridge/integration package pair and the preserved backup under separate authority. Do not wipe the config entry, remove speakers, or rotate tokens to address a version mismatch.
+
+The migration preserves native credentials, speaker records and aliases, pairings, and settings; the in-memory playback queue still does not resume after an add-on restart. Old Ingress links may stop resolving, and the fixed root notice cannot recreate Supervisor Ingress access. A reachable Ingress grace release would require separate staging approval. These candidate versions are not published or deployed. Phase 39 remains the separate authority boundary for installation, publication, deployment, live acceptance, and go/no-go.
+
 ## Phases 24-26 Local Media, Playlists, and Queue Behavior
 
-The integrated 0.2.70 release, including the earlier reconnect fix, is undeployed.
-Local Core 2026.10.3 tests do not prove real provider layout, session expiry or
-physical audio. Deployment and further restarts require separate authorization;
-the accepted temporary probe was removed after its one permitted restart.
+The integrated 0.2.70 release, including the earlier reconnect fix, is undeployed. Local Core 2026.10.3 tests do not prove real provider layout, session expiry or physical audio. Deployment and further restarts require separate authorization; the accepted temporary probe was removed after its one permitted restart.
 
-After authorized installation choose **Open Media Catalog** beside Home Assistant
-Native integration in Ingress. The link only opens HA's `/bl-haos-media` panel.
-**Native Browse Media** is also available on the native speaker entity. In
-**Play on**, select exactly one connected BL-HAOS speaker before browsing or
-starting playback. HA owns provider authentication and reference resolution.
-For a saved custom playlist, Home Assistant resolves every saved reference
-before replacing the current queue. The bridge owns one in-memory queue per
-speaker; custom items keep their saved order and provider shortcuts remain one
-atomic queue item. The resolved playable request is transient between HA and
-the bridge, not a catalog proxy request.
+After authorized installation choose **Open Media Catalog** in the Home Assistant-native media panel. The link only opens HA's `/bl-haos-media` panel. **Native Browse Media** is also available on the native speaker entity. In **Play on**, select exactly one connected BL-HAOS speaker before browsing or starting playback. HA owns provider authentication and reference resolution. For a saved custom playlist, Home Assistant resolves every saved reference before replacing the current queue. The bridge owns one in-memory queue per speaker; custom items keep their saved order and provider shortcuts remain one atomic queue item. The resolved playable request is transient between HA and the bridge, not a catalog proxy request.
 
-The authenticated Library panel launches saved playlists, while the Ingress
-SpeakerCard and capability-enabled native media-player entity control the same
-bridge queue. Queue start, Next, and Previous are each sent once. A lost
-acknowledgement is ambiguous, so check the current queue before another explicit
-action. Failed items are retained until the user explicitly retries or skips;
-there is no automatic skip or retry. Stop, replacement, and speaker loss clear
-the old session. Queues do not resume after an add-on restart.
+The authenticated Library panel launches saved playlists, while the native media-player entity controls the same bridge queue. Queue start, Next, and Previous are each sent once. A lost acknowledgement is ambiguous, so check the current queue before another explicit action. Failed items are retained until the user explicitly retries or skips; there is no automatic skip or retry. Stop, replacement, and speaker loss clear the old session. Queues do not resume after an add-on restart.
 
-Resolved playback URLs are never sent to the browser or written to the playlist
-library. Local/mock verification does not establish production or audible
-playback acceptance; this candidate remains undeployed and release/deployment
-require separate authorization.
+Resolved playback URLs are never sent to the browser or written to the playlist library. Local/mock verification does not establish production or audible playback acceptance; this candidate remains undeployed and release/deployment require separate authorization.
 
-The panel does not store browser/add-on HA/provider credentials, use direct
-provider APIs, or accept raw URLs. Existing native direct-URL support is not a
-catalog fallback. The local Phase 25 candidate stores custom playlists as ordered
-Home Assistant media references and one-reference provider-playlist shortcuts;
-provider tracks are not copied. Explicit availability checks browse the exact HA
-media reference only; they do not resolve or play media and never rewrite saved
-IDs. Phase 26 queue behavior has local SIL/mock evidence only, not production
-acceptance. T-24-15 remains OPEN/HIGH and T-24-16 remains OPEN/MEDIUM. Release
-and deployment are not approved. Root TESTING.md separates local SIL from
-authorized HAOS acceptance. Retired Docker E2E and fixture screenshots are not
-host proof.
+The panel does not store browser/add-on HA/provider credentials, use direct provider APIs, or accept raw URLs. Existing native direct-URL support is not a catalog fallback. The local Phase 25 candidate stores custom playlists as ordered Home Assistant media references and one-reference provider-playlist shortcuts; provider tracks are not copied. Explicit availability checks browse the exact HA media reference only; they do not resolve or play media and never rewrite saved IDs. Phase 26 queue behavior has local SIL/mock evidence only, not production acceptance. T-24-15 remains OPEN/HIGH and T-24-16 remains OPEN/MEDIUM. Release and deployment are not approved. Root TESTING.md separates local SIL from authorized HAOS acceptance. Retired Docker E2E and fixture screenshots are not host proof.
 
 BL-HAOS turns your Home Assistant OS device into a Bluetooth audio transmitter. It enables streaming Home Assistant TTS announcements, local music files, web radio, and Music Assistant directly to any paired Bluetooth speakers with low latency, audiophile-grade codecs, and rock-solid background reconnection.
 
@@ -58,8 +42,7 @@ BL-HAOS turns your Home Assistant OS device into a Bluetooth audio transmitter. 
 ### 2. Install the Add-on
 1. Find **BL-HAOS Bluetooth Audio Adapter** in the Add-on Store list.
 2. Click **Install** and wait for the build/installation to complete.
-3. Enable **Start on boot** and **Show in sidebar** (for instant Ingress UI access).
-4. Click **Start**.
+3. Enable **Start on boot** and click **Start**. No Ingress sidebar UI is installed.
 
 ### 3. Install the Native Media Player Integration
 1. In HACS, add `https://github.com/Mahmoud-Eltabakh/BL-HAOS-Integration` as a custom **Integration** repository and install **BL-HAOS Bluetooth Audio**.
@@ -73,20 +56,18 @@ The integration connects through Home Assistant's private add-on network before 
 ## How to Use
 
 ### Pairing Bluetooth Speakers
-1. Click **BL-HAOS** in your Home Assistant sidebar.
-2. Click **Add Speaker** to open the Bluetooth Discovery Scanner.
-3. Put your Bluetooth speaker into pairing mode.
-4. When your speaker appears in the list with its signal strength (RSSI), click **Pair & Trust**.
-5. Once paired, click **Connect** on the speaker card.
+1. Open the integration's **Speakers** view in Home Assistant, or use its admin-only `bl_haos.pair` and `bl_haos.connect` services.
+2. Start discovery, put the Bluetooth speaker into pairing mode, then select its discovered address and pair it.
+3. Connect the trusted speaker from the Speakers view or with `bl_haos.connect`.
 
-Pairing is answered only while the add-on is doing it. Clicking **Pair & Trust**
-opens a 90-second window for that one address: until it closes, the adapter is
-pairable and the BlueZ agent answers pairing prompts (using the PIN you supplied,
-or `0000`); everything outside the window is refused with
-`org.bluez.Error.Rejected`, and the adapter stops accepting pairing requests when
-the window closes or expires. If pairing fails, put the speaker back into pairing
-mode and try again — the window is per attempt, not permanent. The dashboard's
-native status shows the address that may currently pair (`pairing_authorized_address`).
+Pairing is answered only while the Home Assistant integration has opened a
+bounded 90-second pairing window for one address. During that window, the BlueZ
+agent answers pairing prompts using the supplied PIN (or `0000`); everything
+outside it is refused with `org.bluez.Error.Rejected`. The adapter stops accepting
+pairing requests when the window closes or expires. If pairing fails, put the
+speaker back into pairing mode and try again — the window is per attempt, not
+permanent. Internal health/diagnostic data reports the authorized address
+(`pairing_authorized_address`).
 
 A speaker becomes a Home Assistant entity only once it is **Trusted** (what
 **Pair & Trust** records). A device that merely pairs or connects — which any
@@ -112,14 +93,14 @@ fields above are bridge-managed settings and are edited through the authenticate
 native endpoint, not through Supervisor options. Demo and player-tuning settings
 remain outside this editing surface.
 
-Legacy `/api/scan/*`, `/api/devices*`, `/api/settings*`, and `/api/adapters*`
-routes remain for the existing add-on ingress UI until the separately planned
-Phase 38 retirement. The integration does not call these legacy routes. The local
-implementation has not been installed or accepted on a live Home Assistant host.
+The old unauthenticated management routes are removed. The authenticated native
+API is the supported control surface; health, watchdog and discovery remain internal
+operational endpoints, not user-facing management APIs. The local implementation
+has not been installed or accepted on a live Home Assistant host.
 
 ### A Speaker That Is Switched Off
 A trusted speaker that is switched off or out of range stays where you left it:
-its card remains on the dashboard with an **Offline** badge, and BlueZ keeps
+its entity remains in Home Assistant with an **Offline** state, and BlueZ keeps
 reporting the device because a paired device is not temporary. The bridge keeps
 the last known record — name, alias, adapter and trust — for exactly this
 reason, and the same entity comes back by itself (with its history and
@@ -130,7 +111,8 @@ Assistant integration can tell the two offline cases apart: a paired speaker
 that is switched off keeps its entity but is disabled (out of the state machine,
 identity intact), while a speaker whose pairing is gone - BlueZ withdrew the
 device, which it does for anything it treats as temporary - has its entity
-removed completely. **Remove** in the dashboard is what forgets a speaker for
+removed completely. Remove the speaker in the integration Speakers view or with
+`bl_haos.remove` to forget it for
 good, and it works while the speaker is offline too.
 
 ### Stability: Disconnects, Reconnects and Quality
@@ -205,8 +187,7 @@ instead (`sq`, a steady 660 kbps, still far above SBC) and exposes the choice:
 | `mq` | 330/303 kbps | A weak link that still stutters at `sq`. |
 | `auto` | adaptive | Upstream's default: the bitrate follows the link, so the quality changes. |
 
-**Pin a codec per speaker** in that speaker's **Settings → Audio Codec** in the
-dashboard. This is the strongest lever: LDAC at any quality needs both radio and CPU
+**Pin a codec per speaker** in that speaker's codec override in the integration options flow. This is the strongest lever: LDAC at any quality needs both radio and CPU
 headroom that a Pi-class board and a busy 2.4 GHz band do not always have, and a link
 that is marginal for LDAC is usually fine on **SBC-XQ** (steady, good) or **SBC** (most
 compatible). The bridge applies the pin on the next playback and warns if the speaker
@@ -242,22 +223,22 @@ the difference diagnosable.
 ### Playing Audio from Home Assistant
 - Each connected trusted speaker appears as a native `media_player` entity after the BL-HAOS integration is configured.
 - Use standard Home Assistant Lovelace media cards, automation actions (`media_player.play_media`, `tts.speak`), or Music Assistant to send audio directly to your speaker.
-- Volume adjustments in Home Assistant are written straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The dashboard's slider reads the same value, so it follows Home Assistant instead of keeping whatever it last set itself; see [Volume](#volume).
+- Volume adjustments in Home Assistant are written straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. Home Assistant media controls read the same value; see [Volume](#volume).
 
 ### Saved Playlists and Queue Playback
 
 - Start a saved custom playlist or provider shortcut from the authenticated **BL-HAOS Media** Library panel after selecting one connected speaker. HA resolves all saved references before one queue start; a provider shortcut stays one atomic item.
-- The Ingress SpeakerCard and native Home Assistant media-player controls operate on the same per-speaker bridge queue. Native queue controls require the bridge to advertise queue version 1; older bridges keep their standard single-item playback behavior.
+- Native Home Assistant media-player controls operate on the same per-speaker bridge queue. Native queue controls require the bridge to advertise queue version 1; older bridges keep their standard single-item playback behavior.
 - Queue start, Next, and Previous are each sent once and are not automatically retried. After an uncertain response, check the selected speaker's current queue before another explicit action. Playback failure retains the current item; Play is an explicit retry and Next is an explicit skip.
 - Queue state is held in memory and is cleared by Stop, replacement, or speaker loss. Queues do not resume after an add-on restart. Resolved playback URLs are transient between Home Assistant and the bridge; they never enter the browser or playlist library.
 - Local SIL and mock verification do not establish live provider access, audible playback, or production acceptance. Deployment and release remain separately gated.
 
 ### Volume
-- Home Assistant, the dashboard and the speaker share one volume level: `media_player.set_volume` and the dashboard slider both write the speaker's A2DP sink, and both read back the level the audio server reports for it. A change on either surface moves the other.
-- The speaker owns that level too. AVRCP absolute volume moves the sink when you press the speaker's own buttons or use its own app, so the bridge reads it back: once when the speaker connects and every 30 seconds after that. A change made on the speaker reaches Home Assistant and the dashboard within one poll interval instead of staying invisible.
+- Home Assistant and the speaker share one volume level: `media_player.set_volume` and Home Assistant media controls write the speaker's A2DP sink, and both read back the level the audio server reports for it. A change on either surface moves the other.
+- The speaker owns that level too. AVRCP absolute volume moves the sink when you press the speaker's own buttons or use its own app, so the bridge reads it back: once when the speaker connects and every 30 seconds after that. A change made on the speaker reaches Home Assistant within one poll interval instead of staying invisible.
 - While a poll is failing (a speaker that went away, a sink that is not published) the last known level is kept rather than replaced with a guess.
-- Each speaker's volume in the dashboard settings is applied to the speaker when it connects and again when you save it, so the slider is a level to be set, not just a number in a file. The last level set from either surface survives a restart.
-- A sink that is muted in the audio server still reports its level: the sliders show the level, and the add-on log names the mute at `debug`, so silence behind a non-zero slider is explicable rather than mysterious.
+- Each speaker's saved volume setting is applied when it connects and again when you save it, so the configured level is applied rather than only stored. The last level set from either surface survives a restart.
+- A sink that is muted in the audio server still reports its level: Home Assistant reports the level, and the add-on log names the mute at `debug`, so silence behind a non-zero slider is explicable rather than mysterious.
 
 
 - Every connected trusted speaker is an independent `media_player` entity and can stream its own media at its own volume.
@@ -351,7 +332,7 @@ Further observations that day are dropped, counted, and reported in the add-on
 log. Thirty days is a retention maximum, not a promise to retain every event.
 Storage errors are logged explicitly and retried at the next sample.
 
-`GET /api/incidents`, through the authenticated Home Assistant Ingress session,
+`GET /api/incidents` through the internal operational API,
 returns `enabled`, recorder `status`, and at most 100 recent observations from
 the bounded tail of the latest daily file. Status includes running state,
 storage error type, lifetime dropped-observation count, sample interval and
@@ -367,7 +348,7 @@ Use the existing Core/host logs alongside recorded incidents for deeper analysis
 
 1. Take a Home Assistant backup before upgrading.
 2. Install the HACS integration using the steps above, then restart Home Assistant Core and confirm the discovery prompt.
-3. Verify the Ingress **Native integration** panel reports the bridge as ready.
+3. Verify the integration's native **Speakers** view and HA Repairs report the bridge as ready.
 4. Confirm a trusted connected speaker appears as a native `media_player` entity.
 5. Remove any old legacy-discovery entities manually after the native entity is working; BL-HAOS no longer publishes compatibility state or commands.
 
@@ -375,7 +356,7 @@ Use the existing Core/host logs alongside recorded incidents for deeper analysis
 
 ## Operational Status and Demo Mode
 
-The Ingress dashboard keeps the operator workflow focused on adapter state, speaker discovery, connection, and native Home Assistant integration readiness. The standalone Diagnostics and Guided recovery panels are not part of the dashboard, and their operator-only routes are not exposed by the add-on. Runtime health telemetry remains available through the health endpoint for automated validation and support tooling.
+There is no add-on dashboard. Operators use the Home Assistant integration's Speakers view, services and Repairs; runtime health telemetry remains available through the internal health endpoint for automated validation and support tooling.
 
 For offline demonstrations and SIL validation, set `BLHAOS_DEMO_MODE=true` and choose one of `healthy`, `pairing_failure`, `sink_missing`, `reconnect_exhausted`, `native_integration_unavailable`, or `restart_degraded` with `BLHAOS_DEMO_SCENARIO`. Demo mode is off by default and injects fixed adapters, speakers, events, timestamps, and recovery outcomes before live D-Bus, PipeWire, or Home Assistant clients are initialized. Unknown scenarios are rejected.
 

@@ -9,8 +9,7 @@ from pathlib import Path
 import aiohttp
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .api.routes import native_speaker_record, playback_envelope
@@ -41,14 +40,13 @@ from .constants import (
     EVENT_TELEMETRY,
     LOGGER_NAME,
     LOG_FORMAT,
+    MINIMUM_INTEGRATION_VERSION,
     LOG_LEVEL_INFO,
     RECOVERY_HEALTHY,
     RECOVERY_PENDING,
     ROOT_PATH,
     SOURCE_BLUEZ,
     SOURCE_STARTUP,
-    STATIC_DIRECTORY_CANDIDATES,
-    STATIC_INDEX_FILE,
     SUPERVISOR_DISCOVERY_TIMEOUT_SECONDS,
     SUPERVISOR_DISCOVERY_URL,
     VERSION,
@@ -301,7 +299,7 @@ async def lifespan(app: FastAPI):
         async def _publish_playback_state(address: str) -> None:
             """Publish a playback change to both surfaces.
 
-            Home Assistant and the Ingress dashboard listen on different sockets, so a
+            Home Assistant and the native integration listen on different sockets, so a
             volume or state changed from the media_player entity has to be published on
             both, or the dashboard keeps showing the stale level. Only playback changes
             come through here; BlueZ property events still publish to Home Assistant
@@ -433,8 +431,15 @@ async def handle_request_validation_error(request: Request, exc: RequestValidati
 app.include_router(api_router)
 app.include_router(ws_router)
 
-# Mount static web frontend if built assets exist
-for static_dir in (Path(candidate) for candidate in STATIC_DIRECTORY_CANDIDATES):
-    if static_dir.exists() and (static_dir / STATIC_INDEX_FILE).exists():
-        app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
-        break
+RETIREMENT_NOTICE = (
+    "The BL-HAOS add-on no longer includes its ingress management interface.\n"
+    "Use Home Assistant Settings > Devices & services > BL-HAOS and the native media/speaker panel.\n"
+    f"Upgrade the Home Assistant integration to {MINIMUM_INTEGRATION_VERSION} before upgrading the add-on."
+)
+
+
+@app.get("/", response_class=PlainTextResponse, include_in_schema=False)
+@trace_call
+async def retirement_notice():
+    """Explain the migration without exposing controls or request-derived data."""
+    return RETIREMENT_NOTICE

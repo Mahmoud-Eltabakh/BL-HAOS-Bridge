@@ -8,8 +8,8 @@ fix. Local Core 2026.10.3 checks do not establish actual provider layout,
 session expiry or physical playback. Deployment and any further restart need
 separate authorization.
 
-After authorized installation, **Open Media Catalog** beside Home Assistant
-Native integration opens HA's `/bl-haos-media` panel; it is navigation-only.
+After separately authorized installation, **Open Media Catalog** in the retained
+Home Assistant-native panel opens HA's `/bl-haos-media` panel; it is navigation-only.
 Alternatively use **Native Browse Media** on a native speaker. In **Play on**,
 select exactly one connected BL-HAOS speaker, browse audio/provider playlists
 and press **Play**. The opaque reference reaches native `media_player.play_media`
@@ -39,15 +39,36 @@ Retired Docker E2E and fixture screenshots are not host proof.
 
 ---
 
+## Phase 38 headless migration — local candidate, not a published release
+
+Bridge 0.2.71 and integration 0.2.22 are local candidates only. The old add-on
+Ingress application and legacy management routes are removed; the Home
+Assistant-native panel remains. Pair speakers and manage speaker/adapter settings
+through the integration **Speakers** view, admin-only services, or options flow.
+Upgrade the integration first, back up configuration/data, then update the bridge
+and confirm the compatibility repair clears. The bridge requires integration
+0.2.22; the integration requires bridge 0.2.70 or newer (0.2.69 and integration 0.2.21 are known too old for this pair). Missing product metadata
+on native protocol 1 produces a legacy warning; malformed metadata or a version
+below a declared minimum is blocked with an HA Repair. Old integrations cannot
+enforce requirements advertised by newer bridges.
+
+Preserve the existing configuration, credentials, paired speakers, aliases, and
+settings. Roll back only to a previously working package pair and backup under
+separate maintenance authority; do not remove speakers or rotate tokens for a
+version mismatch. The in-memory playback queue does not resume after add-on restart.
+Old Ingress links may fail, and the root migration notice cannot recreate Supervisor
+Ingress access. Installation, publication, deployment, and live acceptance remain
+separately gated by Phase 39.
+
 ## Key Features
 
-- **Native Home Assistant OS Add-on**: Packages PipeWire, WirePlumber, and BlueZ into a container supervised by S6-Overlay v3 with Ingress support.
-- **Embedded Ingress Web Dashboard**: Visual discovery scanner with real-time RSSI signal strength meters, one-click PIN/SSP pairing, speaker control cards, and volume sliders directly inside the Home Assistant sidebar.
+- **Headless Home Assistant OS Add-on**: Packages PipeWire, WirePlumber, and BlueZ into an S6-Overlay v3 container. Health, watchdog, and Supervisor discovery remain internal on port 8099 without host-port mapping.
+- **Native management**: Pairing, speaker settings, and adapter controls are provided by the separate Home Assistant integration through its Speakers view, services, and options flow.
 - **Native `media_player` Integration**: Trusted connected speakers are exposed through the separate [BL-HAOS HACS integration](https://github.com/Mahmoud-Eltabakh/BL-HAOS-Integration) over the private Supervisor add-on network.
 - **Audiophile Codec Priority**: Automatically negotiates the highest quality codec supported by your speaker: `LDAC` &rarr; `aptX HD` &rarr; `aptX` &rarr; `AAC` &rarr; `SBC-XQ` &rarr; `SBC`.
-- **Volume control that stays in sync**: `media_player.set_volume` writes straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The bridge also reads the sink's real level back, so a change made with the speaker's own buttons reaches Home Assistant and the dashboard - see [Volume](DOCS.md#volume).
+- **Volume control that stays in sync**: `media_player.set_volume` writes straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The bridge also reads the sink's real level back, so a change made with the speaker's own buttons reaches Home Assistant - see [Volume](DOCS.md#volume).
 - **Stutter-free playback**: the player clients are given an explicit buffer (500 ms by default, `BLHAOS_PLAYBACK_BUFFER_MS` to change it) instead of the small client default, because a Bluetooth link delivers in bursts and the speaker drains its own buffer at a fixed rate.
-- **A codec choice that does not drift**: LDAC is pinned to a steady bitrate by default (`sq`, 660 kbps) because its own `auto` mode adapts the bitrate while a song plays - heard as the quality changing mid-song. `hq`/`mq`/`auto` are one add-on option away, and the codec itself is pinnable per speaker in the dashboard.
+- **A codec choice that does not drift**: LDAC is pinned to a steady bitrate by default (`sq`, 660 kbps) because its own `auto` mode adapts the bitrate while a song plays - heard as the quality changing mid-song. `hq`/`mq`/`auto` are one add-on option away, and the codec itself is pinnable per speaker in the integration options flow.
 - **Conservative Scheduled Reconnection**: One bounded connection attempt at a time per adapter, with exponential retry delays and a five-minute cooldown after eight failures. Busy responses and presence advertisements preserve pacing; automatic attempts never reset a live link or remove pairing. Hardware/HAOS reconnect soak is pending authorized deployment; local tests do not prove the live fault is fixed.
 - **Multi-Adapter Support**: Run multiple Bluetooth USB dongles alongside onboard Bluetooth controllers with independent speaker assignments.
 
@@ -62,16 +83,15 @@ Retired Docker E2E and fixture screenshots are not host proof.
    https://github.com/Mahmoud-Eltabakh/BL-HAOS-Bridge
    ```
 4. Find **BL-HAOS Bluetooth Audio Adapter** in the Add-on Store, click **Install**, then click **Start**.
-5. Enable **Show in sidebar** to access the dashboard directly from your Home Assistant menu.
 
 See [DOCS.md](DOCS.md) for complete configuration options and troubleshooting guidance.
 
 ## Release and Dependency Security Policy
 
 Stable releases use the exact Debian package versions in `Dockerfile`, the pinned
-Python versions in `backend/requirements.txt`, and the npm lockfile. Preview builds
+Python versions in `backend/requirements.txt`. Preview builds
 use the same pins and may be promoted only after the same high/critical audit gate
-passes. GitHub Actions runs `pip-audit`, `npm audit --audit-level=high`, and a Trivy
+passes. GitHub Actions runs `pip-audit` and a Trivy
 filesystem scan; any high or critical finding fails the build. Vulnerability
 exceptions must be documented with an owner and expiry date in the pull request and
 must not be implemented as a default audit bypass.
@@ -97,31 +117,21 @@ After the first GitHub Actions build, set each package visibility to **Public** 
 
 ## Architecture Overview
 
+```text
+Home Assistant Core
+  ├─ Native BL-HAOS integration: Speakers view, services, options, media entities
+  │    └─ authenticated native REST + /ws/native over Supervisor network
+  └─ Lovelace, automations, scripts and TTS
+       │
+       ▼
+BL-HAOS add-on (no Ingress UI and no host-port mapping)
+  ├─ FastAPI operational/native API and retained operational /ws transport
+  ├─ BlueZ device management and bounded reconnect workers
+  └─ PipeWire / WirePlumber audio → Bluetooth A2DP speakers
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                        Home Assistant Core & Frontend                        │
-│   • Lovelace Cards  • Automations / Scripts  • Voice TTS (Piper/Cloud)       │
-└──────────────────────────┬────────────────────────────┬──────────────────────┘
-                           │ Ingress Web UI (HTTP/WS)   │ Native Home Assistant bridge
-┌──────────────────────────▼────────────────────────────▼──────────────────────┐
-│                     BL-HAOS Add-on Container Layer (HAOS)                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────┐     ┌────────────────────────────────────────┐  │
-│  │   Ingress Web Dashboard │     │         FastAPI Backend Daemon         │  │
-│  │  (Scan / Pair / Volume) │◄───►│  • BlueZ Manager  • Auto-Reconnect     │  │
-│  │                         │     │  • HA Bridge API  • Speaker Registry   │  │
-│  └─────────────────────────┘     └──────┬──────────────────┬──────────────┘  │
-│                                         │                  │                 │
-│  ┌──────────────────────────────────────▼──────┐  ┌────────▼──────────────┐  │
-│  │        PipeWire & WirePlumber Audio         │  │ Independent Streams   │  │
-│  │   • SPA Bluetooth (LDAC, aptX, AAC, SBC-XQ) │◄─┤ • Per-Speaker Sink    │  │
-│  │   • AVRCP Hardware Volume (write)           │  │ • Bluetooth A2DP Link │  │
-│  └───────────────────┬─────────────────────────┘  └───────────────────────┘  │
-│                      │ D-Bus / Audio PCM                                     │
-├──────────────────────┴───────────────────────────────────────────────────────┤
-│                             Host System BlueZ (HAOS)                         │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+
+The integer native protocol version is independent of bridge/integration product
+versions. `/ws` is an operational event transport, not a user interface.
 
 ---
 
@@ -133,7 +143,7 @@ Run the test suite across all 8 modules:
 pytest tests/ -v
 ```
 
-The test suite covers Home Assistant Add-on schema compliance, S6 service supervision, PipeWire audio configuration, BlueZ D-Bus controllers, native transport, and Ingress assets.
+The test suite covers Home Assistant Add-on schema compliance, S6 service supervision, PipeWire audio configuration, BlueZ D-Bus controllers, native transport, headless packaging, and the root migration notice.
 
 ---
 
@@ -150,7 +160,7 @@ docker run --privileged --rm tonistiigi/binfmt --install all
 
 After setup, images build and push automatically:
 
-- **On commit**: `.githooks/post-commit` rebuilds only when Dockerfile, `build.yaml`, `config.yaml`, `backend/`, `rootfs/`, or `web_ui/dist/` changed in that commit.
+- **On commit**: `.githooks/post-commit` rebuilds only when Dockerfile, `build.yaml`, `config.yaml`, `backend/`, `rootfs/`, or `backend/` changed in that commit.
 - **On any file change**: run `pwsh scripts/watch-and-build.ps1` for a continuous watch loop (debounced).
 - **Manually**: run `pwsh scripts/build-and-push.ps1`.
 

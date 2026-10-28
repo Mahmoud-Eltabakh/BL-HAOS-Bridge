@@ -48,7 +48,7 @@ def test_phase24_release_metadata_is_synchronized():
 
     config = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
     changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
-    assert VERSION == config["version"] == "0.2.70"
+    assert VERSION == config["version"] == "0.2.71"
     assert re.search(r"^##\s+\[?0\.2\.69\]?", changelog, re.MULTILINE)
     release = re.search(
         r"^##\s+\[?0\.2\.69\]?.*?(?=^##\s|\Z)",
@@ -71,8 +71,8 @@ def test_config_yaml_syntax_and_fields():
     assert data["slug"] == "bl_haos"
     assert "version" in data and len(data["version"].split(".")) >= 3
     assert data["init"] is False, "S6-overlay v3 requires init: false"
-    assert data["ingress"] is True, "Ingress must be enabled"
-    assert data["ingress_port"] == 8099
+    assert not ({"ingress", "ingress_port"} & data.keys())
+    assert not any(key.startswith("panel_") for key in data)
     assert "ports" not in data
     assert data["discovery"] == ["bl_haos"]
     assert data["host_dbus"] is True, "Host D-Bus permission required"
@@ -173,7 +173,7 @@ def test_dependency_and_release_policy_is_explicit():
     workflow = Path(".github/workflows/builder.yaml").read_text(encoding="utf-8")
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "npm --prefix web_ui audit --audit-level=high" in workflow
+    assert "npm --prefix web_ui" not in workflow
     assert "pip_audit" in workflow
     assert "severity: HIGH,CRITICAL" in workflow
     assert "stable" in readme.lower() and "preview" in readme.lower()
@@ -217,8 +217,8 @@ def test_watchdog_is_a_repository_app_health_check_url():
     parts = WATCHDOG_URL_PARTS.match(watchdog)
     assert parts is not None, f"unparsable watchdog URL: {watchdog!r}"
     assert parts["scheme"] in {"http", "https"}, "the watchdog must be an HTTP health check"
-    assert parts["port"] == f"[PORT:{data['ingress_port']}]", (
-        "the watchdog must poll the port the daemon actually listens on"
+    assert parts["port"] == "[PORT:8099]", (
+        "the watchdog must poll the retained internal service port, independently of ingress"
     )
 
     # A watchdog polling a path the daemon does not serve fails every check, and

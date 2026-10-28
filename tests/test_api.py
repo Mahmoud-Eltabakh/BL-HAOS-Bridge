@@ -59,10 +59,11 @@ def test_native_auth_failures_are_generic_and_never_reflect_the_expected_token()
 
 def test_settings_never_serialize_token_or_accept_control_fields():
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         token = app.state.config_store.settings.native_token
-        settings = client.get("/api/settings")
+        settings = client.get("/api/native/settings")
         response = client.put(
-            "/api/settings/speakers/10:22:33:44:55:66",
+            "/api/native/settings/speakers/10:22:33:44:55:66",
             json={"native_token": "attacker-controlled", "default_volume": 101},
         )
 
@@ -73,6 +74,7 @@ def test_settings_never_serialize_token_or_accept_control_fields():
 
 def test_api_adapters_and_scan():
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         # Simulate an adapter added
         app.state.bt_manager._on_interfaces_added("/org/bluez/hci0", {
             "org.bluez.Adapter1": {
@@ -83,24 +85,25 @@ def test_api_adapters_and_scan():
             }
         })
 
-        resp = client.get("/api/adapters")
+        resp = client.get("/api/native/adapters")
         assert resp.status_code == 200
         adapters = resp.json()
         assert len(adapters) > 0
         assert adapters[0]["interface"] == "hci0"
 
         # Test scan start
-        scan_resp = client.post("/api/scan/start", json={"adapter_name": "hci0"})
+        scan_resp = client.post("/api/native/scan/start", json={"adapter_name": "hci0"})
         assert scan_resp.status_code == 200
         assert scan_resp.json()["scanning"] is True
 
         # Test scan stop
-        stop_resp = client.post("/api/scan/stop", json={"adapter_name": "hci0"})
+        stop_resp = client.post("/api/native/scan/stop", json={"adapter_name": "hci0"})
         assert stop_resp.status_code == 200
         assert stop_resp.json()["scanning"] is False
 
 def test_api_devices_and_settings():
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         dev_addr = "10:22:33:44:55:66"
         app.state.bt_manager._on_interfaces_added("/org/bluez/hci0/dev_10_22_33_44_55_66", {
             "org.bluez.Device1": {
@@ -116,14 +119,14 @@ def test_api_devices_and_settings():
         })
 
         # Get devices
-        resp = client.get("/api/devices")
+        resp = client.get("/api/native/devices")
         assert resp.status_code == 200
         devices = resp.json()
         assert len(devices) > 0
 
         # Update settings for device
         update_resp = client.put(
-            f"/api/settings/speakers/{dev_addr}",
+            f"/api/native/settings/speakers/{dev_addr}",
             json={"custom_alias": "Living Room Soundbar", "default_volume": 80, "auto_reconnect": True}
         )
         assert update_resp.status_code == 200
@@ -131,7 +134,7 @@ def test_api_devices_and_settings():
         assert update_resp.json()["default_volume"] == 80
 
         # Verify settings endpoint
-        settings_resp = client.get("/api/settings")
+        settings_resp = client.get("/api/native/settings")
         assert settings_resp.status_code == 200
         settings = settings_resp.json()
         assert dev_addr.lower() in settings["speakers"]
@@ -139,6 +142,7 @@ def test_api_devices_and_settings():
 
 def test_pair_publishes_native_speaker():
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         dev_addr = "22:33:44:55:66:77"
         app.state.bt_manager._on_interfaces_added("/org/bluez/hci0/dev_22_33_44_55_66_77", {
             "org.bluez.Device1": {
@@ -168,7 +172,7 @@ def test_pair_publishes_native_speaker():
             return True
 
         app.state.bt_manager.pair_and_trust = pair
-        response = client.post("/api/devices/pair", json={"address": dev_addr, "pin": "4321"})
+        response = client.post("/api/native/devices/pair", json={"address": dev_addr, "pin": "4321"})
 
         assert response.status_code == 200
         assert published == [dev_addr]
@@ -293,13 +297,14 @@ def test_pairing_failure_surfaces_a_bounded_bluez_reason():
         raise RuntimeError("org.bluez.Error.Failed br-connection-page-timeout")
 
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         app.state.bt_manager.pair_and_trust = pair
-        response = client.post("/api/devices/pair", json={"address": dev_addr, "pin": None})
+        response = client.post("/api/native/devices/pair", json={"address": dev_addr, "pin": None})
 
     assert response.status_code == 400
     detail = response.json()["detail"]
-    assert detail.startswith("Pairing failed:")
-    assert "br-connection-page-timeout" in detail
+    assert detail == "Pairing failed"
+    assert "br-connection-page-timeout" not in detail
 
 
 def test_pairing_failure_redacts_credentials_in_reason():
@@ -310,8 +315,9 @@ def test_pairing_failure_redacts_credentials_in_reason():
         raise RuntimeError("denied token=supersecret123 at https://bridge.local/pair?t=abc")
 
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         app.state.bt_manager.pair_and_trust = pair
-        response = client.post("/api/devices/pair", json={"address": dev_addr, "pin": None})
+        response = client.post("/api/native/devices/pair", json={"address": dev_addr, "pin": None})
 
     assert response.status_code == 400
     detail = response.json()["detail"]
@@ -540,10 +546,11 @@ def test_native_play_media_rejects_targets_that_are_the_bridge_or_a_dead_end(mon
 
 def test_api_rejects_invalid_address_and_adapter_before_manager_calls(monkeypatch):
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         manager_lookup = Mock()
         monkeypatch.setattr(app.state.bt_manager, "get_adapter_by_name", manager_lookup)
-        invalid_address = client.post("/api/devices/pair", json={"address": "ff:ff:ff:ff:ff:ff"})
-        invalid_adapter = client.post("/api/adapters/not-an-adapter/power", json={"powered": True})
+        invalid_address = client.post("/api/native/devices/pair", json={"address": "ff:ff:ff:ff:ff:ff"})
+        invalid_adapter = client.post("/api/native/adapters/not-an-adapter/power", json={"powered": True})
 
     assert invalid_address.status_code == 422
     assert invalid_adapter.status_code == 422
@@ -996,9 +1003,10 @@ def test_native_queue_controls_keep_bearer_and_trusted_sink_checks(monkeypatch):
     control_queue.assert_not_awaited()
 
 
-def test_ingress_queue_control_uses_addon_route_without_native_bearer(monkeypatch):
+def test_native_queue_control_uses_authenticated_speaker_command(monkeypatch):
     address = "10:22:33:44:55:69"
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         app.state.bt_manager._on_interfaces_added(
             "/org/bluez/hci0/dev_10_22_33_44_55_69",
             {
@@ -1016,21 +1024,21 @@ def test_ingress_queue_control_uses_addon_route_without_native_bearer(monkeypatc
         control_queue = AsyncMock(return_value={"status": "playing"})
         monkeypatch.setattr(app.state.ha_bridge, "control_queue", control_queue, raising=False)
         response = client.post(
-            f"/api/devices/{address}/queue/command",
-            json={"queue_version": 1, "operation": "next"},
+            f"/api/native/speakers/{address}/command",
+            json={"version": 1, "queue_version": 1, "operation": "next"},
         )
         shuffle_response = client.post(
-            f"/api/devices/{address}/queue/command",
-            json={"queue_version": 1, "operation": "set_shuffle", "shuffle": True},
+            f"/api/native/speakers/{address}/command",
+            json={"version": 1, "queue_version": 1, "operation": "set_shuffle", "shuffle": True},
         )
         repeat_response = client.post(
-            f"/api/devices/{address}/queue/command",
-            json={"queue_version": 1, "operation": "set_repeat", "repeat": "all"},
+            f"/api/native/speakers/{address}/command",
+            json={"version": 1, "queue_version": 1, "operation": "set_repeat", "repeat": "all"},
         )
         token = app.state.config_store.settings.native_token
         secret_in_body = client.post(
-            f"/api/devices/{address}/queue/command",
-            json={"queue_version": 1, "operation": "next", "native_token": token},
+            f"/api/native/speakers/{address}/command",
+            json={"version": 1, "queue_version": 1, "operation": "next", "native_token": token},
         )
 
     assert response.status_code == 200, response.text
@@ -1076,16 +1084,25 @@ def test_native_auth_still_rejects_ingress_header_alone():
 
 def test_live_volume_route_updates_bridge_and_publishes(monkeypatch):
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         published = []
 
         async def publish(address):
             published.append(address)
 
         app.state.publish_native_speaker = publish
-        response = client.post("/api/devices/10:22:33:44:55:66/volume", json={"volume": 45})
+        app.state.bt_manager._on_interfaces_added(
+            "/org/bluez/hci0/dev_10_22_33_44_55_66",
+            {"org.bluez.Device1": {
+                "Address": "10:22:33:44:55:66", "Name": "Test Speaker",
+                "Adapter": "/org/bluez/hci0", "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                "Paired": True, "Trusted": True, "Connected": True,
+            }},
+        )
+        response = client.post("/api/native/speakers/10:22:33:44:55:66/command", json={"version": 1, "operation": "set_volume", "volume": 0.45})
 
         assert response.status_code == 200
-        assert response.json() == {"status": "ok", "address": "10:22:33:44:55:66", "volume": 45}
+        assert response.json()["address"] == "10:22:33:44:55:66"
         assert app.state.ha_bridge.get_volume("10:22:33:44:55:66") == 0.45
         assert published == ["10:22:33:44:55:66"]
 
@@ -1097,8 +1114,9 @@ def test_saving_a_speaker_volume_applies_it_to_the_speaker():
     slider, the dashboard card and the entity all claimed the new level.
     """
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         response = client.put(
-            "/api/settings/speakers/10:22:33:44:55:77",
+            "/api/native/settings/speakers/10:22:33:44:55:77",
             json={"custom_alias": "Patio", "default_volume": 35},
         )
 
@@ -1109,9 +1127,10 @@ def test_saving_a_speaker_volume_applies_it_to_the_speaker():
 
 def test_live_volume_route_validates_address_and_level():
     with TestClient(app) as client:
-        bad_address = client.post("/api/devices/not-a-mac/volume", json={"volume": 50})
-        bad_volume = client.post("/api/devices/10:22:33:44:55:66/volume", json={"volume": 250})
-        out_of_range = client.post("/api/devices/10:22:33:44:55:66/volume", json={"volume": -1})
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
+        bad_address = client.post("/api/native/speakers/not-a-mac/command", json={"version": 1, "operation": "set_volume", "volume": 0.5})
+        bad_volume = client.post("/api/native/speakers/10:22:33:44:55:66/command", json={"version": 1, "operation": "set_volume", "volume": 250})
+        out_of_range = client.post("/api/native/speakers/10:22:33:44:55:66/command", json={"version": 1, "operation": "set_volume", "volume": -1})
 
     assert bad_address.status_code == 422
     assert bad_volume.status_code == 422
@@ -1137,8 +1156,9 @@ def test_removed_multiroom_routes_are_gone():
 
 def test_settings_reject_removed_latency_offset_field():
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         response = client.put(
-            "/api/settings/speakers/10:22:33:44:55:66",
+            "/api/native/settings/speakers/10:22:33:44:55:66",
             json={"latency_offset_ms": 120},
         )
     assert response.status_code == 422

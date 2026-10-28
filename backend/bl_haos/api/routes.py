@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 
 from ..bluetooth.models import AdapterInfo, DeviceInfo
 from ..bluetooth.device import BluetoothOperationInProgress
-from ..config import SpeakerSettings, SystemSettings
 from ..ha.player import (
     MAX_QUEUE_ITEMS,
     MAX_QUEUE_PAYLOAD_BYTES,
@@ -34,6 +33,8 @@ from ..constants import (
     MAX_MEDIA_URL_LENGTH,
     NATIVE_BRIDGE_ID,
     NATIVE_BRIDGE_VERSION,
+    MINIMUM_INTEGRATION_VERSION,
+    VERSION,
     NATIVE_COMMAND_VERSION,
     PLAYBACK_IDLE,
     SUPPORTED_CODECS,
@@ -147,12 +148,6 @@ class ScanRequest(BaseModel):
     @trace_call
     def valid_adapter(cls, value: str | None) -> str | None:
         return validate_adapter_name(value) if value is not None else None
-
-
-class VolumeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    volume: int = Field(ge=VOLUME_MIN_PERCENT, le=VOLUME_MAX_PERCENT)
 
 
 class SpeakerUpdateRequest(BaseModel):
@@ -305,31 +300,9 @@ class NativeCommandRequest(BaseModel):
         return self
 
 
-class IngressQueueCommandRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    queue_version: Literal[NATIVE_QUEUE_VERSION]
-    operation: Literal["play", "pause", "stop", "next", "previous", "set_shuffle", "set_repeat"]
-    shuffle: StrictBool | None = None
-    repeat: Literal["off", "one", "all"] | None = None
-
-    @model_validator(mode="after")
-    @trace_call
-    def validate_queue_control(self):
-        if self.operation == "set_shuffle":
-            if not isinstance(self.shuffle, bool) or self.repeat is not None:
-                raise ValueError("Shuffle value is required")
-        elif self.operation == "set_repeat":
-            if self.repeat is None or self.shuffle is not None:
-                raise ValueError("Repeat mode is required")
-        elif self.shuffle is not None or self.repeat is not None:
-            raise ValueError("Queue mode fields are only valid for their matching operation")
-        return self
-
-
 @trace_call
 def playback_envelope(bridge: Any, address: str) -> dict[str, Any]:
-    """Return the live playback state shared by the native API and the dashboard.
+    """Return the live playback state shared by native API consumers.
 
     One builder for both surfaces keeps the volume the dashboard shows and the
     volume the integration reports from drifting apart.
@@ -422,10 +395,10 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
 
 @trace_call
 def ui_speaker_record(source: Request | Any, device: DeviceInfo) -> DeviceInfo:
-    """Return the device record the Ingress dashboard consumes.
+    """Return a shared device record enriched with live playback state.
 
-    BlueZ metadata alone cannot show volume: the slider binds to
-    ``playback.volume``, which only the media player bridge knows.
+    BlueZ metadata alone cannot show volume; the native speaker panel also
+    consumes the playback envelope from the media player bridge.
     """
     app = source.app if hasattr(source, "app") else source
     bridge = getattr(app.state, "ha_bridge", None)
@@ -489,7 +462,7 @@ async def get_health(request: Request):
 @router.get("/diagnostics/native")
 @trace_call
 async def get_native_diagnostics(request: Request):
-    """Expose sanitized native bridge readiness for the Ingress dashboard."""
+    """Expose sanitized native bridge readiness for operational diagnostics."""
     logger.debug("Native diagnostics requested")
     return native_diagnostics(request.app)
 
@@ -503,6 +476,8 @@ async def get_native_identity(request: Request, authorization: str | None = Head
     identity = {
         "bridge_id": NATIVE_BRIDGE_ID,
         "version": NATIVE_BRIDGE_VERSION,
+        "addon_version": VERSION,
+        "min_integration_version": MINIMUM_INTEGRATION_VERSION,
         # The caller necessarily holds the credential already, so a digest here
         # discloses nothing - it lets an operator confirm which credential the
         # bridge is using after a rotation. The unauthenticated diagnostics
@@ -652,280 +627,6 @@ async def command_native_speaker(
     if publish:
         await publish(normalized)
     return native_speaker_record(request, device)
-
-
-@router.post("/devices/{address}/queue/command")
-@trace_call
-async def command_ingress_queue(
-    address: str,
-    payload: IngressQueueCommandRequest,
-    request: Request,
-):
-    """Apply one queue control through the add-on's Supervisor-protected Ingress API."""
-    try:
-        normalized = normalize_address(address)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
-    device = next(
-        (candidate for candidate in request.app.state.bt_manager.get_devices(audio_only=True)
-         if candidate.address.strip().lower().replace("-", ":") == normalized),
-        None,
-    )
-    if device is None or not (device.trusted and device.is_audio_sink):
-        raise HTTPException(status_code=409, detail="Queue speaker is unavailable")
-    if not device.connected:
-        raise HTTPException(status_code=409, detail="Queue speaker is unavailable")
-    bridge = getattr(request.app.state, "ha_bridge", None)
-    if bridge is None:
-        raise HTTPException(status_code=503, detail="Media player bridge is unavailable")
-    try:
-        if payload.operation in {"play", "pause", "stop"}:
-            await bridge.execute(normalized, payload.operation)
-        else:
-            await bridge.control_queue(
-                normalized,
-                payload.operation,
-                shuffle=payload.shuffle,
-                repeat=payload.repeat,
-            )
-    except MediaPlayerError:
-        raise HTTPException(status_code=409, detail="Queue command failed") from None
-    except Exception:
-        raise HTTPException(status_code=409, detail="Queue command failed") from None
-    publish = getattr(request.app.state, "publish_native_speaker", None)
-    if publish:
-        await publish(normalized)
-    return {"status": "ok", "playback": playback_envelope(bridge, normalized)}
-
-
-# ==============================================================================
-# Adapter Routes
-# ==============================================================================
-
-@router.get("/adapters", response_model=list[AdapterInfo])
-@trace_call
-async def list_adapters(request: Request):
-    adapters = request.app.state.bt_manager.get_adapters()
-    logger.debug("Listing adapters: %d adapters found", len(adapters))
-    return adapters
-
-
-@router.post("/adapters/{adapter_name}/power")
-@trace_call
-async def set_adapter_power(adapter_name: str, payload: PowerRequest, request: Request):
-    try:
-        adapter_name = validate_adapter_name(adapter_name)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail="Invalid Bluetooth adapter") from error
-    logger.debug("Setting adapter %s power to %s", adapter_name, payload.powered)
-    adapter = request.app.state.bt_manager.get_adapter_by_name(adapter_name)
-    if not adapter:
-        raise HTTPException(status_code=404, detail=f"Adapter {adapter_name} not found")
-    await adapter.set_power(payload.powered)
-    return {"status": "ok", "interface": adapter_name, "powered": payload.powered}
-
-
-@router.post("/scan/start")
-@trace_call
-async def start_scan(request: Request, payload: ScanRequest | None = None):
-    adapter_name = payload.adapter_name if payload else None
-    logger.debug("Starting Bluetooth scan on adapter: %s", adapter_name or "all")
-    await request.app.state.bt_manager.start_scan(adapter_name)
-    return {"status": "ok", "scanning": True, "adapter": adapter_name or "all"}
-
-
-@router.post("/scan/stop")
-@trace_call
-async def stop_scan(request: Request, payload: ScanRequest | None = None):
-    adapter_name = payload.adapter_name if payload else None
-    logger.debug("Stopping Bluetooth scan on adapter: %s", adapter_name or "all")
-    await request.app.state.bt_manager.stop_scan(adapter_name)
-    return {"status": "ok", "scanning": False, "adapter": adapter_name or "all"}
-
-
-# ==============================================================================
-# Device Routes
-# ==============================================================================
-
-@router.get("/devices", response_model=list[DeviceInfo])
-@trace_call
-async def list_devices(request: Request, audio_only: bool = True):
-    devices = request.app.state.bt_manager.get_devices(audio_only=audio_only)
-    logger.debug("Listing devices (audio_only=%s): returning %d devices", audio_only, len(devices))
-    # Attach live playback state (the dashboard slider binds to playback.volume).
-    return [ui_speaker_record(request, device) for device in devices]
-
-
-@router.post("/devices/pair")
-@trace_call
-async def pair_device(payload: PairRequest, request: Request):
-    logger.debug("Pairing request received for %s", payload.address)
-    try:
-        # The manager opens a short-lived pairing window for this one address, so
-        # the BlueZ agent answers only while this operator-initiated call runs.
-        success = await request.app.state.bt_manager.pair_and_trust(payload.address, payload.pin)
-        # Register in auto reconnect if available
-        reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
-        if reconnect_engine:
-            reconnect_engine.register_speaker(payload.address)
-        publish = getattr(request.app.state, "publish_native_speaker", None)
-        if publish:
-            await publish(payload.address)
-        logger.debug("Pairing completed successfully for %s", payload.address)
-        return {"status": "ok", "paired": success, "address": payload.address}
-    except Exception as e:
-        detail = safe_detail(e)
-        if isinstance(e, BluetoothOperationInProgress):
-            logger.warning("Pairing busy for %s: %s", payload.address, detail)
-            raise HTTPException(status_code=409, detail="Bluetooth pairing is already in progress") from e
-        logger.error("Pairing error for %s: %s", payload.address, detail)
-        # Surface the bounded, redacted BlueZ reason so the operator UI can
-        # explain why pairing failed instead of showing a generic message.
-        reason = detail or "unknown BlueZ error"
-        raise HTTPException(status_code=400, detail=f"Pairing failed: {reason}") from e
-
-
-@router.post("/devices/{address}/connect")
-@trace_call
-async def connect_device(address: str, request: Request):
-    try:
-        address = normalize_address(address)
-        logger.debug("Connect request received for %s", address)
-        # The operator asked for a connection, so a stale A2DP transport is reset
-        # here on purpose; the auto-reconnect engine deliberately does not.
-        success = await request.app.state.bt_manager.connect_device(address, reset_existing=True)
-        publish = getattr(request.app.state, "publish_native_speaker", None)
-        if publish:
-            await publish(address)
-        logger.debug("Connect completed successfully for %s", address)
-        return {"status": "ok", "connected": success, "address": address}
-    except Exception as e:
-        detail = safe_detail(e)
-        if isinstance(e, BluetoothOperationInProgress):
-            logger.warning("Connection busy for %s: %s", address, detail)
-            raise HTTPException(status_code=409, detail="Bluetooth connection is already in progress") from e
-        logger.error("Connection error for %s: %s", address, detail)
-        reason = detail or "unknown BlueZ error"
-        raise HTTPException(status_code=400, detail=f"Connection failed: {reason}") from e
-
-
-@router.post("/devices/{address}/disconnect")
-@trace_call
-async def disconnect_device(address: str, request: Request):
-    try:
-        address = normalize_address(address)
-        logger.debug("Disconnect request received for %s", address)
-        success = await request.app.state.bt_manager.disconnect_device(address)
-        logger.debug("Disconnect completed successfully for %s", address)
-        return {"status": "ok", "connected": False, "address": address}
-    except Exception as e:
-        logger.error("Disconnection error for %s: %s", address, safe_detail(e))
-        raise HTTPException(status_code=400, detail="Disconnection failed") from e
-
-
-@router.post("/devices/{address}/volume")
-@trace_call
-async def set_device_volume(address: str, payload: VolumeRequest, request: Request):
-    """Apply a live volume level (0-100) to one speaker's PipeWire/PulseAudio sink."""
-    try:
-        address = normalize_address(address)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
-    logger.debug("Live volume request for %s: %d%%", address, payload.volume)
-    bridge = getattr(request.app.state, "ha_bridge", None)
-    if bridge is None:
-        raise HTTPException(status_code=503, detail="Media player bridge is unavailable")
-    try:
-        await bridge.execute(address, "set_volume", volume=payload.volume / 100)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail="Invalid volume request") from error
-    except Exception as e:
-        logger.error("Volume update error for %s: %s", address, safe_detail(e))
-        raise HTTPException(status_code=400, detail="Volume update failed") from e
-    publish = getattr(request.app.state, "publish_native_speaker", None)
-    if publish:
-        await publish(address)
-    return {"status": "ok", "address": address, "volume": payload.volume}
-
-
-@router.delete("/devices/{address}")
-@trace_call
-async def remove_device(address: str, request: Request):
-    try:
-        address = normalize_address(address)
-        logger.debug("Remove device request received for %s", address)
-        success = await request.app.state.bt_manager.remove_device(address)
-        reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
-        if reconnect_engine:
-            reconnect_engine.unregister_speaker(address)
-        request.app.state.config_store.remove_speaker(address)
-        logger.debug("Remove device completed successfully for %s", address)
-        return {"status": "ok", "removed": success, "address": address}
-    except Exception as e:
-        logger.error("Remove error for %s: %s", address, safe_detail(e))
-        raise HTTPException(status_code=400, detail="Device removal failed") from e
-
-
-# ==============================================================================
-# Settings Routes
-# ==============================================================================
-
-@router.get("/settings", response_model=SystemSettings)
-@trace_call
-async def get_settings(request: Request):
-    logger.debug("System settings requested")
-    return request.app.state.config_store.settings
-
-
-@router.put("/settings/speakers/{address}", response_model=SpeakerSettings)
-@trace_call
-async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, request: Request):
-    try:
-        address = normalize_address(address)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
-    logger.debug(
-        "Updating speaker settings for %s (alias=%s, auto_reconnect=%s, adapter=%s, volume=%s, codec=%s)",
-        address,
-        payload.custom_alias,
-        payload.auto_reconnect,
-        payload.preferred_adapter,
-        payload.default_volume,
-        payload.codec_override,
-    )
-    updated = request.app.state.config_store.update_speaker(
-        address=address,
-        custom_alias=payload.custom_alias,
-        auto_reconnect=payload.auto_reconnect,
-        preferred_adapter=payload.preferred_adapter,
-        default_volume=payload.default_volume,
-        codec_override=payload.codec_override,
-    )
-    reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
-    if reconnect_engine and payload.auto_reconnect is not None:
-        if payload.auto_reconnect:
-            reconnect_engine.register_speaker(address, preferred_adapter=payload.preferred_adapter)
-        else:
-            reconnect_engine.unregister_speaker(address)
-    # A volume saved in the speaker's settings is the level the operator expects
-    # the speaker to be at, so it is applied now as well as at every reconnect.
-    # Best-effort on purpose: a speaker that is switched off has no sink, and
-    # saving its settings must still succeed.
-    if payload.default_volume is not None:
-        bridge = getattr(request.app.state, "ha_bridge", None)
-        if bridge is not None:
-            try:
-                await bridge.execute(
-                    address, COMMAND_SET_VOLUME, volume=payload.default_volume / VOLUME_MAX_PERCENT
-                )
-            except Exception as error:
-                logger.warning(
-                    "Could not apply volume %d%% to %s: %s",
-                    payload.default_volume,
-                    address,
-                    safe_detail(error),
-                )
-    return updated
 
 
 SAFE_DEVICE_MANAGEMENT_REASONS = frozenset({

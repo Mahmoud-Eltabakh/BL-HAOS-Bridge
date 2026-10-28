@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.71 — local, undeployed candidate
+
+- Retire the add-on Ingress application and legacy management routes; use the Home Assistant-native integration for pairing, speaker settings, and adapter controls.
+- Require integration 0.2.22 or newer for supported product metadata and compatibility repairs; native protocol remains version 1.
+
 ## 0.2.70
 
 - Add bearer-authenticated native speaker management and system-settings endpoints for the Home Assistant integration; legacy ingress routes remain unchanged.

@@ -84,6 +84,7 @@ def test_rest_contracts_with_injected_bluetooth_state():
     device_path = f"{adapter_path}/dev_11_22_33_44_55_66"
 
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         client.portal.call(
             app.state.bt_manager._on_interfaces_added,
             adapter_path,
@@ -114,10 +115,10 @@ def test_rest_contracts_with_injected_bluetooth_state():
         )
 
         health = client.get("/api/health")
-        adapters = client.get("/api/adapters")
-        devices = client.get("/api/devices")
-        scan_start = client.post("/api/scan/start", json={"adapter_name": "hci0"})
-        scan_stop = client.post("/api/scan/stop", json={"adapter_name": "hci0"})
+        adapters = client.get("/api/native/adapters")
+        devices = client.get("/api/native/devices")
+        scan_start = client.post("/api/native/scan/start", json={"adapter_name": "hci0"})
+        scan_stop = client.post("/api/native/scan/stop", json={"adapter_name": "hci0"})
 
     assert health.status_code == 200
     assert health.json()["status"] in {"healthy", "degraded", "unavailable"}
@@ -343,11 +344,12 @@ def test_devices_endpoint_reports_live_playback_volume(monkeypatch):
     bridge rather than echo a value that happens to be the stored default.
     """
     with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {app.state.config_store.settings.native_token}"})
         _register_native_speaker(client, "AA_BB_CC_DD_EE_06")
         _set_native_volume(client, "aa:bb:cc:dd:ee:06", 0.11)
-        first = client.get("/api/devices").json()
+        first = client.get("/api/native/devices").json()
         _set_native_volume(client, "aa:bb:cc:dd:ee:06", 0.31)
-        second = client.get("/api/devices").json()
+        second = client.get("/api/native/devices").json()
 
     # BlueZ reports addresses upper-case, so match the way the dashboard does.
     def volume_of(devices):

@@ -67,7 +67,7 @@ class DeviceInfo(BaseModel):
     battery_percentage: int | None = None
     last_seen: float | None = None
     # Live playback state for a connected audio sink, filled at the API boundary
-    # from the media player bridge. The Ingress dashboard binds its volume slider
+    # from the media player bridge. The native speaker panel binds its volume control
     # to ``playback.volume`` and follows ``playback_updated`` socket events, so a
     # record without this block cannot show the real volume.
     playback: dict[str, Any] | None = None

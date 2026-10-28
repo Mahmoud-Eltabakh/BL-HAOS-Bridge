@@ -33,14 +33,14 @@ def test_dockerfile_structure():
     assert requirement_lines and all("==" in line for line in requirement_lines if line.strip())
 
 
-def test_dockerfile_builds_frontend_from_source():
-    """The web UI must be built inside the image; dist/ is never committed."""
+def test_dockerfile_is_headless_and_keeps_backend_runtime():
     content = Path("Dockerfile").read_text(encoding="utf-8")
-    assert "FROM node:" in content, "Dockerfile must have a Node build stage for the web UI"
-    assert "npm ci" in content, "Web build stage must install from the lockfile"
-    assert "npm run build" in content, "Web build stage must run the production build"
-    assert "COPY --from=web_ui_build" in content, "Runtime stage must copy the built UI from the build stage"
-    assert "COPY web_ui/dist" not in content, "Do not copy committed dist; it is no longer in git"
+    assert "FROM node:" not in content
+    assert "web_ui_build" not in content
+    assert "web_ui" not in content
+    assert "COPY backend /backend" in content
+    assert 'ENV PYTHONPATH="/backend"' in content
+
 
 def test_dockerfile_has_no_snapcast_scaffold():
     """Multi-room was removed: no Snapcast packages, config, or service unit."""
