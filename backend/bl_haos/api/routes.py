@@ -61,6 +61,15 @@ router = APIRouter(prefix=API_PREFIX, tags=["api"])
 NATIVE_QUEUE_VERSION = 1
 QUEUE_CONTROL_OPERATIONS = frozenset({"next", "previous", "set_shuffle", "set_repeat"})
 NON_RETRYABLE_QUEUE_OPERATIONS = frozenset({"queue_start", *QUEUE_CONTROL_OPERATIONS})
+SAFE_QUEUE_CONTROL_REASONS = frozenset({
+    "No active queue",
+    "No next item in queue",
+    "No active playback to pause",
+    "No active playback to resume",
+    "No failed queue item to retry",
+    "Shuffle value is invalid",
+    "Repeat mode is invalid",
+})
 
 
 @router.get("/incidents")
@@ -573,7 +582,13 @@ async def command_native_speaker(
     except MediaPlayerError as error:
         if payload.operation in NON_RETRYABLE_QUEUE_OPERATIONS:
             logger.warning("Native queue operation failed for %s (%s)", normalized, payload.operation)
-            raise HTTPException(status_code=409, detail="Native playback command failed") from None
+            reason = str(error)
+            raise HTTPException(
+                status_code=409,
+                detail=reason
+                if payload.operation in QUEUE_CONTROL_OPERATIONS and reason in SAFE_QUEUE_CONTROL_REASONS
+                else "Native playback command failed",
+            ) from None
         is_sink_unavailable = (
             "Connected PipeWire A2DP sink is unavailable" in str(error)
             or "Connected Bluetooth audio sink is unavailable" in str(error)
@@ -911,3 +926,276 @@ async def update_speaker_settings(address: str, payload: SpeakerUpdateRequest, r
                     safe_detail(error),
                 )
     return updated
+
+
+SAFE_DEVICE_MANAGEMENT_REASONS = frozenset({
+    "Bluetooth pairing is already in progress",
+    "Bluetooth connection is already in progress",
+    "Pairing failed",
+    "Connection failed",
+    "Disconnection failed",
+    "Device removal failed",
+    "Bluetooth scan failed",
+    "Bluetooth adapter was not found",
+    "Bluetooth adapter update failed",
+    "Bluetooth adapter list is unavailable",
+    "Bluetooth device list is unavailable",
+    "Speaker settings update failed",
+    "System settings update failed",
+    "Invalid Bluetooth address",
+    "Invalid Bluetooth adapter",
+    "Speaker alias is invalid",
+    "Codec override is invalid",
+    "System settings are invalid",
+})
+
+
+class NativeSystemSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    log_level: Literal["trace", "debug", "info", "notice", "warning", "error", "fatal"] = None
+    default_codec: Literal["auto", "sbc", "sbc_xq", "aac", "aptx", "aptx_hd", "ldac"] = None
+    auto_reconnect_enabled: StrictBool = None
+
+    @model_validator(mode="after")
+    @trace_call
+    def require_setting(self):
+        if not self.model_fields_set:
+            raise ValueError("At least one system setting must be provided")
+        return self
+
+
+@trace_call
+def _native_management_failure(error: Exception, reason: str) -> HTTPException:
+    logger.error("Native device-management operation failed: %s", safe_detail(error))
+    safe_reason = reason if reason in SAFE_DEVICE_MANAGEMENT_REASONS else "Bluetooth action failed"
+    return HTTPException(status_code=400, detail=safe_reason)
+
+
+@router.post("/native/scan/start")
+@trace_call
+async def native_start_scan(request: Request, payload: ScanRequest | None = None, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    adapter_name = payload.adapter_name if payload else None
+    try:
+        await request.app.state.bt_manager.start_scan(adapter_name)
+    except Exception as error:
+        raise _native_management_failure(error, "Bluetooth scan failed")
+    return {"status": "ok", "scanning": True, "adapter": adapter_name or "all"}
+
+
+@router.post("/native/scan/stop")
+@trace_call
+async def native_stop_scan(request: Request, payload: ScanRequest | None = None, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    adapter_name = payload.adapter_name if payload else None
+    try:
+        await request.app.state.bt_manager.stop_scan(adapter_name)
+    except Exception as error:
+        raise _native_management_failure(error, "Bluetooth scan failed")
+    return {"status": "ok", "scanning": False, "adapter": adapter_name or "all"}
+
+
+@router.get("/native/devices")
+@trace_call
+async def native_list_devices(request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    try:
+        devices = request.app.state.bt_manager.get_devices(audio_only=False)
+        return [ui_speaker_record(request, device) for device in devices]
+    except Exception as error:
+        raise _native_management_failure(error, "Bluetooth device list is unavailable")
+
+
+@router.post("/native/devices/pair")
+@trace_call
+async def native_pair_device(payload: PairRequest, request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    try:
+        paired = await request.app.state.bt_manager.pair_and_trust(payload.address, payload.pin)
+        reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
+        if reconnect_engine:
+            reconnect_engine.register_speaker(payload.address)
+        publish = getattr(request.app.state, "publish_native_speaker", None)
+        if publish:
+            await publish(payload.address)
+        return {"status": "ok", "paired": paired, "address": payload.address}
+    except BluetoothOperationInProgress as error:
+        logger.warning("Native pairing busy for %s: %s", payload.address, safe_detail(error))
+        raise HTTPException(status_code=409, detail="Bluetooth pairing is already in progress") from error
+    except Exception as error:
+        raise _native_management_failure(error, "Pairing failed")
+
+
+@router.post("/native/devices/{address}/connect")
+@trace_call
+async def native_connect_device(address: str, request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    try:
+        address = normalize_address(address)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
+    try:
+        connected = await request.app.state.bt_manager.connect_device(address, reset_existing=True)
+        publish = getattr(request.app.state, "publish_native_speaker", None)
+        if publish:
+            await publish(address)
+        return {"status": "ok", "connected": connected, "address": address}
+    except BluetoothOperationInProgress as error:
+        logger.warning("Native connection busy for %s: %s", address, safe_detail(error))
+        raise HTTPException(status_code=409, detail="Bluetooth connection is already in progress") from error
+    except Exception as error:
+        raise _native_management_failure(error, "Connection failed")
+
+
+@router.post("/native/devices/{address}/disconnect")
+@trace_call
+async def native_disconnect_device(address: str, request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    try:
+        address = normalize_address(address)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
+    try:
+        await request.app.state.bt_manager.disconnect_device(address)
+        return {"status": "ok", "connected": False, "address": address}
+    except Exception as error:
+        raise _native_management_failure(error, "Disconnection failed")
+
+
+@router.delete("/native/devices/{address}")
+@trace_call
+async def native_remove_device(address: str, request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    try:
+        address = normalize_address(address)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
+    try:
+        removed = await request.app.state.bt_manager.remove_device(address)
+        reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
+        if reconnect_engine:
+            reconnect_engine.unregister_speaker(address)
+        request.app.state.config_store.remove_speaker(address)
+        publish = getattr(request.app.state, "publish_native_speaker", None)
+        if publish:
+            await publish(address)
+        return {"status": "ok", "removed": removed, "address": address}
+    except Exception as error:
+        raise _native_management_failure(error, "Device removal failed")
+
+
+@router.get("/native/adapters")
+@trace_call
+async def native_list_adapters(request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    try:
+        return request.app.state.bt_manager.get_adapters()
+    except Exception as error:
+        raise _native_management_failure(error, "Bluetooth adapter list is unavailable")
+
+
+@router.post("/native/adapters/{adapter_name}/power")
+@trace_call
+async def native_set_adapter_power(adapter_name: str, payload: PowerRequest, request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    try:
+        adapter_name = validate_adapter_name(adapter_name)
+        adapter = request.app.state.bt_manager.get_adapter_by_name(adapter_name)
+        if not adapter:
+            raise HTTPException(status_code=404, detail="Bluetooth adapter was not found")
+        await adapter.set_power(payload.powered)
+        return {"status": "ok", "interface": adapter_name, "powered": payload.powered}
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth adapter") from error
+    except Exception as error:
+        raise _native_management_failure(error, "Bluetooth adapter update failed")
+
+
+@router.get("/native/settings")
+@trace_call
+async def native_get_settings(request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    settings = request.app.state.config_store.settings
+    return {
+        "log_level": settings.log_level,
+        "default_codec": settings.default_codec,
+        "auto_reconnect_enabled": settings.auto_reconnect_enabled,
+        "speakers": {address: speaker.model_dump(mode="json") for address, speaker in settings.speakers.items()},
+    }
+
+
+@router.put("/native/settings/system")
+@trace_call
+async def native_update_system_settings(payload: NativeSystemSettingsUpdate, request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    settings = request.app.state.config_store.settings
+    changed = payload.model_dump(exclude_unset=True)
+    for key, value in changed.items():
+        setattr(settings, key, value)
+    request.app.state.config_store.save()
+    if "log_level" in changed:
+        logging.getLogger("bl_haos").setLevel({"trace": "DEBUG", "notice": "INFO", "fatal": "CRITICAL"}.get(changed["log_level"], changed["log_level"].upper()))
+    if "auto_reconnect_enabled" in changed:
+        reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
+        if reconnect_engine:
+            reconnect_engine.set_global_enabled(settings.auto_reconnect_enabled)
+            if settings.auto_reconnect_enabled:
+                for device in request.app.state.bt_manager.get_devices(audio_only=True):
+                    if device.trusted:
+                        speaker = request.app.state.config_store.get_speaker(device.address)
+                        reconnect_engine.register_speaker(
+                            device.address,
+                            enabled=speaker.auto_reconnect if speaker is not None else True,
+                            preferred_adapter=speaker.preferred_adapter if speaker is not None else None,
+                        )
+                for address, speaker in settings.speakers.items():
+                    if speaker.auto_reconnect:
+                        reconnect_engine.register_speaker(address, preferred_adapter=speaker.preferred_adapter)
+                    else:
+                        reconnect_engine.unregister_speaker(address)
+    return {
+        "log_level": settings.log_level,
+        "default_codec": settings.default_codec,
+        "auto_reconnect_enabled": settings.auto_reconnect_enabled,
+    }
+
+
+@router.put("/native/settings/speakers/{address}")
+@trace_call
+async def native_update_speaker_settings(address: str, payload: SpeakerUpdateRequest, request: Request, authorization: str | None = Header(default=None)):
+    require_native_auth(authorization, request)
+    try:
+        address = normalize_address(address)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
+    try:
+        updated = request.app.state.config_store.update_speaker(
+            address=address,
+            custom_alias=payload.custom_alias,
+            auto_reconnect=payload.auto_reconnect,
+            preferred_adapter=payload.preferred_adapter,
+            default_volume=payload.default_volume,
+            codec_override=payload.codec_override,
+        )
+        reconnect_engine = getattr(request.app.state, "reconnect_engine", None)
+        if reconnect_engine and payload.auto_reconnect is not None:
+            if payload.auto_reconnect:
+                reconnect_engine.register_speaker(address, preferred_adapter=payload.preferred_adapter)
+            else:
+                reconnect_engine.unregister_speaker(address)
+        if payload.default_volume is not None:
+            bridge = getattr(request.app.state, "ha_bridge", None)
+            if bridge is not None:
+                try:
+                    await bridge.execute(address, COMMAND_SET_VOLUME, volume=payload.default_volume / VOLUME_MAX_PERCENT)
+                except Exception as error:
+                    logger.warning("Could not apply saved volume for %s: %s", address, safe_detail(error))
+        publish = getattr(request.app.state, "publish_native_speaker", None)
+        if publish:
+            await publish(address)
+        return updated
+    except Exception as error:
+        raise _native_management_failure(error, "Speaker settings update failed")

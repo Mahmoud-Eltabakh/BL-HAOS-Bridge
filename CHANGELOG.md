@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.70
+
+- Add bearer-authenticated native speaker management and system-settings endpoints for the Home Assistant integration; legacy ingress routes remain unchanged.
+- Shuffle/repeat without an active queue now report the real reason instead of "Native playback command failed".
+
+
 ## 0.2.69
 
 - Add Open Media Catalog navigation to the Home Assistant-owned audio/provider-playlist panel with native one-speaker opaque-reference playback and HA-owned authentication/resolution.

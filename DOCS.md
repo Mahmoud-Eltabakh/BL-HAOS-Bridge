@@ -2,7 +2,7 @@
 
 ## Phases 24-26 Local Media, Playlists, and Queue Behavior
 
-The integrated 0.2.69 release, including the earlier reconnect fix, is undeployed.
+The integrated 0.2.70 release, including the earlier reconnect fix, is undeployed.
 Local Core 2026.10.3 tests do not prove real provider layout, session expiry or
 physical audio. Deployment and further restarts require separate authorization;
 the accepted temporary probe was removed after its one permitted restart.
@@ -91,6 +91,31 @@ native status shows the address that may currently pair (`pairing_authorized_add
 A speaker becomes a Home Assistant entity only once it is **Trusted** (what
 **Pair & Trust** records). A device that merely pairs or connects — which any
 device in radio range can arrange — is not published and is refused commands.
+
+
+### Manage speakers from Home Assistant
+
+The native integration uses only bearer-authenticated management endpoints:
+
+- `POST /api/native/scan/start` and `/api/native/scan/stop`
+- `GET /api/native/devices`; `POST /api/native/devices/pair`
+- `POST /api/native/devices/{address}/connect` and `/disconnect`; `DELETE /api/native/devices/{address}`
+- `GET /api/native/adapters`; `POST /api/native/adapters/{name}/power`
+- `GET /api/native/settings`; `PUT /api/native/settings/speakers/{address}`
+- `PUT /api/native/settings/system` (only `log_level`, `default_codec`, and `auto_reconnect_enabled`)
+
+Every `/api/native/*` REST route requires the native bearer credential. Native
+settings responses omit `native_token`; device and operation failures return only
+fixed, user-safe reasons. The integration exposes admin-only `bl_haos.*` services,
+a speaker-settings options flow, and a **Speakers** panel view. The global system
+fields above are bridge-managed settings and are edited through the authenticated
+native endpoint, not through Supervisor options. Demo and player-tuning settings
+remain outside this editing surface.
+
+Legacy `/api/scan/*`, `/api/devices*`, `/api/settings*`, and `/api/adapters*`
+routes remain for the existing add-on ingress UI until the separately planned
+Phase 38 retirement. The integration does not call these legacy routes. The local
+implementation has not been installed or accepted on a live Home Assistant host.
 
 ### A Speaker That Is Switched Off
 A trusted speaker that is switched off or out of range stays where you left it:

@@ -92,6 +92,7 @@ class AutoReconnectEngine:
         self.health = health_registry
 
         self.profiles: dict[str, SpeakerReconnectProfile] = {}
+        self.globally_enabled = True
         self._running = False
         self._loop_task: asyncio.Task | None = None
         self._inflight: dict[str, asyncio.Task] = {}
@@ -109,6 +110,8 @@ class AutoReconnectEngine:
     def register_speaker(self, address: str, enabled: bool = True, preferred_adapter: str | None = None) -> None:
         """Register a trusted speaker for automatic reconnection tracking."""
         addr = normalize_address(address)
+        if not self.globally_enabled:
+            return
         logger.debug("AutoReconnect registered speaker %s (enabled=%s, preferred_adapter=%s)", addr, enabled, preferred_adapter)
         if addr not in self.profiles:
             self.profiles[addr] = SpeakerReconnectProfile(
@@ -120,6 +123,14 @@ class AutoReconnectEngine:
             self.profiles[addr].enabled = enabled
             if preferred_adapter:
                 self.profiles[addr].preferred_adapter = preferred_adapter
+
+    @trace_call
+    def set_global_enabled(self, enabled: bool) -> None:
+        """Enable or clear automatic reconnect profiles as a system-wide gate."""
+        self.globally_enabled = enabled
+        if not enabled:
+            for address in tuple(self.profiles):
+                self.unregister_speaker(address)
 
     @trace_call
     def unregister_speaker(self, address: str) -> None:

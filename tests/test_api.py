@@ -887,6 +887,44 @@ def test_native_queue_control_contract_is_versioned_and_bounded():
             NativeCommandRequest.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("operation", "extra"),
+    [("set_shuffle", {"shuffle": True}), ("set_repeat", {"repeat": "all"})],
+)
+def test_native_shuffle_repeat_without_queue_reports_safe_reason(monkeypatch, operation, extra):
+    from backend.bl_haos.ha.player import MediaPlayerError
+
+    address = "10:22:33:44:55:68"
+    with TestClient(app) as client:
+        app.state.bt_manager._on_interfaces_added(
+            "/org/bluez/hci0/dev_10_22_33_44_55_68",
+            {
+                "org.bluez.Device1": {
+                    "Address": address,
+                    "Name": "Queue Speaker",
+                    "Adapter": "/org/bluez/hci0",
+                    "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                    "Paired": True,
+                    "Trusted": True,
+                    "Connected": True,
+                }
+            },
+        )
+        monkeypatch.setattr(
+            app.state.ha_bridge, "control_queue",
+            AsyncMock(side_effect=MediaPlayerError("No active queue")), raising=False,
+        )
+        token = app.state.config_store.settings.native_token
+        response = client.post(
+            f"/api/native/speakers/{address}/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"operation": operation, "queue_version": 1, **extra},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "No active queue"
+
+
 @pytest.mark.parametrize("operation", ["next", "previous"])
 def test_native_queue_navigation_is_single_attempt_and_never_reconnects(monkeypatch, caplog, operation):
     from backend.bl_haos.ha.player import MediaPlayerError

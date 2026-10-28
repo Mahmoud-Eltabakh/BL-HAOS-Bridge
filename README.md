@@ -3,7 +3,7 @@
 
 ### Phase 24 Media Catalog
 
-Integrated release 0.2.69 is undeployed, including the pre-existing reconnect
+Integrated release 0.2.70 is undeployed, including the pre-existing reconnect
 fix. Local Core 2026.10.3 checks do not establish actual provider layout,
 session expiry or physical playback. Deployment and any further restart need
 separate authorization.

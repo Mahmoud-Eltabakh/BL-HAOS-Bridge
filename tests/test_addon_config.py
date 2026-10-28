@@ -48,11 +48,16 @@ def test_phase24_release_metadata_is_synchronized():
 
     config = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
     changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
-    assert VERSION == config["version"] == "0.2.69"
+    assert VERSION == config["version"] == "0.2.70"
     assert re.search(r"^##\s+\[?0\.2\.69\]?", changelog, re.MULTILINE)
-    latest = changelog.split("## ", 2)[1]
-    assert "Open Media Catalog" in latest
-    assert "Home Assistant" in latest
+    release = re.search(
+        r"^##\s+\[?0\.2\.69\]?.*?(?=^##\s|\Z)",
+        changelog,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert release is not None
+    assert "Open Media Catalog" in release.group()
+    assert "Home Assistant" in release.group()
 
 
 def test_config_yaml_syntax_and_fields():

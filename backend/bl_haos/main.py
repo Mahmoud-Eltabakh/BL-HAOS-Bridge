@@ -361,6 +361,7 @@ async def lifespan(app: FastAPI):
 
         # Initialize and start AutoReconnectEngine
         reconnect_engine = AutoReconnectEngine(bt_manager, health_registry=health)
+        reconnect_engine.set_global_enabled(config_store.settings.auto_reconnect_enabled)
         app.state.reconnect_engine = reconnect_engine
 
         for device in bt_manager.get_devices():
