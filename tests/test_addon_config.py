@@ -4,6 +4,57 @@ from pathlib import Path
 import yaml
 
 
+REQUIRED_PHASE_24_DOC_CLAIMS = (
+    "Open Media Catalog", "Native Browse Media", "exactly one connected BL-HAOS speaker",
+    "HA owns provider authentication and reference resolution", "Phase 25", "Phase 26",
+    "undeployed", "2026.10.3",
+)
+FORBIDDEN_PHASE_24_DOC_CLAIMS = (
+    r"\b(?:the )?(?:panel|browser|add-on) (?:stores|persists|copies) (?:ha |home assistant |provider )?(?:tokens|credentials)",
+    r"\b(?:the )?bridge (?:proxies|resolves|authenticates) (?:the )?(?:catalog|provider|media-source)",
+    r"\bphase 24 (?:implements|provides|supports|includes) (?:saved playlist (?:crud|creation|editing)|queue controls|sequential playback)",
+    r"(?<!not )\b(?:use|run) (?:the )?(?:retired )?docker e2e (?:for|as) (?:phase 24 |host )?acceptance",
+)
+
+
+def test_phase24_required_documentation_claims():
+    for name in ("DOCS.md", "README.md"):
+        text = Path(name).read_text(encoding="utf-8")
+        for fragment in REQUIRED_PHASE_24_DOC_CLAIMS:
+            assert fragment in text, f"{name}: missing Phase 24 claim: {fragment}"
+
+
+def test_phase24_forbidden_documentation_claims():
+    for name in ("DOCS.md", "README.md", "CHANGELOG.md"):
+        text = " ".join(Path(name).read_text(encoding="utf-8").lower().split())
+        for pattern in FORBIDDEN_PHASE_24_DOC_CLAIMS:
+            assert not re.search(pattern, text), f"{name}: forbidden positive Phase 24 claim"
+
+
+def test_phase24_claim_guards_distinguish_exclusions():
+    for pattern, positive, exclusion in zip(FORBIDDEN_PHASE_24_DOC_CLAIMS, (
+        "The add-on stores provider credentials", "The bridge proxies catalog requests",
+        "Phase 24 provides queue controls", "Run Docker E2E as acceptance",
+    ), (
+        "The add-on never stores provider credentials", "The bridge does not proxy catalog requests",
+        "Phase 24 excludes queue controls", "Do not run Docker E2E as acceptance",
+    ), strict=True):
+        assert re.search(pattern, positive.lower())
+        assert not re.search(pattern, exclusion.lower())
+
+
+def test_phase24_release_metadata_is_synchronized():
+    from backend.bl_haos.constants import VERSION
+
+    config = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    assert VERSION == config["version"] == "0.2.69"
+    assert re.search(r"^##\s+\[?0\.2\.69\]?", changelog, re.MULTILINE)
+    latest = changelog.split("## ", 2)[1]
+    assert "Open Media Catalog" in latest
+    assert "Home Assistant" in latest
+
+
 def test_config_yaml_syntax_and_fields():
     config_path = Path("config.yaml")
     assert config_path.exists(), "config.yaml must exist"

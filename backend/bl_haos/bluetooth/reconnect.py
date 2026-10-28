@@ -1,7 +1,8 @@
-"""Aggressive Auto-Reconnect Engine for Bluetooth Audio Speakers."""
+"""Conservative scheduled reconnection for Bluetooth audio speakers."""
 
 import asyncio
 import logging
+import math
 import random
 import time
 from enum import Enum
@@ -26,10 +27,8 @@ from ..constants import (
     RECONNECT_MAX_BACKOFF_SECONDS,
     RECONNECT_MAX_FAILURES_BEFORE_BREAKER,
     RECONNECT_MIN_BACKOFF_SECONDS,
-    RECONNECT_MIN_FAILURES_AFTER_HEAL,
     RECONNECT_POLL_INTERVAL_SECONDS,
     RECONNECT_POST_CONNECT_SETTLE_SECONDS,
-    RECONNECT_SELF_HEAL_FAILURE_THRESHOLD,
 )
 from ..health import FailureClass, HealthRegistry, SpeakerState, normalize_address
 
@@ -77,6 +76,13 @@ class AutoReconnectEngine:
         circuit_breaker_cooldown: float = RECONNECT_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
         health_registry: HealthRegistry | None = None,
     ):
+        """Accept finite initial >= 0, multiplier >= 1 and cap > 0 delays."""
+        if not math.isfinite(initial_backoff) or initial_backoff < 0:
+            raise ValueError("initial_backoff must be finite and non-negative")
+        if not math.isfinite(backoff_multiplier) or backoff_multiplier < 1:
+            raise ValueError("backoff_multiplier must be finite and at least one")
+        if not math.isfinite(max_backoff) or max_backoff <= 0:
+            raise ValueError("max_backoff must be finite and positive")
         self.manager = manager
         self.initial_backoff = initial_backoff
         self.backoff_multiplier = backoff_multiplier
@@ -86,19 +92,12 @@ class AutoReconnectEngine:
         self.health = health_registry
 
         self.profiles: dict[str, SpeakerReconnectProfile] = {}
-        self.adapter_locks: dict[str, asyncio.Lock] = {}
         self._running = False
         self._loop_task: asyncio.Task | None = None
         self._inflight: dict[str, asyncio.Task] = {}
 
         # Subscribe to BluetoothManager events
         self.manager.add_event_listener(self._handle_bluetooth_event)
-
-    @trace_call
-    def _get_adapter_lock(self, adapter_name: str) -> asyncio.Lock:
-        if adapter_name not in self.adapter_locks:
-            self.adapter_locks[adapter_name] = asyncio.Lock()
-        return self.adapter_locks[adapter_name]
 
     @trace_call
     def _release_inflight(self, address: str, task: asyncio.Task) -> None:
@@ -135,10 +134,25 @@ class AutoReconnectEngine:
 
     @trace_call
     def _calculate_backoff_delay(self, step: int) -> float:
-        """Calculate exponential backoff with random jitter."""
-        delay = min(self.max_backoff, self.initial_backoff * (self.backoff_multiplier ** step))
-        jitter = delay * random.uniform(-RECONNECT_BACKOFF_JITTER, RECONNECT_BACKOFF_JITTER)
-        return max(RECONNECT_MIN_BACKOFF_SECONDS, delay + jitter)
+        """Bound log growth and scale the final value; jitter only lengthens it."""
+        step = max(0, step)
+        if self.initial_backoff == 0:
+            delay = 0.0
+        elif self.initial_backoff >= self.max_backoff:
+            delay = self.max_backoff
+        elif self.backoff_multiplier == 1 or step == 0:
+            delay = self.initial_backoff
+        elif step >= (
+            (math.log(self.max_backoff) - math.log(self.initial_backoff)) / math.log(self.backoff_multiplier)
+        ):
+            delay = self.max_backoff
+        else:
+            fraction, growth = math.modf(step * math.log2(self.backoff_multiplier))
+            mantissa, exponent = math.frexp(self.initial_backoff)
+            delay = min(self.max_backoff, math.ldexp(mantissa, exponent + int(growth)) * math.exp2(fraction))
+        floor = min(RECONNECT_MIN_BACKOFF_SECONDS, self.initial_backoff)
+        delay = max(floor, delay)
+        return min(self.max_backoff, delay * (1 + random.uniform(0, RECONNECT_BACKOFF_JITTER)))
 
     @trace_call
     def _handle_bluetooth_event(self, event_type: str, data: Any):
@@ -208,20 +222,6 @@ class AutoReconnectEngine:
                     addr,
                     int(RECONNECT_DISCONNECT_GRACE_SECONDS),
                 )
-            elif profile.state == ReconnectState.BACKOFF:
-                # Fast-track wake-up: an advertisement or RSSI sample means the
-                # speaker is in range, so a pending retry can be pulled forward -
-                # but never while an attempt is in flight, while the link is still
-                # settling, or during a flap cooldown.
-                if (
-                    device.rssi is not None
-                    and now < profile.next_retry_time
-                    and now >= profile.cooldown_until
-                    and now - profile.connected_at >= RECONNECT_POST_CONNECT_SETTLE_SECONDS
-                    and not self._attempt_in_progress(addr)
-                ):
-                    logger.info("Presence advertisement detected for %s (RSSI %d). Fast-tracking reconnect.", addr, device.rssi)
-                    profile.next_retry_time = now
 
     @trace_call
     async def start(self) -> None:
@@ -267,15 +267,11 @@ class AutoReconnectEngine:
             if not profile.enabled:
                 continue
 
-            # Check circuit breaker reset
+            if now < profile.circuit_broken_until:
+                continue
             if profile.state == ReconnectState.CIRCUIT_BROKEN:
-                if now >= profile.circuit_broken_until:
-                    logger.info("Circuit breaker cooldown expired for %s. Resuming backoff.", addr)
-                    profile.state = ReconnectState.BACKOFF
-                    profile.consecutive_failures = 0
-                    profile.next_retry_time = now
-                else:
-                    continue
+                logger.info("Circuit breaker cooldown expired for %s. Allowing one probe.", addr)
+                profile.state = ReconnectState.BACKOFF
 
             # A dropout is acted on only after it has survived the grace window.
             if profile.disconnected_since is not None and profile.state in (
@@ -320,7 +316,7 @@ class AutoReconnectEngine:
         delay = self._calculate_backoff_delay(profile.backoff_step)
         if profile.cooldown_until > now:
             delay = max(delay, profile.cooldown_until - now)
-        profile.next_retry_time = now + delay
+        profile.next_retry_time = max(profile.next_retry_time, now + delay, profile.circuit_broken_until)
 
     @trace_call
     def _record_flap(self, profile: SpeakerReconnectProfile, now: float) -> None:
@@ -357,120 +353,73 @@ class AutoReconnectEngine:
         )
         profile.disconnected_since = None
         profile.state = ReconnectState.BACKOFF
-        profile.consecutive_failures = 0
-        profile.backoff_step = 0
-        profile.next_retry_time = time.time() + RECONNECT_POST_CONNECT_SETTLE_SECONDS
-
-    @trace_call
-    async def _recover_stale_device(self, profile: SpeakerReconnectProfile) -> bool:
-        """Reset a stale Bluetooth link without deleting its trusted bond."""
-        addr = profile.address
-        logger.warning("Attempting self-healing recovery for stale Bluetooth speaker %s", addr)
-
-        try:
-            await self.manager.connect_device(addr, reset_existing=True)
-            logger.info("Self-healing recovery succeeded for %s", addr)
-            return True
-        except BluetoothOperationInProgress:
-            raise
-        except Exception as exc:
-            logger.warning("Stale-link reset failed for %s: %s", addr, exc)
-            if self.health:
-                self.health.observe_speaker(addr, SpeakerState.UNAVAILABLE, failure=FailureClass.STALE_BLUEZ_OBJECT, detail=exc)
-            return False
+        now = time.time()
+        profile.next_retry_time = max(
+            profile.next_retry_time,
+            now + self._calculate_backoff_delay(profile.backoff_step),
+            now + RECONNECT_POST_CONNECT_SETTLE_SECONDS,
+            profile.cooldown_until,
+            profile.circuit_broken_until,
+        )
 
     @trace_call
     async def _attempt_reconnect(self, profile: SpeakerReconnectProfile) -> None:
         addr = profile.address
-        dev = self.manager.get_device_by_address(addr)
-        if not dev:
-            if self.health:
-                self.health.observe_speaker(addr, SpeakerState.UNAVAILABLE, failure=FailureClass.DBUS_DISCONNECTED, detail="Device cache unavailable")
+        if self.profiles.get(addr) is not profile or not profile.enabled or time.time() < profile.circuit_broken_until:
             return
-
-        adapter_name = profile.preferred_adapter or dev.adapter_name
-        lock = self._get_adapter_lock(adapter_name)
-
-        if lock.locked():
-            # Another reconnect is in progress on this adapter; postpone slightly
-            logger.debug("Adapter %s is locked by another reconnect operation; deferring %s", adapter_name, addr)
-            profile.next_retry_time = time.time() + 1.0
-            return
-
-        async with lock:
-            profile.state = ReconnectState.RECONNECTING
+        profile.state = ReconnectState.RECONNECTING
+        if self.health:
+            self.health.observe_speaker(addr, SpeakerState.RECONNECTING, attempt=profile.consecutive_failures + 1)
+        logger.info("Attempting auto-reconnect to %s (Attempt %d)", addr, profile.consecutive_failures + 1)
+        try:
+            await self.manager.connect_device(addr)
+            if self.profiles.get(addr) is not profile:
+                return
+            profile.state = ReconnectState.CONNECTED
+            profile.connected_at = time.time()
+            profile.disconnected_since = None
+            profile.consecutive_failures = 0
+            profile.backoff_step = 0
+            profile.next_retry_time = 0.0
+            profile.circuit_broken_until = 0.0
             if self.health:
-                self.health.observe_speaker(addr, SpeakerState.RECONNECTING, attempt=profile.consecutive_failures + 1)
-            logger.info("Attempting auto-reconnect to %s on adapter %s (Attempt %d)", addr, adapter_name, profile.consecutive_failures + 1)
-            try:
-                await self.manager.connect_device(addr)
-                logger.info("Successfully reconnected to speaker %s", addr)
-                logger.debug("Auto-reconnect succeeded for %s, resetting failure counters", addr)
-                profile.state = ReconnectState.CONNECTED
-                # Start the settle window: the link is up, so nothing may touch it
-                # (including a fast-tracked retry) while BlueZ finishes the A2DP
-                # transport.
-                profile.connected_at = time.time()
-                profile.disconnected_since = None
-                if self.health:
-                    self.health.observe_speaker(addr, SpeakerState.CONNECTED)
-                profile.consecutive_failures = 0
-                profile.backoff_step = 0
-                profile.next_retry_time = 0.0
-            except BluetoothOperationInProgress as busy:
+                self.health.observe_speaker(addr, SpeakerState.CONNECTED)
+        except asyncio.CancelledError:
+            if self.profiles.get(addr) is profile:
+                profile.state = ReconnectState.BACKOFF
+                profile.next_retry_time = max(
+                    profile.next_retry_time,
+                    time.time() + self._calculate_backoff_delay(profile.backoff_step),
+                    profile.cooldown_until,
+                    profile.circuit_broken_until,
+                )
+            raise
+        except BluetoothOperationInProgress as busy:
+            if self.profiles.get(addr) is profile:
                 self._defer_busy_connection(profile, busy)
-            except Exception as e:
-                profile.consecutive_failures += 1
-                profile.backoff_step += 1
-                logger.warning("Failed to reconnect to %s: %s (Failures: %d)", addr, e, profile.consecutive_failures)
-                logger.debug("Auto-reconnect next retry calculation for %s (backoff_step=%d)", addr, profile.backoff_step)
-
-                if RECONNECT_SELF_HEAL_FAILURE_THRESHOLD <= profile.consecutive_failures < self.max_failures:
-                    try:
-                        recovered = await self._recover_stale_device(profile)
-                        if recovered:
-                            profile.state = ReconnectState.CONNECTED
-                            profile.connected_at = time.time()
-                            profile.disconnected_since = None
-                            profile.consecutive_failures = 0
-                            profile.backoff_step = 0
-                            profile.next_retry_time = 0.0
-                            if self.health:
-                                self.health.observe_speaker(addr, SpeakerState.CONNECTED)
-                            logger.info("Self-healing recovery connected stale speaker %s", addr)
-                        else:
-                            profile.state = ReconnectState.BACKOFF
-                            profile.next_retry_time = time.time() + self.initial_backoff
-                            profile.consecutive_failures = max(profile.consecutive_failures, RECONNECT_MIN_FAILURES_AFTER_HEAL)
-                            logger.info("Triggered self-healing recovery for stale speaker %s", addr)
-                        return
-                    except BluetoothOperationInProgress as busy:
-                        self._defer_busy_connection(profile, busy)
-                        return
-                    except Exception as recovery_exc:
-                        logger.warning("Auto-recovery failed for %s: %s", addr, recovery_exc)
-
-                if profile.consecutive_failures >= self.max_failures:
-                    logger.error("Max failures reached for %s. Tripping circuit breaker for %.1fs.", addr, self.breaker_cooldown)
-                    profile.state = ReconnectState.CIRCUIT_BROKEN
-                    profile.circuit_broken_until = time.time() + self.breaker_cooldown
-                    if self.health:
-                        self.health.observe_speaker(
-                            addr,
-                            SpeakerState.UNAVAILABLE,
-                            failure=FailureClass.RECONNECT_EXHAUSTED,
-                            detail="Reconnect attempts exhausted",
-                            attempt=profile.consecutive_failures,
-                        )
-                else:
-                    profile.state = ReconnectState.BACKOFF
-                    if self.health:
-                        self.health.observe_speaker(
-                            addr,
-                            SpeakerState.RECONNECTING,
-                            failure=FailureClass.STALE_BLUEZ_OBJECT if profile.consecutive_failures >= RECONNECT_SELF_HEAL_FAILURE_THRESHOLD else None,
-                            detail=e if profile.consecutive_failures >= RECONNECT_SELF_HEAL_FAILURE_THRESHOLD else None,
-                            attempt=profile.consecutive_failures,
-                        )
-                    delay = self._calculate_backoff_delay(profile.backoff_step)
-                    profile.next_retry_time = time.time() + delay
+        except Exception as error:
+            if self.profiles.get(addr) is not profile:
+                return
+            profile.consecutive_failures += 1
+            profile.backoff_step += 1
+            now = time.time()
+            logger.warning("Failed to reconnect to %s: %s (Failures: %d)", addr, error, profile.consecutive_failures)
+            if profile.consecutive_failures >= self.max_failures:
+                profile.state = ReconnectState.CIRCUIT_BROKEN
+                profile.circuit_broken_until = max(profile.circuit_broken_until, now + self.breaker_cooldown)
+                if self.health:
+                    self.health.observe_speaker(
+                        addr, SpeakerState.UNAVAILABLE,
+                        failure=FailureClass.RECONNECT_EXHAUSTED,
+                        detail="Reconnect attempts exhausted", attempt=profile.consecutive_failures,
+                    )
+            else:
+                profile.state = ReconnectState.BACKOFF
+                if self.health:
+                    self.health.observe_speaker(addr, SpeakerState.RECONNECTING, attempt=profile.consecutive_failures)
+            profile.next_retry_time = max(
+                profile.next_retry_time,
+                now + self._calculate_backoff_delay(profile.backoff_step),
+                profile.cooldown_until,
+                profile.circuit_broken_until,
+            )

@@ -1,13 +1,16 @@
 import asyncio
 import json
+import logging
 import os
 import signal
 import time
+import traceback
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from backend.bl_haos.constants import PLAYBACK_PROTOCOL_WHITELIST
-from backend.bl_haos.ha.player import MediaPlayerBridge
+from backend.bl_haos.ha.player import MediaPlayerBridge, MediaPlayerError
 from backend.bl_haos.health import FailureClass, HealthRegistry, SpeakerState
 
 
@@ -42,6 +45,97 @@ async def fake_sink(_address):
 
 async def fake_process(*args, **_kwargs):
     return FakeProcess(returncode=0 if args[0] == "wpctl" else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, "spawn", "unexpected", "stderr", "drain", "probe", "metadata"])
+async def test_player_url_redact_real_execution_logs(caplog, failure):
+    sentinels = (
+        "playerhostsentinel.example", "playerpathsentinel", "playerquerykeysentinel",
+        "playerqueryvaluesentinel", "playerusersentinel", "playerpasswordsentinel", "playertokensentinel",
+    )
+    url = (
+        f"https://{sentinels[0]}/{sentinels[1]}?{sentinels[2]}={sentinels[3]}"
+        f"&user={sentinels[4]}&password={sentinels[5]}&token={sentinels[6]}"
+    )
+    calls = []
+
+    async def process_factory(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[0] == "ffmpeg" and failure in {"spawn", "unexpected"}:
+            raise (OSError(url) if failure == "spawn" else RuntimeError(url))
+        if args[0] == "ffprobe" and failure == "probe":
+            raise RuntimeError(" ".join(sentinels))
+        process = FakeProcess(returncode=0 if args[0] == "wpctl" else None)
+        if args[0] == "ffprobe" and failure == "metadata":
+            process.communicate = AsyncMock(return_value=(b"duration=240\n", b""))
+        if args[0] == "ffmpeg" and failure in {"stderr", "drain"}:
+            lines = [f"error {url}\n".encode(), " ".join(sentinels).encode(), b""]
+            process.stderr = SimpleNamespace(readline=AsyncMock(
+                side_effect=RuntimeError(url) if failure == "drain" else lines,
+            ))
+        return process
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    address = "10:22:33:44:55:66"
+    caplog.set_level(logging.DEBUG, logger="bl_haos")
+    caplog.set_level(logging.DEBUG, logger="backend.bl_haos")
+    caplog.clear()
+    error_text = ""
+    if failure in {"spawn", "unexpected"}:
+        with pytest.raises(MediaPlayerError) as caught:
+            await bridge.execute(address, "play_media", url=url)
+        error_text = "".join(traceback.format_exception(caught.value))
+    else:
+        await bridge.execute(address, "play_media", url=url)
+        assert bridge.last_urls[address] == url
+        assert bridge.get_state(address) == "playing"
+        if failure == "metadata":
+            await bridge._async_probe_duration(address, url)
+            assert bridge.get_timeline(address)["duration"] == 240
+            assert bridge.get_timeline(address)["title"] == sentinels[1]
+        tasks = list(bridge._background_tasks)
+        await bridge.execute(address, "stop")
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.sleep(0)
+        assert not bridge._background_tasks
+    decoder_args = next(args for args, _ in calls if args[0] == "ffmpeg")
+    assert decoder_args.count(url) == 1
+    assert decoder_args[decoder_args.index("-i") + 1] == url
+    assert decoder_args[decoder_args.index("-protocol_whitelist") + 1] == PLAYBACK_PROTOCOL_WHITELIST
+    assert all(kwargs.get("shell") is not True for _, kwargs in calls)
+    assert "call enter function=" in caplog.text
+    assert "play_media" in caplog.text
+    for sentinel in (url, *sentinels):
+        assert sentinel not in caplog.text + error_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", [
+    "https://rejectusersentinel:rejectpasswordsentinel@rejecthostsentinel.example/rejectpathsentinel?token=rejecttokensentinel",
+    "file:///rejectpathsentinel?token=rejecttokensentinel",
+    "http://127.0.0.1/rejectpathsentinel?token=rejecttokensentinel",
+    "https://[malformedhostsentinel]/rejectpathsentinel?token=rejecttokensentinel",
+    "https://rejecthostsentinel.example:porttokensentinel/rejectpathsentinel?token=rejecttokensentinel",
+])
+async def test_player_url_redact_rejection_before_side_effects(caplog, url):
+    process_factory = AsyncMock()
+    sink_resolver = AsyncMock()
+    bridge = MediaPlayerBridge(sink_resolver=sink_resolver, process_factory=process_factory)
+    caplog.set_level(logging.DEBUG, logger="bl_haos")
+    caplog.set_level(logging.DEBUG, logger="backend.bl_haos")
+    with pytest.raises(MediaPlayerError) as caught:
+        await bridge.execute("10:22:33:44:55:66", "play_media", url=url)
+    process_factory.assert_not_awaited()
+    sink_resolver.assert_not_awaited()
+    output = caplog.text + "".join(traceback.format_exception(caught.value))
+    for sentinel in (url, "rejectusersentinel", "rejectpasswordsentinel", "rejecthostsentinel", "rejectpathsentinel", "rejecttokensentinel", "malformedhostsentinel", "porttokensentinel"):
+        assert sentinel not in output
+    assert caught.value.__suppress_context__
+    assert str(caught.value) in {
+        "Media URL must be a safe HTTP(S) URL",
+        "Media URL must not target a loopback, link-local or multicast address",
+    }
 
 
 def test_sink_warmup_is_dropped_without_a_running_loop():
@@ -766,6 +860,10 @@ def test_title_from_url_prefers_a_readable_filename():
     assert MediaPlayerBridge._title_from_url("http://ha:8123/api/tts_proxy/abc_-123.mp3") == "Text to speech"
     assert MediaPlayerBridge._title_from_url("http://ha:8123/") is None
     assert MediaPlayerBridge._title_from_url("") is None
+    assert MediaPlayerBridge._text("Artist: Album") == "Artist: Album"
+    assert MediaPlayerBridge._text("javascript:secret") is None
+    assert MediaPlayerBridge._text("title with DEL\x7f control") is None
+    assert MediaPlayerBridge._text("title with C1\x85 control") is None
 
 
 @pytest.mark.asyncio
@@ -1253,4 +1351,460 @@ async def test_codec_override_is_skipped_when_the_speaker_is_already_on_it(monke
     await bridge._apply_codec_override("10:22:33:44:55:66")
 
     assert calls == []
+
+
+def _queue_test_bridge(rng=None):
+    spawned = []
+    playback_processes = []
+
+    async def process_factory(*args, **kwargs):
+        spawned.append(args)
+        process = FakeProcess(returncode=0 if args[0] not in {"ffmpeg", "pw-play", "paplay"} else None)
+        if args[0] in {"ffmpeg", "pw-play", "paplay"}:
+            playback_processes.append(process)
+        return process
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory, rng=rng)
+    bridge.warmup_attempts = 0
+    return bridge, spawned, playback_processes
+
+
+async def _wait_for_queue_condition(condition, timeout=1.0):
+    async def wait():
+        while not condition():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait(), timeout)
+
+
+async def _cleanup_queue_test(bridge):
+    await bridge.async_shutdown()
+    if bridge._background_tasks:
+        await asyncio.gather(*tuple(bridge._background_tasks), return_exceptions=True)
+    await asyncio.sleep(0)
+    assert not bridge._background_tasks
+
+
+@pytest.mark.asyncio
+async def test_queue_start_uses_normalized_speaker_and_exposes_only_sanitized_state():
+    bridge, spawned, processes = _queue_test_bridge()
+    address = "10-22-33-44-55-66"
+    secret_url = "https://media.example.test/first.mp3?authSig=queue-secret"
+
+    snapshot = await bridge.start_queue(
+        address,
+        "Morning set",
+        [{"url": secret_url, "title": "First track", "artist": "Artist"}],
+    )
+
+    current = bridge.get_queue("10:22:33:44:55:66")
+    assert current is not None
+    for field in ("status", "playlist", "title", "artist", "duration", "index", "count", "shuffle", "repeat", "error"):
+        assert current.get(field) == snapshot.get(field)
+    assert isinstance(snapshot["position"], (int, float))
+    assert isinstance(current["position"], (int, float))
+    assert abs(current["position"] - snapshot["position"]) < 0.1
+    assert snapshot["status"] == "playing"
+    assert snapshot["playlist"] == "Morning set"
+    assert snapshot["title"] == "First track"
+    assert snapshot["artist"] == "Artist"
+    assert snapshot["index"] == snapshot["count"] == 1
+    assert len(processes) == 2
+    assert [args[0] for args in spawned if args[0] in {"ffmpeg", "pw-play"}] == ["ffmpeg", "pw-play"]
+    assert secret_url not in str(snapshot)
+    assert "authSig" not in str(snapshot)
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_advances_only_when_both_children_exit_zero():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Two tracks", [
+        {"url": "https://media.example.test/first.mp3", "title": "First"},
+        {"url": "https://media.example.test/second.mp3", "title": "Second"},
+    ])
+    first_pair = tuple(processes[:2])
+    first_pair[0].returncode = 0
+    first_pair[1].returncode = 0
+
+    await _wait_for_queue_condition(
+        lambda: (queue := bridge.get_queue(address)) is not None and queue["index"] == 2
+    )
+
+    snapshot = bridge.get_queue(address)
+    assert snapshot["index"] == 2
+    assert snapshot["title"] == "Second"
+    assert snapshot["status"] == "playing"
+    assert len(processes) == 4
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decoder_code,player_code", [(0, 1), (1, 0), (-15, 0), (255, 0)])
+async def test_queue_failure_retains_current_item_without_advancing(decoder_code, player_code):
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Two tracks", [
+        {"url": "https://media.example.test/failed.mp3?token=never-show", "title": "Failed item"},
+        {"url": "https://media.example.test/next.mp3", "title": "Must not start"},
+    ])
+    first_pair = tuple(processes[:2])
+    first_pair[0].returncode = decoder_code
+    first_pair[1].returncode = player_code
+
+    await _wait_for_queue_condition(
+        lambda: (queue := bridge.get_queue(address)) is not None and queue["status"] == "failed"
+    )
+
+    snapshot = bridge.get_queue(address)
+    assert snapshot["status"] == "failed"
+    assert snapshot["title"] == "Failed item"
+    assert snapshot["index"] == 1
+    assert snapshot["error"] == "Playback failed"
+    assert len(processes) == 2
+    assert "never-show" not in str(snapshot)
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_replacement_fences_old_process_watcher():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Old", [
+        {"url": "https://media.example.test/old.mp3", "title": "Old item"},
+        {"url": "https://media.example.test/old-next.mp3", "title": "Old next"},
+    ])
+    old_pair = tuple(processes[:2])
+
+    await bridge.start_queue(address, "Replacement", [
+        {"url": "https://media.example.test/new.mp3", "title": "New item"},
+    ])
+    old_pair[0].returncode = 0
+    old_pair[1].returncode = 0
+    await bridge._watch_processes(address, *old_pair)
+
+    snapshot = bridge.get_queue(address)
+    assert snapshot["playlist"] == "Replacement"
+    assert snapshot["title"] == "New item"
+    assert snapshot["index"] == snapshot["count"] == 1
+    assert len(processes) == 4
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_stop_and_standalone_play_clear_queued_work():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Queued", [
+        {"url": "https://media.example.test/queued.mp3", "title": "Queued item"},
+        {"url": "https://media.example.test/tail.mp3", "title": "Queued tail"},
+    ])
+
+    await bridge.execute(address, "stop")
+    assert bridge.get_queue(address) is None
+    assert len(processes) == 2
+    with pytest.raises(MediaPlayerError, match="No active playback to resume"):
+        await bridge.execute(address, "play")
+    assert len(processes) == 2
+
+    await bridge.start_queue(address, "Replaced", [
+        {"url": "https://media.example.test/replaced.mp3", "title": "Replaced item"},
+    ])
+    await bridge.play_url(address, "https://media.example.test/single.mp3")
+
+    assert bridge.get_queue(address) is None
+    assert bridge.get_state(address) == "playing"
+    assert len(processes) == 6
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_invalid_replacement_preserves_current_session_and_process_pair():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Current", [
+        {"url": "https://media.example.test/current.mp3", "title": "Current item"},
+    ])
+    current_pair = bridge.active_processes[address]
+
+    with pytest.raises(MediaPlayerError, match="Queue request is invalid"):
+        await bridge.start_queue(address, "Rejected", [
+            {"url": "file:///not-allowed.mp3", "title": "Must not replace"},
+        ])
+
+    assert bridge.get_queue(address)["playlist"] == "Current"
+    assert bridge.active_processes[address] == current_pair
+    assert len(processes) == 2
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_completion_retains_snapshot_and_clears_playable_urls():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    secret_url = "https://media.example.test/complete.mp3?token=completed-secret"
+    await bridge.start_queue(address, "Complete", [
+        {"url": secret_url, "title": "Completed item"},
+    ])
+    pair = tuple(processes[:2])
+    pair[0].returncode = 0
+    pair[1].returncode = 0
+
+    await _wait_for_queue_condition(
+        lambda: (queue := bridge.get_queue(address)) is not None and queue["status"] == "completed"
+    )
+
+    snapshot = bridge.get_queue(address)
+    assert snapshot["status"] == "completed"
+    assert snapshot["title"] == "Completed item"
+    assert snapshot["index"] == snapshot["count"] == 1
+    assert secret_url not in str(snapshot)
+    assert all(not item.url for item in bridge.playback_sessions[address].items)
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_partial_process_spawn_is_cleaned_up(caplog):
+    spawned_decoder = None
+
+    async def process_factory(*args, **kwargs):
+        nonlocal spawned_decoder
+        if args[0] == "ffmpeg":
+            spawned_decoder = FakeProcess()
+            return spawned_decoder
+        if args[0] == "pw-play":
+            raise OSError("private spawn detail")
+        return FakeProcess(returncode=0)
+
+    bridge = MediaPlayerBridge(sink_resolver=fake_sink, process_factory=process_factory)
+    bridge.warmup_attempts = 0
+
+    snapshot = await bridge.start_queue("10:22:33:44:55:66", "Partial", [
+        {"url": "https://media.example.test/partial.mp3", "title": "Partial"},
+    ])
+
+    assert snapshot["status"] == "failed"
+    assert snapshot["error"] == "Playback failed"
+    assert spawned_decoder is not None and spawned_decoder.returncode is not None
+    assert bridge.active_processes == {}
+    assert "private spawn detail" not in caplog.text
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_start_bounds_item_count_and_aggregate_payload_before_replacement():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Current", [
+        {"url": "https://media.example.test/current.mp3", "title": "Current item"},
+    ])
+    current_pair = bridge.active_processes[address]
+    too_many = [
+        {"url": f"https://media.example.test/{index}.mp3", "title": "Track"}
+        for index in range(251)
+    ]
+    too_large = [
+        {"url": f"https://media.example.test/{'x' * 1100}", "title": "Track"}
+        for _ in range(250)
+    ]
+
+    with pytest.raises(MediaPlayerError, match="Queue request is invalid"):
+        await bridge.start_queue(address, "Too many", too_many)
+    with pytest.raises(MediaPlayerError, match="Queue request is too large"):
+        await bridge.start_queue(address, "Too large", too_large)
+
+    assert bridge.get_queue(address)["playlist"] == "Current"
+    assert bridge.active_processes[address] == current_pair
+    assert len(processes) == 2
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_next_is_explicit_skip_and_previous_obeys_three_second_rule():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Navigation", [
+        {"url": "https://media.example.test/one.mp3", "title": "One"},
+        {"url": "https://media.example.test/two.mp3", "title": "Two"},
+        {"url": "https://media.example.test/three.mp3", "title": "Three"},
+    ])
+
+    await bridge.control_queue(address, "next")
+    assert bridge.get_queue(address)["title"] == "Two"
+    bridge.timelines[address]["position"] = 4.0
+    bridge.timelines[address]["clock_started_at"] = None
+    await bridge.control_queue(address, "previous")
+    assert bridge.get_queue(address)["title"] == "Two"
+    assert bridge.get_timeline(address)["position"] == 0
+
+    bridge.timelines[address]["position"] = 2.0
+    await bridge.control_queue(address, "previous")
+    assert bridge.get_queue(address)["title"] == "One"
+    await bridge.control_queue(address, "previous")
+    assert bridge.get_queue(address)["title"] == "One"
+    assert len(processes) == 10
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_shuffle_keeps_current_item_and_only_reorders_tail():
+    class ReverseShuffle:
+        @staticmethod
+        def shuffle(items):
+            items.reverse()
+
+    bridge, _spawned, _processes = _queue_test_bridge(rng=ReverseShuffle())
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Shuffle", [
+        {"url": f"https://media.example.test/{name}.mp3", "title": name}
+        for name in ("One", "Two", "Three", "Four")
+    ])
+
+    await bridge.control_queue(address, "set_shuffle", shuffle=True)
+
+    session = bridge.playback_sessions[address]
+    assert session.items[session.index].title == "One"
+    assert [item.title for item in session.items] == ["One", "Four", "Three", "Two"]
+    assert bridge.get_queue(address)["shuffle"] is True
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_repeat_one_restarts_only_after_success_and_repeat_all_wraps():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Repeat", [
+        {"url": "https://media.example.test/one.mp3", "title": "One"},
+        {"url": "https://media.example.test/two.mp3", "title": "Two"},
+    ])
+    await bridge.control_queue(address, "set_repeat", repeat="one")
+
+    first_pair = tuple(processes[:2])
+    first_pair[0].returncode = 0
+    first_pair[1].returncode = 0
+    await _wait_for_queue_condition(lambda: len(processes) == 4)
+    assert bridge.get_queue(address)["title"] == "One"
+    assert bridge.get_queue(address)["repeat"] == "one"
+    assert len(processes) == 4
+
+    await bridge.control_queue(address, "set_repeat", repeat="all")
+    second_pair = tuple(processes[2:4])
+    second_pair[0].returncode = 0
+    second_pair[1].returncode = 0
+    await _wait_for_queue_condition(
+        lambda: (queue := bridge.get_queue(address)) is not None and queue["index"] == 2
+    )
+    assert bridge.get_queue(address)["title"] == "Two"
+    third_pair = tuple(processes[4:6])
+    third_pair[0].returncode = 0
+    third_pair[1].returncode = 0
+    await _wait_for_queue_condition(
+        lambda: (queue := bridge.get_queue(address)) is not None and queue["index"] == 1 and len(processes) == 8
+    )
+    assert bridge.get_queue(address)["title"] == "One"
+    assert len(processes) == 8
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_failure_requires_explicit_play_retry_or_next_skip():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Recovery", [
+        {"url": "https://media.example.test/failed.mp3", "title": "Failed"},
+        {"url": "https://media.example.test/next.mp3", "title": "Next"},
+    ])
+    pair = tuple(processes[:2])
+    pair[0].returncode = 0
+    pair[1].returncode = 2
+    await _wait_for_queue_condition(
+        lambda: (queue := bridge.get_queue(address)) is not None and queue["status"] == "failed"
+    )
+
+    assert bridge.get_queue(address)["status"] == "failed"
+    assert len(processes) == 2
+    await bridge.control_queue(address, "play")
+    assert bridge.get_queue(address)["status"] == "playing"
+    assert bridge.get_queue(address)["title"] == "Failed"
+    assert len(processes) == 4
+
+    retry_pair = tuple(processes[2:4])
+    retry_pair[0].returncode = 3
+    retry_pair[1].returncode = 0
+    await _wait_for_queue_condition(
+        lambda: (queue := bridge.get_queue(address)) is not None and queue["status"] == "failed"
+    )
+    await bridge.control_queue(address, "next")
+    assert bridge.get_queue(address)["title"] == "Next"
+    assert bridge.get_queue(address)["status"] == "playing"
+    assert len(processes) == 6
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_pause_resume_stop_and_shutdown_do_not_advance():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Lifecycle", [
+        {"url": "https://media.example.test/one.mp3", "title": "One"},
+        {"url": "https://media.example.test/two.mp3", "title": "Two"},
+    ])
+
+    await bridge.control_queue(address, "pause")
+    assert bridge.get_queue(address)["status"] == "paused"
+    await bridge.control_queue(address, "play")
+    assert bridge.get_queue(address)["status"] == "playing"
+    assert len(processes) == 2
+
+    pair = tuple(processes[:2])
+    await bridge.execute(address, "stop")
+    pair[0].returncode = 0
+    pair[1].returncode = 0
+    await bridge._watch_processes(address, *pair)
+    assert bridge.get_queue(address) is None
+    assert len(processes) == 2
+
+    await bridge.start_queue(address, "Shutdown", [
+        {"url": "https://media.example.test/one.mp3", "title": "One"},
+    ])
+    await bridge.async_shutdown()
+    assert bridge.get_queue(address) is None
+    assert bridge.playback_sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_queue_disconnect_invalidates_generation_before_late_completion():
+    bridge, _spawned, processes = _queue_test_bridge()
+    address = "10:22:33:44:55:66"
+    await bridge.start_queue(address, "Disconnect", [
+        {"url": "https://media.example.test/one.mp3", "title": "One"},
+        {"url": "https://media.example.test/two.mp3", "title": "Two"},
+    ])
+    pair = tuple(processes[:2])
+
+    bridge.unregister_keepalive(address)
+    pair[0].returncode = 0
+    pair[1].returncode = 0
+    await bridge._watch_processes(address, *pair)
+
+    assert bridge.get_queue(address) is None
+    assert len(processes) == 2
+    await _cleanup_queue_test(bridge)
+
+
+@pytest.mark.asyncio
+async def test_queue_invalidation_normalizes_blueZ_address_casing():
+    bridge, _spawned, _processes = _queue_test_bridge()
+    address = "aa:bb:cc:dd:ee:66"
+    await bridge.start_queue(address, "Normalize", [
+        {"url": "https://media.example.test/item.mp3", "title": "Item"},
+    ])
+    generation = bridge._playback_generations[address]
+
+    bridge._invalidate_playback_session("AA-BB-CC-DD-EE-66")
+
+    assert bridge.get_queue(address) is None
+    assert bridge._playback_generations[address] == generation + 1
+    await _cleanup_queue_test(bridge)
 

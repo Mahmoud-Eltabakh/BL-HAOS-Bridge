@@ -1,3 +1,4 @@
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,7 +12,226 @@ from backend.bl_haos.bluetooth.constants import (
 )
 from backend.bl_haos.bluetooth.device import BluetoothDevice, BluetoothOperationInProgress
 from backend.bl_haos.bluetooth.manager import BluetoothManager
+from backend.bl_haos.bluetooth.reconnect import AutoReconnectEngine, ReconnectState
 from backend.bl_haos.health import FailureClass, HealthRegistry, HealthState, SpeakerState
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detached", [False, True])
+async def test_phase27_review_concurrent_resolution_keeps_canonical_record(monkeypatch, detached):
+    manager = BluetoothManager()
+    address = "AA:BB:CC:11:22:33"
+    path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+    properties = _device_properties(address, paired=True, trusted=True, connected=False)
+    if detached:
+        offline = BluetoothDevice(None, path, properties.copy())
+        offline.mark_detached()
+        manager.devices[path] = offline
+    entered = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+    connecting = asyncio.Event()
+    finish = asyncio.Event()
+    resolutions = 0
+
+    async def get_all(*args):
+        nonlocal resolutions
+        index = resolutions
+        resolutions += 1
+        entered[index].set()
+        await release[index].wait()
+        return properties.copy()
+
+    async def connect():
+        connecting.set()
+        await finish.wait()
+
+    interface = SimpleNamespace(call_get_all=get_all, call_connect=AsyncMock(side_effect=connect), call_set=AsyncMock())
+    manager.bus = SimpleNamespace(introspect=AsyncMock(), get_proxy_object=lambda *args: SimpleNamespace(get_interface=lambda name: interface))
+    manager.adapters["/org/bluez/hci0"] = SimpleNamespace(path="/org/bluez/hci0")
+    monkeypatch.setattr(manager, "stop_scan", AsyncMock())
+    first = asyncio.create_task(manager.connect_device(address))
+    second = None
+    try:
+        await asyncio.wait_for(entered[0].wait(), 2)
+        second = asyncio.create_task(manager.connect_device(address))
+        await asyncio.wait_for(entered[1].wait(), 2)
+        release[0].set()
+        await asyncio.wait_for(connecting.wait(), 2)
+        canonical = manager.devices[path]
+        release[1].set()
+        with pytest.raises(BluetoothOperationInProgress):
+            await asyncio.wait_for(second, 2)
+        assert manager.devices[path] is canonical
+        finish.set()
+        assert await asyncio.wait_for(first, 2)
+        assert manager.get_device_by_address(address) is canonical
+        assert canonical.connected and canonical.paired and canonical.trusted
+        assert manager.get_devices()[0].connected
+        interface.call_connect.assert_awaited_once()
+        assert not manager._connection_locks["hci0"].locked()
+    finally:
+        for event in release:
+            event.set()
+        finish.set()
+        tasks = [task for task in (first, second) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["stop_scan", "settle", "connect", "trust"])
+@pytest.mark.parametrize("replacement", [False, True])
+async def test_phase27_review_withdrawn_record_never_succeeds(monkeypatch, stage, replacement):
+    manager = BluetoothManager()
+    address = "AA:BB:CC:11:22:33"
+    path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+    properties = _device_properties(address, paired=True, trusted=True, connected=False)
+    device = BluetoothDevice(None, path, properties.copy())
+    manager.devices[path] = device
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def barrier(boundary):
+        if boundary == stage:
+            entered.set()
+            await release.wait()
+
+    async def stop_scan(*args):
+        await barrier("stop_scan")
+
+    async def settle(*args):
+        await barrier("settle")
+
+    async def connect():
+        await barrier("connect")
+        device.update_properties({"Connected": True})
+
+    async def trust(*args):
+        await barrier("trust")
+
+    connect_mock = AsyncMock(side_effect=connect)
+    monkeypatch.setattr(manager, "stop_scan", stop_scan)
+    monkeypatch.setattr("backend.bl_haos.bluetooth.manager.asyncio.sleep", settle)
+    monkeypatch.setattr(device, "connect", connect_mock)
+    monkeypatch.setattr(device, "set_trusted", AsyncMock(side_effect=trust))
+    engine = AutoReconnectEngine(manager)
+    engine.register_speaker(address)
+    profile = engine.profiles[address.lower()]
+    profile.state = ReconnectState.BACKOFF
+    profile.consecutive_failures = 3
+    profile.backoff_step = 3
+    worker = asyncio.create_task(engine._attempt_reconnect(profile))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert manager._connection_locks["hci0"].locked()
+        if replacement:
+            manager.devices[path] = BluetoothDevice(None, path, properties.copy())
+        else:
+            manager._on_interfaces_removed(path, [DEVICE_INTERFACE])
+        release.set()
+        await asyncio.wait_for(worker, 2)
+        assert profile.state == ReconnectState.BACKOFF
+        assert profile.consecutive_failures == 4
+        assert profile.backoff_step == 4
+        assert profile.next_retry_time > time.time()
+        assert connect_mock.await_count == (0 if stage in ("stop_scan", "settle") else 1)
+        assert not manager.devices[path].connected
+        assert manager.devices[path].paired and manager.devices[path].trusted
+        assert device.paired and device.trusted
+        assert not manager._connection_locks["hci0"].locked()
+    finally:
+        release.set()
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message,detached", [("br-connection-unknown", False), ("interface not found on this object: org.bluez.Device1", True)])
+async def test_phase27_connection_one_failure_preserves_bond(monkeypatch, message, detached):
+    manager = BluetoothManager()
+    device = BluetoothDevice(None, "/org/bluez/hci0/dev_AA_BB_CC_11_22_33", _device_properties("AA:BB:CC:11:22:33", paired=True, trusted=True, connected=False))
+    manager.devices[device.path] = device
+    connect = AsyncMock(side_effect=RuntimeError(message))
+    monkeypatch.setattr(device, "connect", connect)
+    with pytest.raises(RuntimeError, match=message):
+        await manager.connect_device(device.address)
+    assert connect.await_count == 1
+    assert manager.devices[device.path] is device
+    assert device.detached is detached
+    assert device.paired and device.trusted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reset_first", [False, True])
+async def test_phase27_connection_shared_actual_adapter_ownership(monkeypatch, reset_first):
+    manager = BluetoothManager()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    devices = []
+    for suffix, adapter in [("33", "hci0"), ("34", "hci0"), ("35", "hci1")]:
+        address = f"AA:BB:CC:11:22:{suffix}"
+        properties = _device_properties(address, paired=True, trusted=True, connected=False)
+        properties["Adapter"] = f"/org/bluez/{adapter}"
+        device = BluetoothDevice(None, f"/org/bluez/{adapter}/dev_{address.replace(':', '_')}", properties)
+        manager.devices[device.path] = device
+        devices.append(device)
+
+    async def blocked_connect():
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(devices[0], "connect", blocked_connect)
+    stop_scan = AsyncMock()
+    monkeypatch.setattr(manager, "stop_scan", stop_scan)
+    first = asyncio.create_task(manager.connect_device(devices[0].address, reset_existing=reset_first))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        for contender in devices[:2]:
+            with pytest.raises(BluetoothOperationInProgress):
+                await asyncio.wait_for(manager.connect_device(contender.address, reset_existing=not reset_first), 0.6)
+        assert stop_scan.await_count == 1
+        assert await manager.connect_device(devices[2].address)
+        lock = manager._connection_locks["hci0"]
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert not lock.locked()
+        release.set()
+        assert await manager.connect_device(devices[0].address)
+        assert manager._connection_locks["hci0"] is lock
+    finally:
+        release.set()
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("block_resolution", [False, True])
+async def test_phase27_connection_complete_operation_timeout_releases_ownership(monkeypatch, block_resolution):
+    manager = BluetoothManager()
+    device = BluetoothDevice(None, "/org/bluez/hci0/dev_AA_BB_CC_11_22_33", _device_properties("AA:BB:CC:11:22:33", paired=True, trusted=True, connected=False))
+    manager.devices[device.path] = device
+    real_timeout = asyncio.timeout
+    deadlines = []
+    release = asyncio.Event()
+
+    def bounded_timeout(delay):
+        deadlines.append(delay)
+        return real_timeout(0.4)
+
+    async def blocked(*args):
+        await release.wait()
+        return device
+
+    monkeypatch.setattr("backend.bl_haos.bluetooth.manager.asyncio.timeout", bounded_timeout)
+    monkeypatch.setattr(manager if block_resolution else device, "ensure_device" if block_resolution else "connect", blocked)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(manager.connect_device(device.address), 0.8)
+    assert deadlines == [30.0]
+    assert all(not lock.locked() for lock in manager._connection_locks.values())
+    release.set()
+    assert await manager.connect_device(device.address)
 
 
 @pytest.mark.asyncio
@@ -23,7 +243,7 @@ async def test_connect_defers_busy_operation_without_retry_or_failure_observatio
     path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
     device = BluetoothDevice(None, path, {"Address": address, "Connected": False})
     busy = BluetoothOperationInProgress("Bluetooth connection already in progress")
-    errors = [RuntimeError("stale proxy")] * 3 + [busy] if busy_on_refresh else [busy] * 4
+    errors = [RuntimeError("stale proxy"), busy] if busy_on_refresh else [busy]
     connect = AsyncMock(side_effect=errors)
     monkeypatch.setattr(device, "connect", connect)
     ensure = AsyncMock(return_value=device)
@@ -32,10 +252,13 @@ async def test_connect_defers_busy_operation_without_retry_or_failure_observatio
     monkeypatch.setattr("backend.bl_haos.bluetooth.manager.asyncio.sleep", AsyncMock())
     manager.devices[path] = device
 
+    if busy_on_refresh:
+        with pytest.raises(RuntimeError, match="stale proxy"):
+            await manager.connect_device(address)
     with pytest.raises(BluetoothOperationInProgress):
         await manager.connect_device(address)
 
-    assert connect.await_count == (4 if busy_on_refresh else 1)
+    assert connect.await_count == (2 if busy_on_refresh else 1)
     assert ensure.await_count == (2 if busy_on_refresh else 1)
     assert address.lower() not in health.speakers
     if not busy_on_refresh:
@@ -214,50 +437,41 @@ async def test_manager_installs_a_deny_by_default_agent():
 
 
 @pytest.mark.asyncio
-async def test_connect_refreshes_device_after_stale_bluez_interface():
+async def test_connect_resolves_stale_bluez_interface_on_next_request(monkeypatch):
     mgr = BluetoothManager()
     await mgr.initialize()
 
     address = "AA:BB:CC:11:22:33"
 
-    class FakeDevice:
-        path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
-        adapter_name = "hci0"
-
-        def __init__(self, should_fail):
-            self.should_fail = should_fail
-
-        async def connect(self):
-            if self.should_fail:
-                raise RuntimeError("interface not found on this object: org.bluez.Device1")
-
-    stale = FakeDevice(should_fail=True)
-    refreshed = FakeDevice(should_fail=False)
+    path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
+    stale = BluetoothDevice(None, path, _device_properties(address, paired=True, trusted=True, connected=False))
+    refreshed = BluetoothDevice(None, path, _device_properties(address, paired=True, trusted=True, connected=False))
+    connect = AsyncMock(side_effect=RuntimeError("interface not found on this object: org.bluez.Device1"))
+    monkeypatch.setattr(stale, "connect", connect)
     mgr.devices[stale.path] = stale
-
-    async def refresh(_address):
-        return refreshed
-
-    mgr.ensure_device = refresh
-
+    with pytest.raises(RuntimeError, match="interface not found"):
+        await mgr.connect_device(address)
+    assert stale.detached and stale.paired and stale.trusted
+    connect.assert_awaited_once()
+    interface = SimpleNamespace(call_get_all=AsyncMock(return_value=refreshed._properties))
+    mgr.bus = SimpleNamespace(introspect=AsyncMock(), get_proxy_object=lambda *args: SimpleNamespace(get_interface=lambda name: interface))
+    mgr.adapters["/org/bluez/hci0"] = SimpleNamespace(path="/org/bluez/hci0")
+    monkeypatch.setattr(mgr, "stop_scan", AsyncMock())
+    monkeypatch.setattr(BluetoothDevice, "connect", AsyncMock())
     assert await mgr.connect_device(address) is True
+    assert not mgr.get_device_by_address(address).detached
+    interface.call_get_all.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_stale_refresh_failure_is_classified_once():
+async def test_stale_refresh_failure_is_classified_once(monkeypatch):
     health = HealthRegistry()
     mgr = BluetoothManager(health_registry=health)
     await mgr.initialize()
     address = "AA:BB:CC:11:22:33"
 
-    class StaleDevice:
-        path = "/org/bluez/hci0/dev_AA_BB_CC_11_22_33"
-        adapter_name = "hci0"
-
-        async def connect(self):
-            raise RuntimeError("stale Device1 proxy")
-
-    stale = StaleDevice()
+    stale = BluetoothDevice(None, "/org/bluez/hci0/dev_AA_BB_CC_11_22_33", _device_properties(address, paired=True, trusted=True, connected=False))
+    monkeypatch.setattr(stale, "connect", AsyncMock(side_effect=RuntimeError("stale Device1 proxy")))
     mgr.devices[stale.path] = stale
     refresh_calls = 0
     ensure_calls = 0
@@ -275,7 +489,9 @@ async def test_stale_refresh_failure_is_classified_once():
     with pytest.raises(RuntimeError, match="stale Device1 proxy"):
         await mgr.connect_device(address)
 
-    assert refresh_calls == 1
+    assert ensure_calls == 1
+    assert refresh_calls == 0
+    assert stale.detached and mgr.devices[stale.path] is stale
     speaker = health.snapshot().speakers[address.lower()]
     assert speaker.state == SpeakerState.UNAVAILABLE
     assert speaker.failure.classification == FailureClass.STALE_BLUEZ_OBJECT

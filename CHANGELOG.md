@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.69
+
+- Add Open Media Catalog navigation to the Home Assistant-owned audio/provider-playlist panel with native one-speaker opaque-reference playback and HA-owned authentication/resolution.
+- Local integrated release only, undeployed; actual HA/provider, session-expiry and physical-playback acceptance remain pending. Existing 0.2.68 reconnect fixes are retained.
+
+## 0.2.68
+
+- Reduce reconnect pressure with one bounded attempt per scheduled retry, 10-120 second exponential delays and a 300-second cooldown after eight failures; busy operations and presence no longer erase pacing.
+- Share connection ownership between automatic and operator requests per actual adapter, preserving pairing and removing automatic link resets. Hardware/HAOS soak remains pending authorized deployment; local tests do not prove the live fault is fixed.
+
 ## 0.2.67
 
 - Add opt-in, host-resident incident recording: aggregate backend warning patterns with speaker, audio-health, and native-client observations every five seconds, retaining bounded local evidence for 30 UTC calendar days without notifications or recovery actions.

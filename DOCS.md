@@ -1,5 +1,48 @@
 # Home Assistant Add-on: BL-HAOS (Bluetooth Audio Adapter)
 
+## Phases 24-26 Local Media, Playlists, and Queue Behavior
+
+The integrated 0.2.69 release, including the earlier reconnect fix, is undeployed.
+Local Core 2026.10.3 tests do not prove real provider layout, session expiry or
+physical audio. Deployment and further restarts require separate authorization;
+the accepted temporary probe was removed after its one permitted restart.
+
+After authorized installation choose **Open Media Catalog** beside Home Assistant
+Native integration in Ingress. The link only opens HA's `/bl-haos-media` panel.
+**Native Browse Media** is also available on the native speaker entity. In
+**Play on**, select exactly one connected BL-HAOS speaker before browsing or
+starting playback. HA owns provider authentication and reference resolution.
+For a saved custom playlist, Home Assistant resolves every saved reference
+before replacing the current queue. The bridge owns one in-memory queue per
+speaker; custom items keep their saved order and provider shortcuts remain one
+atomic queue item. The resolved playable request is transient between HA and
+the bridge, not a catalog proxy request.
+
+The authenticated Library panel launches saved playlists, while the Ingress
+SpeakerCard and capability-enabled native media-player entity control the same
+bridge queue. Queue start, Next, and Previous are each sent once. A lost
+acknowledgement is ambiguous, so check the current queue before another explicit
+action. Failed items are retained until the user explicitly retries or skips;
+there is no automatic skip or retry. Stop, replacement, and speaker loss clear
+the old session. Queues do not resume after an add-on restart.
+
+Resolved playback URLs are never sent to the browser or written to the playlist
+library. Local/mock verification does not establish production or audible
+playback acceptance; this candidate remains undeployed and release/deployment
+require separate authorization.
+
+The panel does not store browser/add-on HA/provider credentials, use direct
+provider APIs, or accept raw URLs. Existing native direct-URL support is not a
+catalog fallback. The local Phase 25 candidate stores custom playlists as ordered
+Home Assistant media references and one-reference provider-playlist shortcuts;
+provider tracks are not copied. Explicit availability checks browse the exact HA
+media reference only; they do not resolve or play media and never rewrite saved
+IDs. Phase 26 queue behavior has local SIL/mock evidence only, not production
+acceptance. T-24-15 remains OPEN/HIGH and T-24-16 remains OPEN/MEDIUM. Release
+and deployment are not approved. Root TESTING.md separates local SIL from
+authorized HAOS acceptance. Retired Docker E2E and fixture screenshots are not
+host proof.
+
 BL-HAOS turns your Home Assistant OS device into a Bluetooth audio transmitter. It enables streaming Home Assistant TTS announcements, local music files, web radio, and Music Assistant directly to any paired Bluetooth speakers with low latency, audiophile-grade codecs, and rock-solid background reconnection.
 
 ---
@@ -72,19 +115,35 @@ The bridge deliberately does not fight for a link:
   that returns inside it is a *flap*: nothing is reconnected and the event is counted.
 - A speaker that drops **6 times in 2 minutes** gets a **60-second cooldown** instead
   of a reconnect loop.
-- A link that has just come up is left alone for **15 seconds**, including after
-  successful stale-link recovery. Neither scheduled retries nor presence
-  advertisements can start an automatic retry during this settle window.
-- If BlueZ reports a connection already in progress, the bridge defers the
-  automatic attempt rather than retrying the busy operation or treating it as a
-  stale-device failure. Repeated connection failures open a circuit breaker for
-  **10 seconds**, even when stale-link recovery also fails, before retries resume.
-- **Connect** (the button, and the recovery after a failed play) can reset a stale
-  A2DP transport on purpose. Normal automatic reconnect does not tear down a link
-  that is already connected. After repeated BlueZ stale-link failures, one recovery
-  attempt refreshes/resets the link while preserving the existing pairing and trust;
-  it does not remove and re-pair the speaker. If BlueZ has actually lost the pairing,
-  use **Pair & Trust** with the speaker in pairing mode.
+- A link that has just come up is left alone for **15 seconds**. Scheduled retries
+  cannot start during this settle window.
+- Each scheduled retry makes **one connection attempt**, bounded to **30 seconds**
+  for the complete manager operation, including device resolution. Automatic and
+  operator connects share ownership of the actual adapter; a competing request is
+  deferred as busy rather than queued. Only an `AlreadyConnected` response may
+  additionally activate the A2DP profile once; busy and other errors do not.
+- After the grace window, retries start with a **10-second delay**, doubling after
+  each failure (20, 40, 80, then 120 seconds). Up to **15% non-negative jitter**
+  lengthens the delay, within the final **120-second cap**. Busy operations retain
+  failure history and wait at least the current backoff or 15 seconds, whichever is
+  longer. Neither busy nor RSSI/presence advertisements shorten a pending deadline
+  or bypass flap cooldowns.
+- **Eight failures** open the circuit breaker for **300 seconds**. Expiry allows
+  one half-open scheduled attempt without clearing failure history; another failure
+  reopens it for 300 seconds. Only a successful connection or an authoritative
+  connected-device event clears failure pacing. Retry history is process-local.
+- Automatic reconnect never disconnects/resets an existing link or removes pairing.
+  It preserves the known speaker record and bond after failure; a specifically
+  stale BlueZ object is resolved on a later request, not retried immediately.
+  **Connect** (the button, and existing recovery after a failed play) still requests
+  `reset_existing=True` under the same manager ownership and timeout, deliberately
+  disconnecting/reconnecting a live link to reset a stale A2DP transport. If BlueZ
+  has actually lost the pairing, use **Pair & Trust** with the speaker in pairing mode.
+
+Hardware/HAOS reconnect soak is **pending authorized deployment**. Local fake-BlueZ
+and SIL tests verify bounded calls and pacing, not that the observed live fault is
+fixed. Power loss/return, busy BlueZ, repeated failures, operator reset, pairing
+retention and playback stability still require that separate hardware validation.
 
 Every one of those decisions is observable, so a software flap can be told from a
 radio problem:
@@ -160,6 +219,14 @@ the difference diagnosable.
 - Use standard Home Assistant Lovelace media cards, automation actions (`media_player.play_media`, `tts.speak`), or Music Assistant to send audio directly to your speaker.
 - Volume adjustments in Home Assistant are written straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The dashboard's slider reads the same value, so it follows Home Assistant instead of keeping whatever it last set itself; see [Volume](#volume).
 
+### Saved Playlists and Queue Playback
+
+- Start a saved custom playlist or provider shortcut from the authenticated **BL-HAOS Media** Library panel after selecting one connected speaker. HA resolves all saved references before one queue start; a provider shortcut stays one atomic item.
+- The Ingress SpeakerCard and native Home Assistant media-player controls operate on the same per-speaker bridge queue. Native queue controls require the bridge to advertise queue version 1; older bridges keep their standard single-item playback behavior.
+- Queue start, Next, and Previous are each sent once and are not automatically retried. After an uncertain response, check the selected speaker's current queue before another explicit action. Playback failure retains the current item; Play is an explicit retry and Next is an explicit skip.
+- Queue state is held in memory and is cleared by Stop, replacement, or speaker loss. Queues do not resume after an add-on restart. Resolved playback URLs are transient between Home Assistant and the bridge; they never enter the browser or playlist library.
+- Local SIL and mock verification do not establish live provider access, audible playback, or production acceptance. Deployment and release remain separately gated.
+
 ### Volume
 - Home Assistant, the dashboard and the speaker share one volume level: `media_player.set_volume` and the dashboard slider both write the speaker's A2DP sink, and both read back the level the audio server reports for it. A change on either surface moves the other.
 - The speaker owns that level too. AVRCP absolute volume moves the sink when you press the speaker's own buttons or use its own app, so the bridge reads it back: once when the speaker connects and every 30 seconds after that. A change made on the speaker reaches Home Assistant and the dashboard within one poll interval instead of staying invisible.
@@ -222,6 +289,15 @@ ha core logs > /config/bl-haos-integration.log
 ```
 
 The add-on log identifies BlueZ and PipeWire state; the Home Assistant log identifies native integration commands and entity state transitions. Integration 0.2.19 and later also traces named integration functions using the same call-span format, excluding the logger plumbing itself to prevent recursive logging. Remove the temporary debug logger and restore the add-on's `info` level after collecting evidence. Existing operational messages can still contain media URLs or device identifiers: redact access tokens, media URLs, and complete Bluetooth addresses before sharing logs.
+
+Native playback command and execution logs omit resolved URLs. Playback errors
+use controlled messages rather than raw provider or process exceptions. Child
+stderr is still drained, but only an error/diagnostic category is logged, not
+its contents; background failures report an exception type. Metadata logs omit
+titles because fallback titles can derive from the URL path. Operation, speaker,
+volume, duration, and codec/rate/buffer diagnostics remain available. The exact
+validated URL is still passed internally as one decoder argument. This boundary
+does not globally sanitize third-party or unrelated operational logging.
 
 ### Persistent incident recording
 

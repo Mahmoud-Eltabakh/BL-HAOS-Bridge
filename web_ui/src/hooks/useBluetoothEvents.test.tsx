@@ -128,4 +128,56 @@ describe('useBluetoothEvents playback updates', () => {
     expect(result.current.devices).toHaveLength(1);
     expect(result.current.devices[0].playback?.volume).toBe(0.7);
   });
+
+  it('sanitizes queue snapshots from playback events before exposing them to the UI', async () => {
+    const { result } = renderHook(() => useBluetoothEvents());
+    const socket = FakeWebSocket.instances[0];
+    act(() => { socket.onopen?.(); });
+    await waitFor(() => expect(result.current.devices).toHaveLength(1));
+
+    act(() => {
+      socket.emit('playback_updated', {
+        address: 'aa:bb:cc:dd:ee:01',
+        playback: {
+          state: 'playing',
+          volume: 0.25,
+          queue: {
+            status: 'playing', playlist: 'Saved queue', title: 'Current item', artist: 'Artist',
+            position: 4, duration: 20, position_updated_at: 1_800_000_000,
+            index: 1, count: 2, shuffle: true, repeat: 'all', error: null,
+            url: 'https://private.invalid/item?token=sentinel',
+            media_source_id: 'media-source://private/item',
+          },
+        },
+      });
+    });
+
+    await waitFor(() => expect(result.current.devices[0].playback?.queue?.playlist).toBe('Saved queue'));
+    expect(result.current.devices[0].playback?.queue).toEqual({
+      status: 'playing', playlist: 'Saved queue', title: 'Current item', artist: 'Artist',
+      position: 4, duration: 20, position_updated_at: 1_800_000_000,
+      index: 1, count: 2, shuffle: true, repeat: 'all', error: null,
+    });
+    expect(JSON.stringify(result.current.devices[0].playback)).not.toContain('private.invalid');
+    expect(JSON.stringify(result.current.devices[0].playback)).not.toContain('sentinel');
+    expect(JSON.stringify(result.current.devices[0].playback)).not.toContain('media-source://');
+  });
+
+  it('preserves unrelated cached speaker properties when a device event is partial', async () => {
+    const cachedSpeaker = { ...speaker, local_marker: 'keep-me' } as DeviceInfo;
+    vi.mocked(apiClient.getDevices).mockResolvedValue([cachedSpeaker]);
+    const { result } = renderHook(() => useBluetoothEvents());
+    const localMarker = () => (result.current.devices[0] as DeviceInfo & { local_marker?: string }).local_marker;
+    const socket = FakeWebSocket.instances[0];
+    act(() => { socket.onopen?.(); });
+    await waitFor(() => expect(localMarker()).toBe('keep-me'));
+
+    act(() => {
+      socket.emit('device_updated', { address: speaker.address, rssi: -55, connected: true });
+    });
+
+    await waitFor(() => expect(result.current.devices[0].rssi).toBe(-55));
+    expect(localMarker()).toBe('keep-me');
+    expect(result.current.devices[0].playback?.volume).toBe(0.7);
+  });
 });

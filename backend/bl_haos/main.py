@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .api.routes import native_speaker_record, playback_envelope
 from .api.routes import router as api_router
@@ -23,6 +24,7 @@ from .constants import (
     APP_DESCRIPTION,
     APP_SLUG,
     APP_TITLE,
+    API_PREFIX,
     BEARER_PREFIX,
     COMPONENT_BLUETOOTH,
     COMPONENT_HEALTH,
@@ -64,6 +66,74 @@ logging.basicConfig(
     format=LOG_FORMAT,
 )
 logger = logging.getLogger("bl_haos.main")
+MAX_NATIVE_COMMAND_BODY_BYTES = 2 * 1024 * 1024
+
+
+class NativeCommandBodyLimitMiddleware:
+    """Bound native command bodies before FastAPI parses their JSON payload."""
+
+    @trace_call
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    @trace_call
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope.get("path", "")
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or not path.startswith(f"{API_PREFIX}/native/speakers/")
+            or not path.endswith("/command")
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", ()))
+        content_length = headers.get(b"content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > MAX_NATIVE_COMMAND_BODY_BYTES:
+                    await self._reject(send)
+                    return
+            except ValueError:
+                pass
+
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            if message["type"] != "http.request":
+                continue
+            chunk = message.get("body", b"")
+            if len(body) + len(chunk) > MAX_NATIVE_COMMAND_BODY_BYTES:
+                await self._reject(send)
+                return
+            body.extend(chunk)
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        @trace_call
+        async def replay_receive() -> Message:
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": bytes(body), "more_body": False}
+
+        await self.app(scope, replay_receive, send)
+
+    @staticmethod
+    @trace_call
+    async def _reject(send: Send) -> None:
+        await send({
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [(b"content-length", b"0")],
+        })
+        await send({"type": "http.response.body", "body": b""})
 
 
 @trace_call
@@ -128,6 +198,22 @@ def _spawn(coro, description: str) -> asyncio.Task | None:
 
     task.add_done_callback(_on_done)
     return task
+
+
+@trace_call
+def _playback_updated_payload(bridge, device) -> dict:
+    return {
+        "address": device.address,
+        "playback": playback_envelope(bridge, device.address),
+    }
+
+
+@trace_call
+def _invalidate_and_schedule_playback_stop(bridge, address: str) -> None:
+    invalidate = getattr(bridge, "_invalidate_playback_session", None)
+    if callable(invalidate):
+        invalidate(address)
+    _spawn(bridge.execute(address, COMMAND_STOP), f"stop playback for {address}")
 
 
 @asynccontextmanager
@@ -231,12 +317,7 @@ async def lifespan(app: FastAPI):
                 return
             await ws_manager.broadcast(
                 EVENT_PLAYBACK_UPDATED,
-                {
-                    # The device's own address, exactly as its record carries it: the
-                    # dashboard matches this event against the records it already has.
-                    "address": device.address,
-                    "playback": playback_envelope(app.state.ha_bridge, device.address),
-                },
+                _playback_updated_payload(app.state.ha_bridge, device),
             )
 
         ha_bridge = MediaPlayerBridge(config_store=config_store, state_callback=_publish_playback_state, health_registry=health)
@@ -265,7 +346,7 @@ async def lifespan(app: FastAPI):
                 if is_audio and not is_conn and (is_trust or is_paired):
                     # A speaker we may be streaming to just went away; end the stream
                     # instead of letting the decoder write into a dead sink.
-                    _spawn(ha_bridge.execute(data.address, COMMAND_STOP), f"stop playback for {data.address}")
+                    _invalidate_and_schedule_playback_stop(ha_bridge, data.address)
                     ha_bridge.unregister_keepalive(data.address)
                 if is_audio and is_trust:
                     # Publishing to Home Assistant and arming auto-reconnect are both
@@ -339,6 +420,7 @@ app = FastAPI(
     lifespan=lifespan,
     root_path=ROOT_PATH,
 )
+app.add_middleware(NativeCommandBodyLimitMiddleware)
 
 
 @app.exception_handler(RequestValidationError)

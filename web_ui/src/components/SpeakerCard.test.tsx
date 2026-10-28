@@ -10,6 +10,7 @@ vi.mock('../api/client', async (importOriginal) => {
     apiClient: {
       ...original.apiClient,
       setDeviceVolume: vi.fn(),
+      commandQueue: vi.fn(),
       connectDevice: vi.fn(),
       disconnectDevice: vi.fn(),
       removeDevice: vi.fn(),
@@ -35,6 +36,7 @@ const connectedDevice: DeviceInfo = {
 describe('SpeakerCard', () => {
   beforeEach(() => {
     vi.mocked(apiClient.setDeviceVolume).mockResolvedValue(undefined);
+    vi.mocked(apiClient.commandQueue).mockResolvedValue({ status: 'ok' });
   });
 
   afterEach(() => {
@@ -45,6 +47,105 @@ describe('SpeakerCard', () => {
     render(<SpeakerCard device={connectedDevice} onSettingsClick={() => {}} onRefresh={() => {}} />);
     expect(screen.getByText('Kitchen Speaker')).toBeInTheDocument();
     expect(screen.getByText('Connected')).toBeInTheDocument();
+  });
+
+  it('renders the confirmed queue snapshot and sends Next through ingress', async () => {
+    const device = {
+      ...connectedDevice,
+      playback: {
+        state: 'playing', volume: 0.7,
+        queue: {
+          status: 'playing' as const, playlist: 'Evening mix', title: 'Current track',
+          position: 8, duration: 90, index: 1, count: 2, shuffle: false, repeat: 'off' as const,
+          error: null, url: 'https://private.invalid/item?token=sentinel',
+        },
+      },
+    };
+    vi.mocked(apiClient.commandQueue).mockResolvedValue({ status: 'ok' });
+    render(<SpeakerCard device={device} onSettingsClick={() => {}} onRefresh={() => {}} />);
+
+    expect(screen.getByText('Evening mix')).toBeVisible();
+    expect(screen.getByText('Current track')).toBeVisible();
+    expect(screen.getByText('Item 1 of 2')).toBeVisible();
+    expect(document.body).not.toHaveTextContent('private.invalid');
+    expect(document.body).not.toHaveTextContent('sentinel');
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+    await waitFor(() => expect(apiClient.commandQueue).toHaveBeenCalledWith(
+      'aa:bb:cc:dd:ee:01', { queue_version: 1, operation: 'next' },
+    ));
+  });
+
+  it('queue transport and mode controls map to one confirmed ingress command', async () => {
+    const device = {
+      ...connectedDevice,
+      playback: {
+        state: 'playing', volume: 0.7,
+        queue: { status: 'playing' as const, playlist: 'Evening mix', title: 'Current track', index: 1, count: 2, shuffle: false, repeat: 'off' as const },
+      },
+    };
+    render(<SpeakerCard device={device} onSettingsClick={() => {}} onRefresh={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+    await waitFor(() => expect(apiClient.commandQueue).toHaveBeenLastCalledWith('aa:bb:cc:dd:ee:01', { queue_version: 1, operation: 'previous' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    await waitFor(() => expect(apiClient.commandQueue).toHaveBeenLastCalledWith('aa:bb:cc:dd:ee:01', { queue_version: 1, operation: 'pause' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(apiClient.commandQueue).toHaveBeenLastCalledWith('aa:bb:cc:dd:ee:01', { queue_version: 1, operation: 'stop' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Shuffle' }));
+    await waitFor(() => expect(apiClient.commandQueue).toHaveBeenLastCalledWith('aa:bb:cc:dd:ee:01', {
+      queue_version: 1, operation: 'set_shuffle', shuffle: true,
+    }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Repeat' }), { target: { value: 'all' } });
+    await waitFor(() => expect(apiClient.commandQueue).toHaveBeenLastCalledWith('aa:bb:cc:dd:ee:01', {
+      queue_version: 1, operation: 'set_repeat', repeat: 'all',
+    }));
+
+    expect(screen.getByText('Item 1 of 2')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Shuffle' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps the last queue snapshot visible while a command is pending and after failure', async () => {
+    let rejectCommand!: (error: Error) => void;
+    vi.mocked(apiClient.commandQueue).mockReturnValueOnce(new Promise((_, reject) => { rejectCommand = reject; }));
+    const device = {
+      ...connectedDevice,
+      playback: {
+        state: 'playing', volume: 0.7,
+        queue: { status: 'playing' as const, playlist: 'Evening mix', title: 'Current track', index: 1, count: 2, shuffle: false, repeat: 'off' as const },
+      },
+    };
+    render(<SpeakerCard device={device} onSettingsClick={() => {}} onRefresh={() => {}} />);
+    const next = screen.getByRole('button', { name: 'Next' });
+    fireEvent.click(next);
+
+    expect(screen.getByRole('status')).toHaveTextContent('Sending Next');
+    expect(next).toBeDisabled();
+    expect(screen.getByText('Item 1 of 2')).toBeVisible();
+    rejectCommand(new Error('https://private.invalid/item?token=sentinel'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not confirm the queue command.');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('private.invalid');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('sentinel');
+    expect(screen.getByText('Item 1 of 2')).toBeVisible();
+    expect(apiClient.commandQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('queue controls disable Next at the final repeat-off item and transport when disconnected', () => {
+    const finalQueueDevice = {
+      ...connectedDevice,
+      playback: {
+        state: 'playing', volume: 0.7,
+        queue: { status: 'playing' as const, playlist: 'Evening mix', title: 'Last track', index: 2, count: 2, shuffle: false, repeat: 'off' as const },
+      },
+    };
+    const { rerender } = render(<SpeakerCard device={finalQueueDevice} onSettingsClick={() => {}} onRefresh={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+
+    rerender(<SpeakerCard device={{ ...finalQueueDevice, connected: false }} onSettingsClick={() => {}} onRefresh={() => {}} />);
+    expect(screen.getByText('Speaker disconnected. The queue was stopped.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
   });
 
   it('keeps a switched-off speaker visible with an offline badge', () => {

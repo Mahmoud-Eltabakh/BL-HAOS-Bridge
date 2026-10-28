@@ -80,6 +80,7 @@ def test_native_snapshot_filters_trusted_sinks(monkeypatch):
 
     assert payload["bridge_id"] == NATIVE_BRIDGE_ID
     assert payload["version"] == NATIVE_BRIDGE_VERSION
+    assert payload["queue_version"] == 1
     # Identity carries a digest of the credential, never the credential.
     from backend.bl_haos.health import token_fingerprint
 
@@ -148,6 +149,7 @@ def test_native_snapshot_publishes_a_trusted_speaker(monkeypatch):
     record = snapshot.json()["speakers"]["ec:81:93:53:a9:16"]
     assert record["trusted"] is True
     assert record["connected"] is True
+    assert record["queue_version"] == 1
 
 
 def test_native_command_returns_bridge_record(monkeypatch):
@@ -175,3 +177,138 @@ def test_native_command_returns_bridge_record(monkeypatch):
     assert acknowledged.status_code == 200
     assert acknowledged.json()["address"] == "aa:bb:cc:dd:ee:ff"
     execute.assert_awaited_once_with("aa:bb:cc:dd:ee:ff", "play", volume=None, url=None)
+
+
+def test_native_snapshot_and_ingress_event_share_sanitized_queue_envelope(monkeypatch, caplog):
+    from types import SimpleNamespace
+
+    from backend.bl_haos.api.routes import native_speaker_record
+    from backend.bl_haos.main import _playback_updated_payload
+
+    url = "https://private.example.test/track.mp3?token=queue-event-secret"
+    media_source_id = "media-source://private/library/item"
+    raw_exception = "provider failed with https://private.example.test/?token=queue-event-secret"
+
+    class QueueBridge:
+        def get_state(self, _address):
+            return "playing"
+
+        def get_volume(self, _address):
+            return 0.4
+
+        def get_timeline(self, _address):
+            return {
+                "position": 12.0,
+                "duration": 90.0,
+                "position_updated_at": 10.0,
+                "title": url,
+                "artist": "Artist",
+                "url": url,
+                "media_source_id": media_source_id,
+                "raw_exception": raw_exception,
+            }
+
+        def get_queue(self, _address):
+            return {
+                "status": "playing",
+                "playlist": "Road set",
+                "title": "Track title",
+                "artist": "Artist",
+                "position": 12.0,
+                "duration": 90.0,
+                "position_updated_at": 10.0,
+                "index": 2,
+                "count": 4,
+                "shuffle": True,
+                "repeat": "all",
+                "error": raw_exception,
+                "url": url,
+                "media_source_id": media_source_id,
+                "generation": 123,
+                "raw_exception": raw_exception,
+                "native_token": "queue-native-bearer-sentinel",
+            }
+
+    address = "aa:bb:cc:dd:ee:71"
+    bridge = QueueBridge()
+    speaker = DeviceInfo(
+        path="/speaker",
+        adapter_path="/adapter",
+        address=address,
+        trusted=True,
+        is_audio_sink=True,
+        connected=True,
+    )
+    source = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(ha_bridge=bridge)))
+    native_record = native_speaker_record(source, speaker)
+    event = _playback_updated_payload(bridge, speaker)
+    expected_queue = {
+        "status", "playlist", "title", "artist", "position", "duration",
+        "position_updated_at", "index", "count", "shuffle", "repeat", "error",
+    }
+
+    assert native_record["playback"] == event["playback"]
+    assert event["address"] == address
+    assert set(event["playback"]["queue"]) == expected_queue
+    assert native_record["queue_version"] == 1
+    assert event["playback"]["queue"]["error"] is None
+    assert all(value not in str(native_record) + str(event) for value in (url, media_source_id, raw_exception))
+    assert "queue-native-bearer-sentinel" not in str(native_record) + str(event)
+    assert "123" not in str(native_record) + str(event)
+    assert "queue-event-secret" not in caplog.text
+
+
+def test_legacy_bridge_snapshot_does_not_infer_queue_support():
+    from types import SimpleNamespace
+
+    from backend.bl_haos.api.routes import native_speaker_record, playback_envelope
+
+    class LegacyBridge:
+        def get_state(self, _address):
+            return "idle"
+
+        def get_volume(self, _address):
+            return None
+
+        def get_timeline(self, _address):
+            return {"position": None, "duration": None, "position_updated_at": None}
+
+    envelope = playback_envelope(LegacyBridge(), "aa:bb:cc:dd:ee:72")
+    speaker = DeviceInfo(
+        path="/legacy",
+        adapter_path="/adapter",
+        address="aa:bb:cc:dd:ee:72",
+        trusted=True,
+        is_audio_sink=True,
+        connected=True,
+    )
+    legacy_record = native_speaker_record(
+        SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(ha_bridge=LegacyBridge()))),
+        speaker,
+    )
+
+    assert "queue" not in envelope
+    assert "queue_version" not in legacy_record
+
+
+def test_disconnect_invalidates_queue_before_stop_is_scheduled(monkeypatch):
+    from backend.bl_haos.main import _invalidate_and_schedule_playback_stop
+
+    events = []
+
+    class Bridge:
+        def _invalidate_playback_session(self, address):
+            events.append(("invalidate", address))
+
+        async def execute(self, address, operation):
+            events.append(("execute", address, operation))
+
+    def schedule(coroutine, description):
+        events.append(("scheduled", description))
+        coroutine.close()
+
+    monkeypatch.setattr("backend.bl_haos.main._spawn", schedule)
+    _invalidate_and_schedule_playback_stop(Bridge(), "aa:bb:cc:dd:ee:73")
+
+    assert events[0] == ("invalidate", "aa:bb:cc:dd:ee:73")
+    assert events[1][0] == "scheduled"

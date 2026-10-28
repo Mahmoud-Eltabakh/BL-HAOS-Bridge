@@ -4,11 +4,13 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import signal
 import subprocess
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -58,6 +60,7 @@ PULSE_SOCKET = PlayerSettings.model_fields["pulse_socket"].default
 PULSE_SERVER = f"unix:{PULSE_SOCKET}"
 # Codec names as the settings schema spells them (``sbc_xq``, ``aptx_hd``, ``ldac``).
 _CODEC_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
+_DISPLAY_URI_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*:\S", re.IGNORECASE)
 
 
 @trace_call
@@ -213,6 +216,31 @@ SINK_WARMUP_BUDGET_SECONDS = 8.0
 # A play that takes longer than this is logged with its phase breakdown, so a
 # slow first play is diagnosable from the add-on log without debug logging.
 SLOW_PLAY_LOG_SECONDS = 1.5
+MAX_QUEUE_ITEMS = 250
+MAX_QUEUE_PAYLOAD_BYTES = 256 * 1024
+QUEUE_ERROR_PLAYBACK_FAILED = "Playback failed"
+
+
+@dataclass(slots=True, eq=False)
+class PlaybackQueueItem:
+    url: str
+    title: str | None = None
+    artist: str | None = None
+
+
+@dataclass(slots=True)
+class PlaybackSession:
+    generation: int
+    playlist: str
+    items: list[PlaybackQueueItem]
+    original_items: list[PlaybackQueueItem] = field(default_factory=list)
+    index: int = 0
+    shuffle: bool = False
+    repeat: str = "off"
+    status: str = "playing"
+    error: str | None = None
+    processes: tuple[asyncio.subprocess.Process, asyncio.subprocess.Process] | None = None
+    history: list[PlaybackQueueItem] = field(default_factory=list)
 
 
 class MediaPlayerError(RuntimeError):
@@ -228,6 +256,7 @@ class MediaPlayerBridge:
         process_factory: Callable[..., Awaitable[asyncio.subprocess.Process]] | None = None,
         state_callback: Callable[[str], Awaitable[None] | None] | None = None,
         health_registry: HealthRegistry | None = None,
+        rng: random.Random | None = None,
     ):
         self.config_store = config_store
         self.player_settings = config_store.settings.player if config_store else PlayerSettings(
@@ -244,6 +273,9 @@ class MediaPlayerBridge:
         # has the graph parsed. Reported when playback starts; see _report_codec.
         self.sink_rates: dict[str, int] = {}
         self.active_processes: dict[str, tuple[asyncio.subprocess.Process, asyncio.subprocess.Process]] = {}
+        self.playback_sessions: dict[str, PlaybackSession] = {}
+        self._playback_generations: dict[str, int] = {}
+        self._rng = rng or random.Random()
         self.last_urls: dict[str, str] = {}
         # Playback clock per speaker so Home Assistant can draw a progress bar.
         # Home Assistant extrapolates from position + position_updated_at, so the
@@ -301,6 +333,228 @@ class MediaPlayerBridge:
         return lock
 
     @trace_call
+    def _next_playback_generation(self, address: str) -> int:
+        generation = self._playback_generations.get(address, 0) + 1
+        self._playback_generations[address] = generation
+        return generation
+
+    @trace_call
+    def _invalidate_playback_session(self, address: str) -> int:
+        normalized = self._address(address)
+        if normalized is None:
+            raise ValueError("Invalid Bluetooth address")
+        address = normalized
+        generation = self._next_playback_generation(address)
+        session = self.playback_sessions.pop(address, None)
+        if session is not None:
+            for item in session.items:
+                item.url = ""
+            session.items.clear()
+            session.history.clear()
+            session.processes = None
+            self.last_urls.pop(address, None)
+        return generation
+
+    @staticmethod
+    @trace_call
+    def _queue_text(value: Any) -> str | None:
+        return MediaPlayerBridge._text(value)
+
+    @trace_call
+    def get_queue(self, address: str) -> dict[str, Any] | None:
+        session = self.playback_sessions.get(self._address(address))
+        if session is None or not session.items:
+            return None
+        item = session.items[session.index]
+        timeline = self.get_timeline(address)
+        return {
+            "status": session.status,
+            "playlist": session.playlist,
+            "title": item.title,
+            "artist": item.artist,
+            "position": timeline["position"],
+            "duration": timeline["duration"],
+            "position_updated_at": timeline["position_updated_at"],
+            "index": session.index + 1,
+            "count": len(session.items),
+            "shuffle": session.shuffle,
+            "repeat": session.repeat,
+            "error": session.error,
+        }
+
+    @trace_call
+    async def start_queue(
+        self, address: str, playlist: str, items: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Replace one speaker's queue only after every item passes validation."""
+        addr = self._address(address)
+        playlist_name = self._queue_text(playlist)
+        if playlist_name is None or not isinstance(items, list) or not 1 <= len(items) <= MAX_QUEUE_ITEMS:
+            raise MediaPlayerError("Queue request is invalid")
+        validated_items: list[PlaybackQueueItem] = []
+        payload_bytes = len(playlist_name.encode("utf-8"))
+        try:
+            for entry in items:
+                if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
+                    raise ValueError
+                url = validate_media_url(entry["url"])
+                title = self._queue_text(entry.get("title"))
+                artist = self._queue_text(entry.get("artist"))
+                payload_bytes += len(url.encode("utf-8"))
+                payload_bytes += len((title or "").encode("utf-8"))
+                payload_bytes += len((artist or "").encode("utf-8"))
+                validated_items.append(PlaybackQueueItem(url=url, title=title, artist=artist))
+        except (TypeError, ValueError):
+            raise MediaPlayerError("Queue request is invalid") from None
+        if payload_bytes > MAX_QUEUE_PAYLOAD_BYTES:
+            raise MediaPlayerError("Queue request is too large")
+
+        generation = self._invalidate_playback_session(addr)
+        async with self._address_lock(addr):
+            if self._playback_generations.get(addr) != generation:
+                return self.get_queue(addr) or {}
+            session = PlaybackSession(
+                generation=generation,
+                playlist=playlist_name,
+                items=validated_items,
+                original_items=list(validated_items),
+            )
+            self.playback_sessions[addr] = session
+            try:
+                await self._play_queue_item_locked(addr, session)
+            except MediaPlayerError:
+                session.status = "failed"
+                session.error = QUEUE_ERROR_PLAYBACK_FAILED
+                self.states[addr] = PLAYBACK_IDLE
+                await self._notify(addr)
+        return self.get_queue(addr) or {}
+
+    @trace_call
+    async def control_queue(
+        self,
+        address: str,
+        operation: str,
+        *,
+        shuffle: bool | None = None,
+        repeat: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Apply one explicit queue control to the speaker's current session."""
+        addr = self._address(address)
+        if operation == COMMAND_STOP:
+            await self.execute(addr, COMMAND_STOP)
+            return None
+        initial = self.playback_sessions.get(addr)
+        if initial is None or not initial.items:
+            raise MediaPlayerError("No active queue")
+        if operation == "set_shuffle" and not isinstance(shuffle, bool):
+            raise MediaPlayerError("Shuffle value is invalid")
+        if operation == "set_repeat" and repeat not in {"off", "one", "all"}:
+            raise MediaPlayerError("Repeat mode is invalid")
+        if operation not in {"play", "pause", "next", "previous", "set_shuffle", "set_repeat"}:
+            raise MediaPlayerError("Unsupported queue operation")
+
+        position = self.get_timeline(addr)["position"]
+        restart_current = operation == "previous" and (
+            initial.index == 0 or (isinstance(position, (int, float)) and position > 3.0)
+        )
+        next_index = initial.index
+        if operation == "next":
+            if initial.index + 1 < len(initial.items):
+                next_index += 1
+            elif initial.repeat == "all":
+                next_index = 0
+            else:
+                raise MediaPlayerError("No next item in queue")
+        elif operation == "previous" and not restart_current:
+            if initial.history:
+                previous = initial.history[-1]
+                next_index = next(index for index, item in enumerate(initial.items) if item is previous)
+            else:
+                next_index = max(0, initial.index - 1)
+
+        replaces_process = operation in {"next", "previous"} or (
+            operation == "play" and initial.status == "failed"
+        )
+        generation = self._next_playback_generation(addr) if replaces_process else None
+        async with self._address_lock(addr):
+            session = self.playback_sessions.get(addr)
+            if session is not initial or not session.items:
+                return self.get_queue(addr)
+            if generation is not None and self._playback_generations.get(addr) != generation:
+                return self.get_queue(addr)
+
+            if operation == "set_shuffle":
+                if shuffle != session.shuffle:
+                    session.shuffle = bool(shuffle)
+                    tail = session.items[session.index + 1:]
+                    if session.shuffle:
+                        self._rng.shuffle(tail)
+                    else:
+                        tail_ids = {id(item) for item in tail}
+                        tail = [item for item in session.original_items if id(item) in tail_ids]
+                    session.items[session.index + 1:] = tail
+                await self._notify(addr)
+                return self.get_queue(addr)
+
+            if operation == "set_repeat":
+                session.repeat = repeat
+                await self._notify(addr)
+                return self.get_queue(addr)
+
+            if operation == "pause":
+                if session.status != "playing" or session.processes is None:
+                    raise MediaPlayerError("No active playback to pause")
+                await self._signal_processes(addr, getattr(signal, "SIGSTOP", signal.SIGTERM))
+                self._pause_timeline(addr)
+                session.status = "paused"
+                self.states[addr] = PLAYBACK_PAUSED
+                await self._notify(addr)
+                return self.get_queue(addr)
+
+            if operation == "play" and session.status == "paused":
+                if session.processes is None or self.active_processes.get(addr) != session.processes:
+                    raise MediaPlayerError("No active playback to resume")
+                await self._signal_processes(addr, getattr(signal, "SIGCONT", signal.SIGTERM))
+                self._resume_timeline(addr)
+                session.status = "playing"
+                self.states[addr] = PLAYBACK_PLAYING
+                await self._notify(addr)
+                return self.get_queue(addr)
+
+            if operation == "play" and session.status == "playing":
+                return self.get_queue(addr)
+            if operation == "play" and session.status != "failed":
+                raise MediaPlayerError("No failed queue item to retry")
+
+            if generation is not None:
+                session.generation = generation
+                session.processes = None
+            await self._stop_processes(addr)
+            if operation == "next":
+                session.history.append(session.items[session.index])
+            elif operation == "previous" and not restart_current and session.history:
+                session.history.pop()
+            if operation in {"next", "previous"}:
+                session.index = next_index
+            session.status = "playing"
+            session.error = None
+            try:
+                await self._play_queue_item_locked(addr, session)
+            except MediaPlayerError:
+                session.status = "failed"
+                session.error = QUEUE_ERROR_PLAYBACK_FAILED
+                self.states[addr] = PLAYBACK_IDLE
+                await self._notify(addr)
+            return self.get_queue(addr)
+
+    @trace_call
+    async def _play_queue_item_locked(self, address: str, session: PlaybackSession) -> None:
+        item = session.items[session.index]
+        session.status = "playing"
+        session.error = None
+        await self._play_url_locked(address, item.url, generation=session.generation, title=item.title)
+
+    @trace_call
     def get_state(self, address: str) -> str:
         return self.states.get(self._address(address), PLAYBACK_IDLE)
 
@@ -336,7 +590,22 @@ class MediaPlayerBridge:
         if not isinstance(value, str):
             return None
         cleaned = value.strip()
-        return cleaned[:TITLE_MAX_LENGTH] or None
+        display_value = cleaned[:TITLE_MAX_LENGTH]
+        decoded = display_value
+        while True:
+            if "://" in decoded:
+                return None
+            next_decoded = unquote(decoded)
+            if next_decoded == decoded:
+                break
+            decoded = next_decoded
+        if (
+            not display_value
+            or _DISPLAY_URI_SCHEME.match(decoded)
+            or any(ord(char) < 32 or 0x7F <= ord(char) <= 0x9F for char in decoded)
+        ):
+            return None
+        return display_value
 
     @staticmethod
     @trace_call
@@ -353,7 +622,7 @@ class MediaPlayerBridge:
             return None
         if "." in name[1:]:
             name = name.rsplit(".", 1)[0]
-        return name.replace("_", " ").strip()[:TITLE_MAX_LENGTH] or None
+        return MediaPlayerBridge._text(name.replace("_", " ").strip())
 
     @staticmethod
     @trace_call
@@ -456,7 +725,7 @@ class MediaPlayerBridge:
                 return
             error = completed.exception()
             if error is not None:
-                logger.warning("Background playback task '%s' failed: %s", description, error)
+                logger.warning("Background playback task '%s' failed (error_type=%s)", description, type(error).__name__)
 
         task.add_done_callback(_on_done)
         return task
@@ -481,29 +750,30 @@ class MediaPlayerBridge:
                     logged += 1
                     decoded = self._decode_output(line).strip()[:256]
                     if "error" in decoded.lower() or "no such" in decoded.lower():
-                        logger.warning("%s stderr [%s]: %s", label, address, decoded)
+                        logger.warning("%s stderr [%s]: child reported an error", label, address)
                     else:
                         logger.debug(
-                            "%s stderr [%s]: %s",
+                            "%s stderr [%s]: child diagnostic received",
                             label,
                             address,
-                            decoded,
                         )
         except Exception:
-            logger.debug("%s stderr drain failed for %s", label, address, exc_info=True)
+            logger.debug("%s stderr drain failed for %s", label, address)
 
     @trace_call
     async def execute(self, address: str, operation: str, *, volume: float | None = None, url: str | None = None) -> None:
         """Execute one validated native operation and publish only confirmed state."""
         address = self._address(address)
         logger.debug(
-            "Executing player operation '%s' for speaker %s (volume=%s, url=%s)",
+            "Executing player operation '%s' for speaker %s (volume=%s)",
             operation,
             address,
             volume,
-            url,
         )
         if operation == COMMAND_PLAY:
+            if address in self.playback_sessions:
+                await self.control_queue(address, "play")
+                return
             if address not in self.active_processes:
                 last_url = self.last_urls.get(address)
                 if not last_url:
@@ -516,6 +786,9 @@ class MediaPlayerBridge:
             self._resume_timeline(address)
             self.states[address] = PLAYBACK_PLAYING
         elif operation == COMMAND_PAUSE:
+            if address in self.playback_sessions:
+                await self.control_queue(address, "pause")
+                return
             if address not in self.active_processes:
                 logger.debug("Pause operation failed for %s: no active playback process", address)
                 raise MediaPlayerError("No active playback to pause")
@@ -525,6 +798,7 @@ class MediaPlayerBridge:
             self.states[address] = PLAYBACK_PAUSED
         elif operation == COMMAND_STOP:
             logger.debug("Stopping playback processes for %s", address)
+            self._invalidate_playback_session(address)
             await self._stop_processes(address)
             self._clear_timeline(address)
             self.states[address] = PLAYBACK_IDLE
@@ -573,17 +847,27 @@ class MediaPlayerBridge:
         try:
             url = validate_media_url(url)
         except ValueError as error:
-            # Keep the validator's bounded, non-reflective reason: "must be a
-            # safe HTTP(S) URL" and "must not target a loopback..." tell the
-            # operator different things.
-            raise MediaPlayerError(str(error)) from error
+            if error.args == ("Media URL must not target a loopback, link-local or multicast address",):
+                raise MediaPlayerError("Media URL must not target a loopback, link-local or multicast address") from None
+            raise MediaPlayerError("Media URL must be a safe HTTP(S) URL") from None
+        generation = self._invalidate_playback_session(addr)
         async with self._address_lock(addr):
-            await self._play_url_locked(addr, url)
+            if self._playback_generations.get(addr) != generation:
+                return
+            try:
+                await self._play_url_locked(addr, url, generation=generation)
+            except MediaPlayerError:
+                raise
+            except Exception:
+                raise MediaPlayerError("Unable to start media playback") from None
 
     @trace_call
-    async def _play_url_locked(self, addr: str, url: str) -> None:
+    async def _play_url_locked(
+        self, addr: str, url: str, *, generation: int | None = None, title: str | None = None
+    ) -> None:
         """Start a stream for one speaker; the caller holds that speaker's lock."""
         await self._cancel_sink_warmup(addr)
+        await self._stop_processes(addr)
         started = time.monotonic()
         logger.debug("Resolving audio sink for %s...", addr)
         sink = await self._sink_resolver(addr)
@@ -614,8 +898,9 @@ class MediaPlayerBridge:
         # explicit codec pin. Both are best-effort: audio does not depend on them.
         await self._report_codec(addr, transport)
         await self._apply_codec_override(addr)
-        await self._stop_processes(addr)
         spawn_started = time.monotonic()
+        decoder = None
+        player = None
         try:
             logger.debug("Spawning ffmpeg decoder and %s player for %s", transport, addr)
             decoder = await self._process_factory(
@@ -632,13 +917,37 @@ class MediaPlayerBridge:
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True, **self._player_environment(transport),
             )
-        except (OSError, subprocess.SubprocessError) as error:
-            logger.debug("Failed to spawn playback processes for %s: %s", addr, error)
-            raise MediaPlayerError("Unable to start media playback") from error
+        except Exception as error:
+            spawned = tuple(process for process in (decoder, player) if process is not None)
+            for process in spawned:
+                if process.returncode is None:
+                    self._continue_process(process)
+                    self._terminate_process(process)
+            await self._async_wait_for_exits(spawned, self.player_settings.command_stop_budget_seconds)
+            remaining = tuple(process for process in spawned if process.returncode is None)
+            if remaining:
+                for process in remaining:
+                    self._kill_process(process)
+                await self._async_wait_for_exits(remaining, self.player_settings.kill_grace_seconds)
+            remaining = tuple(process for process in spawned if process.returncode is None)
+            if remaining:
+                self._track_task(
+                    self._async_reap_processes(addr, remaining),
+                    f"reap partial playback processes {addr}",
+                )
+            logger.debug(
+                "Failed to spawn playback processes for %s (error_type=%s)",
+                addr,
+                type(error).__name__,
+            )
+            raise MediaPlayerError("Unable to start media playback") from None
         self.active_processes[addr] = (decoder, player)
         self.last_urls[addr] = url
-        self._start_timeline(addr, url)
+        self._start_timeline(addr, url, title)
         self.states[addr] = PLAYBACK_PLAYING
+        session = self.playback_sessions.get(addr)
+        if session is not None and generation == session.generation:
+            session.processes = (decoder, player)
         total_seconds = time.monotonic() - started
         logger.debug(
             "Playback started for %s (decoder PID=%s, player PID=%s)",
@@ -653,12 +962,12 @@ class MediaPlayerBridge:
                 "Playback for %s took %.2fs to start (sink %.2fs, spawn %.2fs)",
                 addr, total_seconds, sink_seconds, time.monotonic() - spawn_started,
             )
-        self._track_task(self._async_probe_duration(addr, url), f"duration probe {addr}")
+        self._track_task(self._async_probe_duration(addr, url, generation), f"duration probe {addr}")
         self._track_task(self._drain_process_output(decoder, "ffmpeg", addr), f"ffmpeg stderr drain {addr}")
         self._track_task(self._drain_process_output(player, transport, addr), f"{transport} stderr drain {addr}")
         if hasattr(decoder.stdout, "read") and hasattr(player.stdin, "write"):
             self._track_task(self._pipe_audio(decoder, player), f"pcm pipe {addr}")
-        self._track_task(self._watch_processes(addr, decoder, player), f"playback watch {addr}")
+        self._track_task(self._watch_processes(addr, decoder, player, generation), f"playback watch {addr}")
         await self._notify(addr)
 
     @trace_call
@@ -678,6 +987,7 @@ class MediaPlayerBridge:
         """Stop nudging a speaker that is no longer connected/trusted."""
         addr = self._address(address)
         self.keepalive_addresses.discard(addr)
+        self._invalidate_playback_session(addr)
         pending = self._warmup_tasks.pop(addr, None)
         if pending and not pending.done():
             pending.cancel()
@@ -839,7 +1149,9 @@ class MediaPlayerBridge:
         return True
 
     @trace_call
-    async def _async_probe_duration(self, address: str, url: str) -> None:
+    async def _async_probe_duration(
+        self, address: str, url: str, generation: int | None = None
+    ) -> None:
         """Resolve duration and display metadata in the background.
 
         Playback must never wait for this: the title from the URL is already
@@ -864,6 +1176,8 @@ class MediaPlayerBridge:
             await self._async_wait_for_exit(process, KILL_GRACE_SECONDS)
             return
         metadata = self._parse_probe_metadata(self._decode_output(stdout))
+        if generation is not None and self._playback_generations.get(address) != generation:
+            return
         entry = self.timelines.get(address)
         if entry is None or entry.get("url") != url:
             # Playback already moved on; this metadata belongs to a dead stream.
@@ -876,10 +1190,9 @@ class MediaPlayerBridge:
             entry["artist"] = metadata["artist"][:TITLE_MAX_LENGTH]
         if any(metadata.values()):
             logger.debug(
-                "Resolved media metadata for %s: duration=%s title=%s",
+                "Resolved media metadata for %s: duration=%s",
                 address,
                 metadata["duration"],
-                entry.get("title"),
             )
             await self._notify(address)
 
@@ -1470,25 +1783,93 @@ class MediaPlayerBridge:
         return True
 
     @trace_call
-    async def _watch_processes(self, address: str, decoder: asyncio.subprocess.Process, player: asyncio.subprocess.Process) -> None:
+    async def _watch_processes(
+        self,
+        address: str,
+        decoder: asyncio.subprocess.Process,
+        player: asyncio.subprocess.Process,
+        generation: int | None = None,
+    ) -> None:
         await asyncio.gather(decoder.wait(), player.wait(), return_exceptions=True)
-        if self.active_processes.get(address) == (decoder, player):
-            is_abnormal = (player.returncode not in (0, None)) or (decoder.returncode not in (0, None, -15, 255))
-            log_fn = logger.warning if is_abnormal else logger.debug
-            log_fn(
-                "Playback processes ended for %s (decoder code: %s, player code: %s)",
-                address,
-                decoder.returncode,
-                player.returncode,
-            )
-            self.active_processes.pop(address, None)
-            self.states[address] = PLAYBACK_IDLE
-            self._clear_timeline(address)
-            await self._notify(address)
+        processes = (decoder, player)
+        if self.active_processes.get(address) != processes:
+            return
+        if generation is not None and self._playback_generations.get(address) != generation:
+            return
+        session = self.playback_sessions.get(address)
+        if session is not None:
+            if generation is None or session.generation != generation or session.processes != processes:
+                return
+            async with self._address_lock(address):
+                if (
+                    self._playback_generations.get(address) != generation
+                    or self.playback_sessions.get(address) is not session
+                    or session.generation != generation
+                    or session.processes != processes
+                    or self.active_processes.get(address) != processes
+                ):
+                    return
+                self.active_processes.pop(address, None)
+                session.processes = None
+                natural_success = decoder.returncode == 0 and player.returncode == 0
+                log_fn = logger.debug if natural_success else logger.warning
+                log_fn(
+                    "Playback processes ended for %s (decoder code: %s, player code: %s)",
+                    address,
+                    decoder.returncode,
+                    player.returncode,
+                )
+                if not natural_success:
+                    session.status = "failed"
+                    session.error = QUEUE_ERROR_PLAYBACK_FAILED
+                    self._pause_timeline(address)
+                    self.states[address] = PLAYBACK_IDLE
+                    await self._notify(address)
+                    return
+                if session.repeat == "one":
+                    pass
+                elif session.index + 1 < len(session.items):
+                    session.history.append(session.items[session.index])
+                    session.index += 1
+                elif session.repeat == "all":
+                    session.history.append(session.items[session.index])
+                    session.index = 0
+                else:
+                    session.status = "completed"
+                    for item in session.items:
+                        item.url = ""
+                    self._pause_timeline(address)
+                    self.states[address] = PLAYBACK_IDLE
+                    await self._notify(address)
+                    return
+                try:
+                    await self._play_queue_item_locked(address, session)
+                except MediaPlayerError:
+                    session.status = "failed"
+                    session.error = QUEUE_ERROR_PLAYBACK_FAILED
+                    self._pause_timeline(address)
+                    self.states[address] = PLAYBACK_IDLE
+                    await self._notify(address)
+            return
+
+        self.active_processes.pop(address, None)
+        is_abnormal = decoder.returncode != 0 or player.returncode != 0
+        log_fn = logger.warning if is_abnormal else logger.debug
+        log_fn(
+            "Playback processes ended for %s (decoder code: %s, player code: %s)",
+            address,
+            decoder.returncode,
+            player.returncode,
+        )
+        self.states[address] = PLAYBACK_IDLE
+        self._clear_timeline(address)
+        await self._notify(address)
 
     @trace_call
     async def async_shutdown(self) -> None:
         logger.debug("Shutting down MediaPlayerBridge...")
+        for address in tuple(self.playback_sessions):
+            self._invalidate_playback_session(address)
         await self.stop_keepalive()
         await self.stop_volume_watch()
         for pending in tuple(self._warmup_tasks.values()):

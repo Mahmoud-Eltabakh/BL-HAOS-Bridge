@@ -3,15 +3,23 @@
 import asyncio
 import hmac
 import logging
+import math
 from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from ..bluetooth.models import AdapterInfo, DeviceInfo
 from ..bluetooth.device import BluetoothOperationInProgress
 from ..config import SpeakerSettings, SystemSettings
-from ..ha.player import MediaPlayerError
+from ..ha.player import (
+    MAX_QUEUE_ITEMS,
+    MAX_QUEUE_PAYLOAD_BYTES,
+    TITLE_MAX_LENGTH,
+    QUEUE_ERROR_PLAYBACK_FAILED,
+    MediaPlayerBridge,
+    MediaPlayerError,
+)
 from ..constants import (
     A2DP_SINK_RETRY_ATTEMPTS,
     A2DP_SINK_RETRY_INTERVAL,
@@ -50,6 +58,9 @@ from ..call_trace import trace_call
 
 logger = logging.getLogger("bl_haos.api.routes")
 router = APIRouter(prefix=API_PREFIX, tags=["api"])
+NATIVE_QUEUE_VERSION = 1
+QUEUE_CONTROL_OPERATIONS = frozenset({"next", "previous", "set_shuffle", "set_repeat"})
+NON_RETRYABLE_QUEUE_OPERATIONS = frozenset({"queue_start", *QUEUE_CONTROL_OPERATIONS})
 
 
 @router.get("/incidents")
@@ -167,14 +178,64 @@ class SpeakerUpdateRequest(BaseModel):
         return value
 
 
+class NativeQueueItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1, max_length=MAX_MEDIA_URL_LENGTH)
+    title: str | None = Field(default=None, max_length=TITLE_MAX_LENGTH)
+    artist: str | None = Field(default=None, max_length=TITLE_MAX_LENGTH)
+
+    @field_validator("url")
+    @classmethod
+    @trace_call
+    def valid_url(cls, value: str) -> str:
+        return validate_media_url(value)
+
+    @field_validator("title", "artist")
+    @classmethod
+    @trace_call
+    def valid_display_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if "://" in cleaned or any(ord(char) < 32 for char in cleaned):
+            raise ValueError("Queue display text is invalid")
+        return cleaned
+
+
 class NativeCommandRequest(BaseModel):
     """Versioned command payload accepted from the bundled integration only."""
 
+    model_config = ConfigDict(extra="forbid")
+
     version: Literal[NATIVE_COMMAND_VERSION] = NATIVE_COMMAND_VERSION
-    operation: Literal["play", "pause", "stop", "set_volume", "play_media"]
+    operation: Literal[
+        "play", "pause", "stop", "set_volume", "play_media", "queue_start",
+        "next", "previous", "set_shuffle", "set_repeat",
+    ]
+    queue_version: Literal[NATIVE_QUEUE_VERSION] | None = None
     volume: float | None = Field(default=None, ge=VOLUME_MIN_RATIO, le=VOLUME_MAX_RATIO)
     url: str | None = Field(default=None, max_length=MAX_MEDIA_URL_LENGTH)
     media_type: str | None = Field(default=None, max_length=MAX_MEDIA_TYPE_LENGTH)
+    playlist: str | None = Field(default=None, min_length=1, max_length=TITLE_MAX_LENGTH)
+    items: list[NativeQueueItemRequest] | None = Field(
+        default=None, min_length=1, max_length=MAX_QUEUE_ITEMS
+    )
+    shuffle: StrictBool | None = None
+    repeat: Literal["off", "one", "all"] | None = None
+
+    @field_validator("playlist")
+    @classmethod
+    @trace_call
+    def valid_playlist_label(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned or "://" in cleaned or any(ord(char) < 32 for char in cleaned):
+            raise ValueError("Playlist label is invalid")
+        return cleaned
 
     @field_validator("url")
     @classmethod
@@ -191,12 +252,69 @@ class NativeCommandRequest(BaseModel):
     @model_validator(mode="after")
     @trace_call
     def validate_operation_payload(self):
+        if self.operation in NON_RETRYABLE_QUEUE_OPERATIONS:
+            if self.queue_version != NATIVE_QUEUE_VERSION:
+                raise ValueError("Supported queue version is required")
+            if self.volume is not None or self.url is not None or self.media_type is not None:
+                raise ValueError("Queue fields cannot be combined with media command fields")
+            if self.operation == "queue_start":
+                if self.playlist is None or self.items is None:
+                    raise ValueError("Playlist and queue items are required")
+                if self.shuffle is not None or self.repeat is not None:
+                    raise ValueError("Queue start cannot include queue controls")
+                payload_bytes = len(self.playlist.encode("utf-8"))
+                for item in self.items:
+                    payload_bytes += len(item.url.encode("utf-8"))
+                    payload_bytes += len((item.title or "").encode("utf-8"))
+                    payload_bytes += len((item.artist or "").encode("utf-8"))
+                if payload_bytes > MAX_QUEUE_PAYLOAD_BYTES:
+                    raise ValueError("Queue request is too large")
+                return self
+            if self.playlist is not None or self.items is not None:
+                raise ValueError("Queue start fields are only valid for queue_start")
+            if self.operation == "set_shuffle":
+                if not isinstance(self.shuffle, bool) or self.repeat is not None:
+                    raise ValueError("Shuffle value is required")
+            elif self.operation == "set_repeat":
+                if self.repeat is None or self.shuffle is not None:
+                    raise ValueError("Repeat mode is required")
+            elif self.shuffle is not None or self.repeat is not None:
+                raise ValueError("Queue mode fields are only valid for their matching operation")
+            return self
+        if self.queue_version is not None or self.shuffle is not None or self.repeat is not None:
+            raise ValueError("Queue fields are only valid for queue operations")
+        if self.operation == "queue_start":
+            raise ValueError("Supported queue version is required")
+        if self.playlist is not None or self.items is not None:
+            raise ValueError("Queue fields are only valid for queue_start")
         if self.operation == "set_volume" and self.volume is None:
             raise ValueError("Volume is required")
         if self.operation == "play_media" and self.url is None:
             raise ValueError("Media URL is required")
         if self.operation != "play_media" and (self.url is not None or self.media_type is not None):
             raise ValueError("Media fields are only valid for play_media")
+        return self
+
+
+class IngressQueueCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queue_version: Literal[NATIVE_QUEUE_VERSION]
+    operation: Literal["play", "pause", "stop", "next", "previous", "set_shuffle", "set_repeat"]
+    shuffle: StrictBool | None = None
+    repeat: Literal["off", "one", "all"] | None = None
+
+    @model_validator(mode="after")
+    @trace_call
+    def validate_queue_control(self):
+        if self.operation == "set_shuffle":
+            if not isinstance(self.shuffle, bool) or self.repeat is not None:
+                raise ValueError("Shuffle value is required")
+        elif self.operation == "set_repeat":
+            if self.repeat is None or self.shuffle is not None:
+                raise ValueError("Repeat mode is required")
+        elif self.shuffle is not None or self.repeat is not None:
+            raise ValueError("Queue mode fields are only valid for their matching operation")
         return self
 
 
@@ -209,11 +327,58 @@ def playback_envelope(bridge: Any, address: str) -> dict[str, Any]:
     """
     if bridge is None:
         return {"state": PLAYBACK_IDLE, "volume": None}
-    return {
+    envelope = {
         "state": bridge.get_state(address),
         "volume": bridge.get_volume(address),
         **native_playback_timeline(bridge, address),
     }
+    if callable(getattr(bridge, "get_queue", None)):
+        envelope["queue"] = native_queue_snapshot(bridge, address)
+    return envelope
+
+
+@trace_call
+def native_queue_snapshot(bridge: Any, address: str) -> dict[str, Any] | None:
+    """Project only bounded display state; never serialize queue input URLs."""
+    getter = getattr(bridge, "get_queue", None)
+    snapshot = getter(address) if callable(getter) else None
+    if not isinstance(snapshot, dict):
+        return None
+
+    result: dict[str, Any] = {}
+    status = snapshot.get("status")
+    if isinstance(status, str) and status in {
+        "playing", "paused", "failed", "completed", "stopped", "unavailable"
+    }:
+        result["status"] = status
+    for field in ("playlist", "title", "artist"):
+        value = snapshot.get(field)
+        cleaned = MediaPlayerBridge._text(value)
+        if cleaned is not None:
+            result[field] = cleaned
+    error = snapshot.get("error")
+    result["error"] = QUEUE_ERROR_PLAYBACK_FAILED if error == QUEUE_ERROR_PLAYBACK_FAILED else None
+    for field in ("position", "duration", "position_updated_at"):
+        value = snapshot.get(field)
+        maximum = 4_102_444_800 if field == "position_updated_at" else 315_576_000
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= maximum:
+            result[field] = value
+        elif isinstance(value, float) and math.isfinite(value) and 0 <= value <= maximum:
+            result[field] = value
+        else:
+            result[field] = None
+    for field in ("index", "count"):
+        value = snapshot.get(field)
+        if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_QUEUE_ITEMS:
+            result[field] = value
+    if isinstance(snapshot.get("shuffle"), bool):
+        result["shuffle"] = snapshot["shuffle"]
+    repeat = snapshot.get("repeat")
+    if isinstance(repeat, str) and repeat in {"off", "one", "all"}:
+        result["repeat"] = repeat
+    if "status" not in result:
+        return None
+    return result
 
 
 @trace_call
@@ -222,7 +387,7 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
     address = device.address.strip().lower().replace("-", ":")
     app = source.app if hasattr(source, "app") else source
     bridge = getattr(app.state, "ha_bridge", None)
-    return {
+    record = {
         "address": address,
         "name": device.alias or device.name or device.address,
         "available": device.connected,
@@ -241,6 +406,9 @@ def native_speaker_record(source: Request | Any, device: DeviceInfo) -> dict[str
         "detached": bool(device.detached),
         "playback": playback_envelope(bridge, device.address),
     }
+    if callable(getattr(bridge, "get_queue", None)):
+        record["queue_version"] = NATIVE_QUEUE_VERSION
+    return record
 
 
 @trace_call
@@ -270,7 +438,21 @@ def native_playback_timeline(bridge: Any, address: str) -> dict[str, Any]:
     if not callable(getter):
         return {}
     timeline = getter(address)
-    return timeline if isinstance(timeline, dict) else {}
+    if not isinstance(timeline, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for field in ("position", "duration", "position_updated_at"):
+        value = timeline.get(field)
+        maximum = 4_102_444_800 if field == "position_updated_at" else 315_576_000
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= maximum:
+            result[field] = value
+        elif isinstance(value, float) and math.isfinite(value) and 0 <= value <= maximum:
+            result[field] = value
+    for field in ("title", "artist"):
+        value = MediaPlayerBridge._text(timeline.get(field))
+        if value is not None:
+            result[field] = value
+    return result
 
 
 @router.get("/health")
@@ -309,7 +491,7 @@ async def get_native_identity(request: Request, authorization: str | None = Head
     """Return the fixed, versioned native bridge identity."""
     require_native_auth(authorization, request)
     logger.debug("Native bridge identity requested")
-    return {
+    identity = {
         "bridge_id": NATIVE_BRIDGE_ID,
         "version": NATIVE_BRIDGE_VERSION,
         # The caller necessarily holds the credential already, so a digest here
@@ -318,6 +500,10 @@ async def get_native_identity(request: Request, authorization: str | None = Head
         # endpoint deliberately stays free of any credential-shaped field.
         "credential_fingerprint": token_fingerprint(request.app.state.config_store.settings.native_token),
     }
+    bridge = getattr(request.app.state, "ha_bridge", None)
+    if callable(getattr(bridge, "get_queue", None)):
+        identity["queue_version"] = NATIVE_QUEUE_VERSION
+    return identity
 
 
 @router.get("/native/speakers")
@@ -360,12 +546,34 @@ async def command_native_speaker(
     if not (device.trusted and device.is_audio_sink):
         raise HTTPException(status_code=409, detail="Native speaker is not trusted or not an audio sink")
     try:
-        logger.debug("Executing media player command: %s (volume: %s, url: %s)", payload.operation, payload.volume, payload.url)
-        await request.app.state.ha_bridge.execute(
-            normalized, payload.operation, volume=payload.volume, url=payload.url
+        logger.debug(
+            "Executing media player command: %s for %s (volume: %s, media_type: %s)",
+            payload.operation, normalized, payload.volume,
+            {"music": "audio", "audio/mpeg": "audio", "audio/flac": "audio", "audio/wav": "audio", "audio/ogg": "audio", "audio/mp4": "audio", "playlist": "playlist"}.get(payload.media_type, "other"),
         )
+        if payload.operation == "queue_start":
+            assert payload.playlist is not None and payload.items is not None
+            await request.app.state.ha_bridge.start_queue(
+                normalized,
+                payload.playlist,
+                [item.model_dump(exclude_none=True) for item in payload.items],
+            )
+        elif payload.operation in QUEUE_CONTROL_OPERATIONS:
+            await request.app.state.ha_bridge.control_queue(
+                normalized,
+                payload.operation,
+                shuffle=payload.shuffle,
+                repeat=payload.repeat,
+            )
+        else:
+            await request.app.state.ha_bridge.execute(
+                normalized, payload.operation, volume=payload.volume, url=payload.url
+            )
         logger.debug("Successfully executed media player command %s for %s", payload.operation, normalized)
     except MediaPlayerError as error:
+        if payload.operation in NON_RETRYABLE_QUEUE_OPERATIONS:
+            logger.warning("Native queue operation failed for %s (%s)", normalized, payload.operation)
+            raise HTTPException(status_code=409, detail="Native playback command failed") from None
         is_sink_unavailable = (
             "Connected PipeWire A2DP sink is unavailable" in str(error)
             or "Connected Bluetooth audio sink is unavailable" in str(error)
@@ -376,17 +584,17 @@ async def command_native_speaker(
             try:
                 reconnected = await request.app.state.bt_manager.connect_device(normalized, reset_existing=True)
             except Exception as connect_error:
-                logger.warning("Auto-reconnect BlueZ step failed for %s: %s", normalized, safe_detail(connect_error))
+                logger.warning("Auto-reconnect BlueZ step failed for %s", normalized)
                 raise HTTPException(
                     status_code=409,
                     detail="Auto-reconnect failed: could not re-establish the Bluetooth connection",
-                ) from connect_error
+                ) from None
             if not reconnected:
                 logger.warning("Auto-reconnect: BlueZ reported failure reconnecting %s", normalized)
                 raise HTTPException(
                     status_code=409,
                     detail="Auto-reconnect failed: could not re-establish the Bluetooth connection",
-                )
+                ) from None
             for attempt in range(A2DP_SINK_RETRY_ATTEMPTS):
                 await asyncio.sleep(A2DP_SINK_RETRY_INTERVAL)
                 try:
@@ -403,28 +611,76 @@ async def command_native_speaker(
                     if not sink_missing:
                         raise HTTPException(
                             status_code=409,
-                            detail=safe_detail(retry_error) or "Native playback command failed",
-                        ) from retry_error
+                            detail="Native playback command failed" if payload.operation == "play_media" else (safe_detail(retry_error) or "Native playback command failed"),
+                        ) from None
                     if attempt == A2DP_SINK_RETRY_ATTEMPTS - 1:
                         logger.warning(
-                            "Auto-reconnect: sink still unavailable for %s after reconnect: %s",
-                            normalized, safe_detail(retry_error),
+                            "Auto-reconnect: sink still unavailable for %s after reconnect",
+                            normalized,
                         )
                         raise HTTPException(
                             status_code=409,
                             detail="Auto-reconnect failed: Bluetooth reconnected but no audio sink appeared",
-                        ) from retry_error
+                        ) from None
                 except Exception as retry_error:
-                    raise HTTPException(status_code=409, detail="Native playback command failed") from retry_error
+                    raise HTTPException(status_code=409, detail="Native playback command failed") from None
         else:
             raise HTTPException(
                 status_code=409,
-                detail=safe_detail(error) or "Native playback command failed",
-            ) from error
+                detail="Native playback command failed" if payload.operation == "play_media" else (safe_detail(error) or "Native playback command failed"),
+            ) from None
+    except Exception:
+        if payload.operation not in {"play_media", *NON_RETRYABLE_QUEUE_OPERATIONS}:
+            raise
+        raise HTTPException(status_code=409, detail="Native playback command failed") from None
     publish = getattr(request.app.state, "publish_native_speaker", None)
     if publish:
         await publish(normalized)
     return native_speaker_record(request, device)
+
+
+@router.post("/devices/{address}/queue/command")
+@trace_call
+async def command_ingress_queue(
+    address: str,
+    payload: IngressQueueCommandRequest,
+    request: Request,
+):
+    """Apply one queue control through the add-on's Supervisor-protected Ingress API."""
+    try:
+        normalized = normalize_address(address)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid Bluetooth address") from error
+    device = next(
+        (candidate for candidate in request.app.state.bt_manager.get_devices(audio_only=True)
+         if candidate.address.strip().lower().replace("-", ":") == normalized),
+        None,
+    )
+    if device is None or not (device.trusted and device.is_audio_sink):
+        raise HTTPException(status_code=409, detail="Queue speaker is unavailable")
+    if not device.connected:
+        raise HTTPException(status_code=409, detail="Queue speaker is unavailable")
+    bridge = getattr(request.app.state, "ha_bridge", None)
+    if bridge is None:
+        raise HTTPException(status_code=503, detail="Media player bridge is unavailable")
+    try:
+        if payload.operation in {"play", "pause", "stop"}:
+            await bridge.execute(normalized, payload.operation)
+        else:
+            await bridge.control_queue(
+                normalized,
+                payload.operation,
+                shuffle=payload.shuffle,
+                repeat=payload.repeat,
+            )
+    except MediaPlayerError:
+        raise HTTPException(status_code=409, detail="Queue command failed") from None
+    except Exception:
+        raise HTTPException(status_code=409, detail="Queue command failed") from None
+    publish = getattr(request.app.state, "publish_native_speaker", None)
+    if publish:
+        await publish(normalized)
+    return {"status": "ok", "playback": playback_envelope(bridge, normalized)}
 
 
 # ==============================================================================

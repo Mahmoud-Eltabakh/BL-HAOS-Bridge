@@ -1,11 +1,26 @@
 import React, { useEffect, useState } from 'react';
-import { DeviceInfo, apiClient } from '../api/client';
-import { Volume2, Bluetooth, Power, Trash2, Settings, AlertCircle } from 'lucide-react';
+import { DeviceInfo, QueueCommand, apiClient } from '../api/client';
+import { Volume2, Bluetooth, Power, Trash2, Settings, AlertCircle, SkipBack, SkipForward, Play, Pause, Square, Shuffle } from 'lucide-react';
 
 interface SpeakerCardProps {
   device: DeviceInfo;
   onSettingsClick: (device: DeviceInfo) => void;
   onRefresh: () => void;
+}
+
+function formatTime(seconds: number | null | undefined): string {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return 'Time unavailable';
+  const total = Math.floor(seconds);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function queueStatusLabel(status?: string): string {
+  if (status === 'playing') return 'Playing';
+  if (status === 'paused') return 'Paused';
+  if (status === 'failed') return 'Playback failed';
+  if (status === 'completed') return 'Playlist complete';
+  if (status === 'stopped') return 'Stopped';
+  return 'Status unavailable';
 }
 
 export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClick, onRefresh }) => {
@@ -14,6 +29,8 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
   const [volumeSaving, setVolumeSaving] = useState(false);
   const [showConfirmRemove, setShowConfirmRemove] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [queuePending, setQueuePending] = useState('');
+  const [queueError, setQueueError] = useState<string | null>(null);
 
   // Seed the local volume from the level the bridge reports for the speaker.
   // The bridge reads the sink's real volume back from the audio server, so this
@@ -25,6 +42,27 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
   const reportedVolume = device.connected && typeof playbackVolume === 'number'
     ? Math.round(playbackVolume * 100)
     : null;
+  const queueSupported = Boolean(device.playback && Object.prototype.hasOwnProperty.call(device.playback, 'queue'));
+  const queue = device.playback?.queue ?? null;
+  const hasCurrentItem = typeof queue?.index === 'number' && typeof queue.count === 'number'
+    && queue.index >= 1 && queue.count >= queue.index;
+  const nextAtEnd = hasCurrentItem && queue.repeat === 'off' && queue.index === queue.count;
+  const playOperation = queue?.status !== 'failed' && device.playback?.state === 'playing' ? 'pause' : 'play';
+  const playLabel = playOperation === 'pause' ? 'Pause' : 'Play';
+
+  const sendQueueCommand = async (command: QueueCommand, action: string) => {
+    if (!device.connected || !queueSupported || queuePending) return;
+    setQueuePending(action);
+    setQueueError(null);
+    try {
+      await apiClient.commandQueue(device.address, command);
+    } catch {
+      setQueueError('Could not confirm the queue command. Check the current playback state before trying again.');
+    } finally {
+      setQueuePending('');
+      onRefresh();
+    }
+  };
   useEffect(() => {
     if (reportedVolume !== null) setVolume(reportedVolume);
   }, [reportedVolume]);
@@ -116,9 +154,70 @@ export const SpeakerCard: React.FC<SpeakerCardProps> = ({ device, onSettingsClic
 
         {errorMsg && (
             <div className="neu-inset mt-3 p-2 rounded-lg text-rose-300 text-xs flex items-center gap-1.5">
-            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
             <span>{errorMsg}</span>
           </div>
+        )}
+
+        {queueSupported && (
+          <section className="neu-inset mt-4 rounded-lg p-3" aria-label="Playback queue">
+            <div className="flex flex-col gap-1" aria-live="polite" aria-atomic="true">
+              {!device.connected && <p className="text-sm text-amber-300">Speaker disconnected. The queue was stopped.</p>}
+              {device.connected && !queue && <p className="text-sm text-slate-300">No active queue</p>}
+              {device.connected && queue && <>
+                <p className="text-sm font-semibold text-slate-100">{queue.status === 'completed' ? 'Playlist complete' : queue.playlist || 'Playback queue'}</p>
+                <p className="text-sm text-slate-200">{queue.title || 'Current item unavailable'}</p>
+                {queue.artist && <p className="text-xs text-slate-400">{queue.artist}</p>}
+                {hasCurrentItem && <p className="text-xs text-slate-300">Item {queue.index} of {queue.count}</p>}
+                <p className="text-xs text-slate-300" aria-label="Playback timeline">
+                  {formatTime(queue.position)} / {formatTime(queue.duration)}
+                </p>
+                <p className="text-xs text-slate-400">
+                  {queueStatusLabel(queue.status)}{queue.shuffle ? ' · Shuffle on' : ''}{queue.repeat ? ` · Repeat ${queue.repeat}` : ''}
+                </p>
+                {queue.status === 'failed' && <p className="text-xs text-rose-300">Playback failed for “{queue.title || 'current item'}”. Nothing was skipped. Select Play to retry or Next to skip this item.</p>}
+              </>}
+            </div>
+            {queueError && <p className="mt-2 text-xs text-rose-300" role="alert">{queueError}</p>}
+            {queuePending && <p className="mt-2 text-xs text-amber-300" role="status" aria-live="polite" aria-atomic="true">Sending {queuePending}…</p>}
+            {queue && <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button type="button" className="neu-button min-h-11 min-w-11 px-3 py-2" aria-label="Previous" title="Previous"
+                disabled={!device.connected || !hasCurrentItem || Boolean(queuePending)}
+                onClick={() => void sendQueueCommand({ queue_version: 1, operation: 'previous' }, 'Previous')}>
+                <SkipBack className="h-4 w-4" aria-hidden="true" /><span>Previous</span>
+              </button>
+              <button type="button" className="neu-button min-h-11 min-w-11 px-3 py-2" aria-label={playLabel} title={playLabel}
+                disabled={!device.connected || !hasCurrentItem || Boolean(queuePending)}
+                onClick={() => void sendQueueCommand({ queue_version: 1, operation: playOperation }, playLabel)}>
+                {playOperation === 'pause' ? <Pause className="h-4 w-4" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}
+                <span>{playLabel}</span>
+              </button>
+              <button type="button" className="neu-button min-h-11 min-w-11 px-3 py-2" aria-label="Next" title="Next"
+                disabled={!device.connected || !hasCurrentItem || Boolean(nextAtEnd) || Boolean(queuePending)}
+                onClick={() => void sendQueueCommand({ queue_version: 1, operation: 'next' }, 'Next')}>
+                <SkipForward className="h-4 w-4" aria-hidden="true" /><span>Next</span>
+              </button>
+              <button type="button" className="neu-button min-h-11 min-w-11 px-3 py-2 text-rose-300" aria-label="Stop" title="Stop"
+                disabled={!device.connected || Boolean(queuePending)}
+                onClick={() => void sendQueueCommand({ queue_version: 1, operation: 'stop' }, 'Stop')}>
+                <Square className="h-4 w-4" aria-hidden="true" /><span>Stop</span>
+              </button>
+              <button type="button" className="neu-button min-h-11 px-3 py-2" aria-label="Shuffle" title="Shuffle"
+                aria-pressed={Boolean(queue.shuffle)} disabled={!device.connected || Boolean(queuePending)}
+                onClick={() => void sendQueueCommand({ queue_version: 1, operation: 'set_shuffle', shuffle: !queue.shuffle }, 'Shuffle')}>
+                <Shuffle className="h-4 w-4" aria-hidden="true" /><span>Shuffle</span>
+              </button>
+              <label className="flex min-h-11 items-center gap-2 text-sm" htmlFor={`queue-repeat-${device.address}`}>Repeat
+                <select id={`queue-repeat-${device.address}`} className="neu-inset min-h-11 px-2"
+                  aria-label="Repeat" value={queue.repeat ?? 'off'} disabled={!device.connected || Boolean(queuePending)}
+                  onChange={(event) => void sendQueueCommand({
+                    queue_version: 1, operation: 'set_repeat', repeat: event.target.value as 'off' | 'one' | 'all',
+                  }, 'Repeat')}>
+                  <option value="off">Off</option><option value="one">One</option><option value="all">All</option>
+                </select>
+              </label>
+            </div>}
+          </section>
         )}
       </div>
 

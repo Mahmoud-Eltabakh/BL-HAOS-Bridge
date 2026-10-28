@@ -16,12 +16,17 @@ import {
   HTTP_SERVER_ERROR,
   HTTP_UNAUTHORIZED,
   JSON_CONTENT_TYPE,
+  MAX_QUEUE_DISPLAY_LENGTH,
+  MAX_QUEUE_ITEMS,
+  MAX_QUEUE_SECONDS,
+  MAX_QUEUE_TIMESTAMP,
   PAYLOAD_DETAIL_KEY,
   WS_PUBLIC_PATH,
   apiAdapterPower,
   apiDevice,
   apiDeviceConnect,
   apiDeviceDisconnect,
+  apiDeviceQueueCommand,
   apiDeviceVolume,
   apiDevices,
   apiSpeakerSettings,
@@ -64,6 +69,88 @@ export interface PlaybackInfo {
   position_updated_at?: number | null;
   title?: string | null;
   artist?: string | null;
+  queue?: QueueSnapshot | null;
+}
+
+export type QueueStatus = 'playing' | 'paused' | 'failed' | 'completed' | 'stopped' | 'unavailable';
+
+export interface QueueSnapshot {
+  status?: QueueStatus;
+  playlist?: string;
+  title?: string;
+  artist?: string;
+  position?: number | null;
+  duration?: number | null;
+  position_updated_at?: number | null;
+  index?: number;
+  count?: number;
+  shuffle?: boolean;
+  repeat?: 'off' | 'one' | 'all';
+  error?: 'Playback failed' | null;
+}
+
+export type QueueCommand =
+  | { queue_version: 1; operation: 'play' | 'pause' | 'stop' | 'next' | 'previous' }
+  | { queue_version: 1; operation: 'set_shuffle'; shuffle: boolean }
+  | { queue_version: 1; operation: 'set_repeat'; repeat: 'off' | 'one' | 'all' };
+
+function safeQueueText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const cleaned = value.trim();
+  if (!cleaned || cleaned.includes('://') || /^[a-z][a-z0-9+.-]*:/i.test(cleaned)
+    || /[\u0000-\u001f\u007f-\u009f]/.test(cleaned)) return undefined;
+  return cleaned.slice(0, MAX_QUEUE_DISPLAY_LENGTH);
+}
+
+export function sanitizeQueueSnapshot(value: unknown): QueueSnapshot | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const statuses: QueueStatus[] = ['playing', 'paused', 'failed', 'completed', 'stopped', 'unavailable'];
+  if (typeof source.status !== 'string' || !statuses.includes(source.status as QueueStatus)) return null;
+  const queue: QueueSnapshot = { status: source.status as QueueStatus };
+  for (const field of ['playlist', 'title', 'artist'] as const) {
+    const text = safeQueueText(source[field]);
+    if (text !== undefined) queue[field] = text;
+  }
+  for (const field of ['position', 'duration', 'position_updated_at'] as const) {
+    const maximum = field === 'position_updated_at' ? MAX_QUEUE_TIMESTAMP : MAX_QUEUE_SECONDS;
+    const number = source[field];
+    if (number === null) queue[field] = null;
+    else if (typeof number === 'number' && Number.isFinite(number) && number >= 0 && number <= maximum) queue[field] = number;
+  }
+  for (const field of ['index', 'count'] as const) {
+    const number = source[field];
+    if (typeof number === 'number' && Number.isInteger(number) && number >= 1 && number <= MAX_QUEUE_ITEMS) queue[field] = number;
+  }
+  if (typeof source.shuffle === 'boolean') queue.shuffle = source.shuffle;
+  if (source.repeat === 'off' || source.repeat === 'one' || source.repeat === 'all') queue.repeat = source.repeat;
+  queue.error = source.error === 'Playback failed' ? source.error : null;
+  return queue;
+}
+
+export function sanitizePlaybackInfo(value: unknown): PlaybackInfo | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (!['idle', 'playing', 'paused'].includes(String(source.state))) return null;
+  const playback: PlaybackInfo = { state: source.state as string };
+  const volume = source.volume;
+  if (volume === null) playback.volume = null;
+  else if (typeof volume === 'number' && Number.isFinite(volume) && volume >= 0 && volume <= 1) playback.volume = volume;
+  for (const field of ['position', 'duration', 'position_updated_at'] as const) {
+    const maximum = field === 'position_updated_at' ? MAX_QUEUE_TIMESTAMP : MAX_QUEUE_SECONDS;
+    const number = source[field];
+    if (number === null) playback[field] = null;
+    else if (typeof number === 'number' && Number.isFinite(number) && number >= 0 && number <= maximum) playback[field] = number;
+  }
+  for (const field of ['title', 'artist'] as const) {
+    const text = safeQueueText(source[field]);
+    if (text !== undefined) playback[field] = text;
+    else if (source[field] === null) playback[field] = null;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'queue')) {
+    playback.queue = source.queue === null ? null : sanitizeQueueSnapshot(source.queue);
+  }
+  return playback;
 }
 
 export interface DeviceInfo {
@@ -164,7 +251,10 @@ export const apiClient = {
     });
   },
   async getDevices(audioOnly = true): Promise<DeviceInfo[]> {
-    return requestJson<DeviceInfo[]>(getApiUrl(apiDevices(audioOnly)));
+    const devices = await requestJson<DeviceInfo[]>(getApiUrl(apiDevices(audioOnly)));
+    return Array.isArray(devices)
+      ? devices.map((device) => ({ ...device, playback: sanitizePlaybackInfo(device.playback) }))
+      : [];
   },
   async pairDevice(address: string, pin = DEFAULT_PIN) {
     return requestJson(getApiUrl(API_DEVICES_PAIR), {
@@ -188,6 +278,13 @@ export const apiClient = {
       method: 'POST',
       headers: { 'Content-Type': JSON_CONTENT_TYPE },
       body: JSON.stringify({ volume }),
+    });
+  },
+  async commandQueue(address: string, command: QueueCommand) {
+    return requestJson(getApiUrl(apiDeviceQueueCommand(address)), {
+      method: 'POST',
+      headers: { 'Content-Type': JSON_CONTENT_TYPE },
+      body: JSON.stringify(command),
     });
   },
   async removeDevice(address: string) {

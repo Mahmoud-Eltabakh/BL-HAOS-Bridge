@@ -1,6 +1,36 @@
 import pytest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from backend.bl_haos.bluetooth.constants import A2DP_SINK_UUID
-from backend.bl_haos.bluetooth.device import BluetoothDevice
+from backend.bl_haos.bluetooth.device import BluetoothDevice, BluetoothOperationInProgress
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["InProgress", "In Progress", "br-connection-busy", "operation-already-in-progress", "OPERATION ALREADY IN PROGRESS"])
+async def test_phase27_connection_busy_never_activates_profile(message):
+    interface = SimpleNamespace(call_connect=AsyncMock(side_effect=RuntimeError(message)), call_connect_profile=AsyncMock())
+    bus = SimpleNamespace(introspect=AsyncMock(), get_proxy_object=lambda *args: SimpleNamespace(get_interface=lambda name: interface))
+    device = BluetoothDevice(bus, "/org/bluez/hci0/dev_AA_BB_CC_11_22_33", {"Address": "AA:BB:CC:11:22:33"})
+
+    with pytest.raises(BluetoothOperationInProgress):
+        await device.connect()
+
+    interface.call_connect.assert_awaited_once()
+    interface.call_connect_profile.assert_not_awaited()
+    assert not device.connected
+
+
+@pytest.mark.asyncio
+async def test_phase27_connection_generic_error_preserves_disconnected_state():
+    interface = SimpleNamespace(call_connect=AsyncMock(side_effect=RuntimeError("br-connection-unknown")), call_connect_profile=AsyncMock())
+    bus = SimpleNamespace(introspect=AsyncMock(), get_proxy_object=lambda *args: SimpleNamespace(get_interface=lambda name: interface))
+    device = BluetoothDevice(bus, "/org/bluez/hci0/dev_AA_BB_CC_11_22_33", {"Address": "AA:BB:CC:11:22:33", "Paired": True})
+    with pytest.raises(RuntimeError, match="br-connection-unknown"):
+        await device.connect()
+    interface.call_connect.assert_awaited_once()
+    interface.call_connect_profile.assert_not_awaited()
+    assert not device.connected
+    assert device.paired
 
 
 @pytest.mark.asyncio

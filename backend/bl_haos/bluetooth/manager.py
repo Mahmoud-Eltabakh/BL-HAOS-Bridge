@@ -53,6 +53,7 @@ class BluetoothManager:
         self.agent: BlueZAgent | None = None
         self.adapters: dict[str, BluetoothAdapter] = {}
         self.devices: dict[str, BluetoothDevice] = {}
+        self._connection_locks: dict[str, asyncio.Lock] = {}
         self._listeners: list[Callable[[str, Any], None]] = []
         self._initialized = False
         self.health = health_registry
@@ -387,6 +388,9 @@ class BluetoothManager:
                 proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, dev_path, introspection)
                 props_iface = proxy.get_interface(DBUS_PROPERTIES_IFACE)
                 props = await props_iface.call_get_all(DEVICE_INTERFACE)
+                current = self.devices.get(dev_path)
+                if current is not None and not current.detached:
+                    return current
                 dev = BluetoothDevice(self.bus, dev_path, props)
                 self._drop_detached_duplicates(dev)
                 self.devices[dev_path] = dev
@@ -614,104 +618,59 @@ class BluetoothManager:
 
     @trace_call
     async def connect_device(self, address: str, *, reset_existing: bool = False) -> bool:
-        """Connect to a device.
+        """Perform one bounded connection, sharing actual-adapter ownership.
 
-        ``reset_existing`` is for the operator path only. Connecting used to always
-        drop an existing link first to clear a stale A2DP transport; when the
-        auto-reconnect engine did the same thing, its own retry tore down a link
-        that was fine (or still coming up) and re-negotiated the codec, which is
-        heard as continuous disconnects and quality drops. An already-connected
-        device is now reported as success, and only an explicit operator request
-        resets the link.
+        Only explicit operator/failed-play recovery may reset an existing link.
+        Repeated automatic attempts belong to the reconnect scheduler.
         """
         address = normalize_address(address)
         logger.debug("Initiating connect_device for %s (reset_existing=%s)", address, reset_existing)
-        try:
-            await self.stop_scan()
-        except Exception as e:
-            logger.debug("Non-fatal notice stopping scan prior to connect: %s", e)
-        await asyncio.sleep(0.3)
-        dev = await self.ensure_device(address)
-        if not dev:
-            for adapter in self.adapters.values():
-                try:
-                    await adapter.connect_device(address)
-                    dev = await self.ensure_device(address)
-                    if dev:
-                        break
-                except Exception:
-                    continue
+        async with asyncio.timeout(30.0):
+            dev = await self.ensure_device(address)
             if not dev:
-                logger.debug("Device %s not found on any adapter for connect", address)
                 raise ValueError(f"Device with address {address} not found. Ensure device is powered on and in pairing mode.")
-        try:
-            if getattr(dev, "connected", False):
-                if not reset_existing:
-                    # Already up: connecting again would only risk breaking it, and
-                    # BlueZ would answer AlreadyConnected anyway.
-                    logger.debug("Device %s is already connected; nothing to do", address)
+            adapter_name = validate_adapter_name(dev.adapter_name)
+            lock = self._connection_locks.setdefault(adapter_name, asyncio.Lock())
+            if lock.locked():
+                raise BluetoothOperationInProgress(f"Bluetooth connection already in progress on {adapter_name}")
+            async with lock:
+                if self.devices.get(dev.path) is not dev or dev.detached:
+                    raise RuntimeError(f"Device {address} was withdrawn or superseded during connection")
+                if dev.connected and not reset_existing:
                     return True
-                # A connected BlueZ ACL can retain a stale A2DP transport in
-                # PipeWire. Force a clean link before reconnecting the profile.
-                logger.debug("Resetting existing connection for %s before reconnecting", address)
-                await dev.disconnect()
-                await asyncio.sleep(1.0)
-            for attempt in range(3):
                 try:
-                    logger.debug("Connect attempt %d for %s", attempt + 1, address)
+                    await self.stop_scan(adapter_name)
+                except Exception as error:
+                    logger.debug("Non-fatal notice stopping scan prior to connect: %s", error)
+                await asyncio.sleep(0.3)
+                if self.devices.get(dev.path) is not dev or dev.detached:
+                    raise RuntimeError(f"Device {address} was withdrawn or superseded during connection")
+                try:
+                    if dev.connected and reset_existing:
+                        await dev.disconnect()
+                        await asyncio.sleep(1.0)
+                    if self.devices.get(dev.path) is not dev or dev.detached:
+                        raise RuntimeError(f"Device {address} was withdrawn or superseded during connection")
                     await dev.connect()
-                    break
                 except BluetoothOperationInProgress:
                     raise
-                except Exception:
-                    if attempt == 2:
-                        raise
-                    await asyncio.sleep(1.0)
-            try:
-                await dev.set_trusted(True)
-            except Exception as e:
-                logger.debug("Failed to set trusted flag on connect: %s", e)
-            logger.debug("Device %s connected successfully", address)
-            return True
-        except BluetoothOperationInProgress:
-            raise
-        except Exception as first_error:
-            logger.debug("First connect attempt failed for %s: %s", address, first_error)
-            # BlueZ can replace a discovered device object while scanning or
-            # reconnecting. Refresh the cached object once before surfacing the
-            # transient org.bluez.Device1 error to the API.
-            if dev.path in self.devices:
-                del self.devices[dev.path]
-            refreshed = await self.ensure_device(address)
-            if refreshed:
-                try:
-                    logger.debug("Retrying connect on refreshed BlueZ proxy for %s", address)
-                    await refreshed.connect()
-                except BluetoothOperationInProgress:
+                except Exception as error:
+                    detail = str(error).lower()
+                    if any(marker in detail for marker in ("unknownobject", "unknown object", "interface not found", "stale device1", "unknownmethod")):
+                        dev.mark_detached()
+                        if self.health:
+                            self.health.observe_speaker(
+                                address, SpeakerState.UNAVAILABLE,
+                                failure=FailureClass.STALE_BLUEZ_OBJECT, detail=error,
+                            )
                     raise
-                except Exception as refresh_error:
-                    if self.health:
-                        self.health.observe_speaker(
-                            normalize_address(address),
-                            SpeakerState.UNAVAILABLE,
-                            failure=FailureClass.STALE_BLUEZ_OBJECT,
-                            detail=refresh_error,
-                        )
-                    raise refresh_error
                 try:
-                    await refreshed.set_trusted(True)
-                except Exception:
-                    pass
-                logger.debug("Refreshed proxy connection succeeded for %s", address)
+                    await dev.set_trusted(True)
+                except Exception as error:
+                    logger.debug("Failed to set trusted flag on connect: %s", error)
+                if self.devices.get(dev.path) is not dev or dev.detached:
+                    raise RuntimeError(f"Device {address} was withdrawn or superseded during connection")
                 return True
-            if self.health:
-                self.health.observe_speaker(
-                    normalize_address(address),
-                    SpeakerState.UNAVAILABLE,
-                    failure=FailureClass.STALE_BLUEZ_OBJECT,
-                    detail=first_error,
-                )
-            raise first_error
 
     @trace_call
     async def disconnect_device(self, address: str) -> bool:

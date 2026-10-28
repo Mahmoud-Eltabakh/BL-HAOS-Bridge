@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { getWebSocketUrl, apiClient, AdapterInfo, DeviceInfo, PlaybackInfo } from '../api/client';
+import { getWebSocketUrl, apiClient, AdapterInfo, DeviceInfo, PlaybackInfo, sanitizePlaybackInfo } from '../api/client';
 import {
   ERROR_MESSAGES,
   EVENT_ADAPTER_ADDED,
@@ -80,12 +80,16 @@ export function useBluetoothEvents() {
                 const copy = [...prev];
                 // BlueZ property events carry no playback block; keep the one the
                 // bridge last published instead of clearing the card's volume.
-                copy[index] = { ...dev, playback: dev.playback ?? prev[index].playback };
+                copy[index] = {
+                  ...prev[index],
+                  ...dev,
+                  playback: sanitizePlaybackInfo(dev.playback) ?? prev[index].playback,
+                };
                 return copy;
               }
               // New device found during a scan: append immediately so the UI
               // shows it in real time instead of waiting for a full refresh.
-              return [...prev, dev];
+              return [...prev, { ...dev, playback: sanitizePlaybackInfo(dev.playback) }];
             });
             // A discovered device usually means a scan is running; keep the
             // indicator honest even if the adapter event was missed.
@@ -101,10 +105,12 @@ export function useBluetoothEvents() {
             // slider follows it instead of showing the stale level.
             const update = msg.data as { address?: string; playback?: PlaybackInfo };
             if (!update?.address || !update.playback) return;
-            const target = update.address.trim().toLowerCase();
+            const playback = sanitizePlaybackInfo(update.playback);
+            if (!playback) return;
+            const target = update.address.trim().toLowerCase().replace(/-/g, ':');
             setDevices((prev) =>
               prev.map((d) =>
-                d.address.trim().toLowerCase() === target ? { ...d, playback: update.playback } : d
+                d.address.trim().toLowerCase().replace(/-/g, ':') === target ? { ...d, playback } : d
               )
             );
           } else if (msg.event === EVENT_ADAPTER_UPDATED || msg.event === EVENT_ADAPTER_ADDED) {

@@ -230,35 +230,26 @@ class BluetoothDevice:
         introspection = await self.bus.introspect(BLUEZ_SERVICE, self.path)
         proxy = self.bus.get_proxy_object(BLUEZ_SERVICE, self.path, introspection)
         dev_iface = proxy.get_interface(DEVICE_INTERFACE)
-        connect_error = None
         try:
             await dev_iface.call_connect()
         except Exception as conn_err:
-            err_str = str(conn_err)
-            if "AlreadyConnected" in err_str or "InProgress" in err_str or "In Progress" in err_str:
-                connect_error = None
-                try:
-                    await dev_iface.call_connect_profile(A2DP_SINK_UUID)
-                except Exception as profile_err:
-                    prof_str = str(profile_err)
-                    if "InProgress" in prof_str or "In Progress" in prof_str:
-                        raise BluetoothOperationInProgress(
-                            f"Bluetooth connection already in progress for {self.address}"
-                        ) from profile_err
-                    if "AlreadyConnected" not in prof_str:
-                        raise profile_err
-            else:
-                connect_error = conn_err
-                try:
-                    await dev_iface.call_connect_profile(A2DP_SINK_UUID)
-                except Exception as profile_err:
-                    prof_str = str(profile_err)
-                    if "InProgress" in prof_str or "In Progress" in prof_str:
-                        raise BluetoothOperationInProgress(
-                            f"Bluetooth connection already in progress for {self.address}"
-                        ) from profile_err
-                    if "AlreadyConnected" not in prof_str:
-                        raise connect_error or profile_err
+            err_str = str(conn_err).lower().replace("-", "").replace(" ", "")
+            if "inprogress" in err_str or "brconnectionbusy" in err_str:
+                raise BluetoothOperationInProgress(
+                    f"Bluetooth connection already in progress for {self.address}"
+                ) from conn_err
+            if "alreadyconnected" not in err_str:
+                raise
+            try:
+                await dev_iface.call_connect_profile(A2DP_SINK_UUID)
+            except Exception as profile_err:
+                prof_str = str(profile_err).lower().replace("-", "").replace(" ", "")
+                if "inprogress" in prof_str or "brconnectionbusy" in prof_str:
+                    raise BluetoothOperationInProgress(
+                        f"Bluetooth connection already in progress for {self.address}"
+                    ) from profile_err
+                if "alreadyconnected" not in prof_str:
+                    raise
         self._properties["Connected"] = True
         logger.debug("BlueZ connect succeeded for %s", self.address)
 

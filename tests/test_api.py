@@ -1,5 +1,8 @@
 import asyncio
 import inspect
+import json
+import logging
+from urllib.parse import quote
 
 from backend.bl_haos.main import app
 from fastapi.testclient import TestClient
@@ -174,13 +177,22 @@ def test_pair_publishes_native_speaker():
         assert pairing_calls == [(dev_addr, "4321")]
 
 
-def test_native_speaker_record_includes_the_playback_timeline():
+def test_native_speaker_record_includes_the_playback_timeline(monkeypatch):
     """HA draws the progress bar from position/duration in the native payload."""
     from backend.bl_haos.api.routes import native_speaker_record
     from backend.bl_haos.bluetooth.constants import A2DP_SINK_UUID, DEVICE_INTERFACE
 
     dev_addr = "aa:bb:cc:dd:ee:11"
+    bridge = Mock()
+    bridge.get_state.return_value = "playing"
+    bridge.get_volume.return_value = 40
+    bridge.get_timeline.return_value = {
+        "position": 12,
+        "duration": 120,
+        "position_updated_at": 1_800_000_000,
+    }
     with TestClient(app) as client:
+        monkeypatch.setattr(app.state, "ha_bridge", bridge, raising=False)
         app.state.bt_manager._on_interfaces_added(
             "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_11",
             {
@@ -200,6 +212,32 @@ def test_native_speaker_record_includes_the_playback_timeline():
         record = native_speaker_record(app, device)
 
     assert {"state", "volume", "position", "duration", "position_updated_at"} <= set(record["playback"])
+
+
+def test_native_queue_snapshot_bounds_timeline_numbers():
+    from backend.bl_haos.api.routes import native_queue_snapshot
+
+    class QueueBridge:
+        @staticmethod
+        def get_queue(_address):
+            return {
+                "status": "playing",
+                "playlist": "Bounded queue",
+                "position": -1,
+                "duration": 315_576_001,
+                "position_updated_at": 4_102_444_801,
+                "index": 1,
+                "count": 1,
+                "shuffle": False,
+                "repeat": "off",
+            }
+
+    queue = native_queue_snapshot(QueueBridge(), "aa:bb:cc:dd:ee:11")
+
+    assert queue is not None
+    assert queue["position"] is None
+    assert queue["duration"] is None
+    assert queue["position_updated_at"] is None
 
 def test_offline_speaker_stays_published_as_unavailable():
     """A trusted speaker that goes offline stays in the snapshot, unavailable.
@@ -333,6 +371,117 @@ def test_native_play_media_accepts_ha_content_type(monkeypatch):
         )
 
 
+@pytest.mark.parametrize("failure", [None, "player", "fragments", "unexpected", "connect", "connect_false", "retry", "exhausted"])
+@pytest.mark.parametrize("media_type", ["audio/mpeg", "labelhostsentinel.example/labelpathsentinel", "labeltokensentinel"])
+def test_native_play_media_redact_logs_and_errors(monkeypatch, caplog, failure, media_type):
+    from backend.bl_haos.ha.player import MediaPlayerError
+
+    sentinels = (
+        "routehostsentinel.example", "route_path_sentinel", "routequerykeysentinel",
+        "routequeryvaluesentinel", "routeusersentinel", "routepasswordsentinel", "routetokensentinel",
+    )
+    url = (
+        f"https://{sentinels[0]}/{sentinels[1]}?{sentinels[2]}={sentinels[3]}"
+        f"&user={sentinels[4]}&password={sentinels[5]}&token={sentinels[6]}"
+    )
+    address = "10:22:33:44:55:66"
+    with TestClient(app, raise_server_exceptions=False) as client:
+        app.state.bt_manager._on_interfaces_added("/org/bluez/hci0/dev_10_22_33_44_55_66", {
+            "org.bluez.Device1": {
+                "Address": address, "Name": "Sentinel Speaker", "Adapter": "/org/bluez/hci0",
+                "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                "Paired": True, "Trusted": True, "Connected": True,
+            }
+        })
+        execute = AsyncMock()
+        reconnect = AsyncMock(return_value=True)
+        if failure in {"player", "fragments"}:
+            execute.side_effect = MediaPlayerError(url if failure == "player" else " ".join(sentinels))
+        elif failure == "unexpected":
+            execute.side_effect = RuntimeError(url)
+        elif failure in {"connect", "connect_false", "retry", "exhausted"}:
+            missing = MediaPlayerError("Connected Bluetooth audio sink is unavailable " + " ".join(sentinels))
+            missing.__cause__ = RuntimeError(url)
+            execute.side_effect = [missing, MediaPlayerError(" ".join(sentinels))] if failure == "retry" else missing
+            if failure == "connect":
+                reconnect.side_effect = RuntimeError(" ".join(sentinels))
+            elif failure == "connect_false":
+                reconnect.return_value = False
+        monkeypatch.setattr(app.state.ha_bridge, "execute", execute)
+        monkeypatch.setattr(app.state.bt_manager, "connect_device", reconnect)
+        monkeypatch.setattr("backend.bl_haos.api.routes.A2DP_SINK_RETRY_INTERVAL", 0)
+        caplog.set_level(logging.DEBUG, logger="bl_haos")
+        caplog.set_level(logging.DEBUG, logger="backend.bl_haos")
+        caplog.clear()
+        response = client.post(
+            f"/api/native/speakers/{address}/command",
+            headers={"Authorization": f"Bearer {app.state.config_store.settings.native_token}"},
+            json={"operation": "play_media", "url": url, "media_type": media_type},
+        )
+        assert response.status_code == (409 if failure else 200)
+        assert execute.await_args_list[0].args == (address, "play_media")
+        assert all(call.kwargs == {"volume": None, "url": url} for call in execute.await_args_list)
+        if failure not in {"connect", "connect_false", "retry", "exhausted"}:
+            execute.assert_awaited_once_with(address, "play_media", volume=None, url=url)
+            reconnect.assert_not_awaited()
+        else:
+            reconnect.assert_awaited_once_with(address, reset_existing=True)
+        assert "call enter function=" in caplog.text
+        assert "play_media" in caplog.text
+        for sentinel in (url, *sentinels, "labelhostsentinel", "labelpathsentinel", "labeltokensentinel"):
+            assert sentinel not in caplog.text + response.text
+        if failure == "connect_false":
+            import traceback
+            from fastapi import HTTPException
+            from starlette.requests import Request
+            from backend.bl_haos.api.routes import NativeCommandRequest, command_native_speaker
+
+            execute.reset_mock()
+            reconnect.reset_mock()
+            payload = NativeCommandRequest(operation="play_media", url=url, media_type=media_type)
+            assert payload.media_type == media_type
+            assert payload.url == url
+            with pytest.raises(HTTPException) as caught:
+                client.portal.call(
+                    command_native_speaker, address, payload, Request({"type": "http", "app": app}),
+                    f"Bearer {app.state.config_store.settings.native_token}",
+                )
+            assert caught.value.status_code == 409
+            assert caught.value.detail == "Auto-reconnect failed: could not re-establish the Bluetooth connection"
+            execute.assert_awaited_once_with(address, "play_media", volume=None, url=url)
+            reconnect.assert_awaited_once_with(address, reset_existing=True)
+            displayed = "".join(traceback.format_exception(caught.value))
+            for sentinel in (url, *sentinels):
+                assert sentinel not in displayed + caplog.text
+            assert caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize("url", [
+    "https://rejectusersentinel:rejectpasswordsentinel@rejecthostsentinel.example/rejectpathsentinel?token=rejecttokensentinel",
+    "file:///rejectpathsentinel?token=rejecttokensentinel",
+    "http://127.0.0.1/rejectpathsentinel?token=rejecttokensentinel",
+])
+def test_native_play_media_redact_rejected_urls(monkeypatch, caplog, url):
+    with TestClient(app) as client:
+        execute = AsyncMock()
+        reconnect = AsyncMock()
+        monkeypatch.setattr(app.state.ha_bridge, "execute", execute)
+        monkeypatch.setattr(app.state.bt_manager, "connect_device", reconnect)
+        caplog.set_level(logging.DEBUG, logger="bl_haos")
+        caplog.set_level(logging.DEBUG, logger="backend.bl_haos")
+        caplog.clear()
+        response = client.post(
+            "/api/native/speakers/10:22:33:44:55:66/command",
+            headers={"Authorization": f"Bearer {app.state.config_store.settings.native_token}"},
+            json={"operation": "play_media", "url": url},
+        )
+        assert response.status_code == 422
+        execute.assert_not_awaited()
+        reconnect.assert_not_awaited()
+        for sentinel in (url, "rejectusersentinel", "rejectpasswordsentinel", "rejecthostsentinel", "rejectpathsentinel", "rejecttokensentinel"):
+            assert sentinel not in caplog.text + response.text
+
+
 def test_native_play_media_rejects_unsafe_url_without_side_effects(monkeypatch):
     with TestClient(app) as client:
         token = app.state.config_store.settings.native_token
@@ -414,6 +563,450 @@ def test_native_command_rejects_inconsistent_media_payload_without_execution(mon
 
     assert response.status_code == 422
     execute.assert_not_awaited()
+
+
+def test_native_queue_start_reaches_bridge_session_with_sanitized_snapshot(monkeypatch, caplog):
+    from backend.bl_haos.bluetooth.constants import A2DP_SINK_UUID, DEVICE_INTERFACE
+    from backend.bl_haos.ha.player import MediaPlayerBridge
+
+    class FakeQueueProcess:
+        def __init__(self, returncode=None):
+            self.returncode = returncode
+            self.stdout = None
+            self.stderr = None
+            self.stdin = None
+
+        async def wait(self):
+            while self.returncode is None:
+                await asyncio.sleep(0.001)
+            return self.returncode
+
+        async def communicate(self):
+            return b"", b""
+
+        def terminate(self):
+            self.returncode = 0
+
+        def kill(self):
+            self.returncode = -9
+
+    spawned = []
+
+    async def process_factory(*args, **_kwargs):
+        spawned.append(args[0])
+        return FakeQueueProcess(returncode=0 if args[0] == "ffprobe" else None)
+
+    async def sink_resolver(_address):
+        return "bluez_output.aa_bb_cc_dd_ee_66.1"
+
+    address = "aa:bb:cc:dd:ee:66"
+    request_address = "AA-BB-CC-DD-EE-66"
+    secret_url = "https://media.example.test/first.mp3?token=queue-route-secret"
+    bridge = MediaPlayerBridge(sink_resolver=sink_resolver, process_factory=process_factory)
+    bridge.warmup_attempts = 0
+    published = []
+
+    async def publish(speaker_address):
+        published.append(speaker_address)
+
+    caplog.set_level(logging.DEBUG, logger="bl_haos")
+    caplog.set_level(logging.DEBUG, logger="backend.bl_haos")
+    with TestClient(app) as client:
+        app.state.bt_manager._on_interfaces_added(
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_66",
+            {
+                DEVICE_INTERFACE: {
+                    "Address": "AA:BB:CC:DD:EE:66",
+                    "Name": "Queue Speaker",
+                    "Adapter": "/org/bluez/hci0",
+                    "UUIDs": [A2DP_SINK_UUID],
+                    "Class": 0x240414,
+                    "Paired": True,
+                    "Trusted": True,
+                    "Connected": True,
+                }
+            },
+        )
+        monkeypatch.setattr(app.state, "ha_bridge", bridge)
+        monkeypatch.setattr(app.state, "publish_native_speaker", publish, raising=False)
+        token = app.state.config_store.settings.native_token
+        endpoint = f"/api/native/speakers/{request_address}/command"
+        body = {
+            "operation": "queue_start",
+            "queue_version": 1,
+            "playlist": "Morning set",
+            "items": [{"url": secret_url, "title": "First track", "artist": "Artist"}],
+        }
+
+        unauthenticated = client.post(endpoint, json=body)
+        assert unauthenticated.status_code == 401
+        assert bridge.playback_sessions == {}
+        assert spawned == []
+
+        response = client.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {token}"},
+            json=body,
+        )
+        assert response.status_code == 200, response.text
+        record = response.json()
+        queue = record["playback"]["queue"]
+        session = bridge.playback_sessions[address]
+        process_pair = bridge.active_processes[address]
+
+        assert record["address"] == address
+        assert record["playback"]["state"] == "playing"
+        assert queue["status"] == "playing"
+        assert queue["playlist"] == "Morning set"
+        assert queue["title"] == "First track"
+        assert queue["artist"] == "Artist"
+        assert queue["index"] == queue["count"] == 1
+        assert queue["shuffle"] is False
+        assert queue["repeat"] == "off"
+        assert session.items[session.index].title == "First track"
+        assert session.processes == process_pair
+        assert len(process_pair) == 2
+        assert [command for command in spawned if command in {"ffmpeg", "pw-play"}] == [
+            "ffmpeg", "pw-play"
+        ]
+        assert published == [address]
+        assert secret_url not in response.text
+        assert "queue-route-secret" not in caplog.text
+
+        async def cleanup():
+            await bridge.execute(address, "stop")
+            await asyncio.gather(*tuple(bridge._background_tasks), return_exceptions=True)
+
+        client.portal.call(cleanup)
+
+        encoded_secret = "https%3A%2F%2Fprivate.example%2Fstream%3Ftoken%3Dencoded-queue-secret"
+        encoded_response = client.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "operation": "queue_start",
+                "queue_version": 1,
+                "playlist": "Encoded title probe",
+                "items": [{"url": f"https://media.example.test/{encoded_secret}"}],
+            },
+        )
+        assert encoded_response.status_code == 200, encoded_response.text
+        encoded_record = encoded_response.json()
+        assert encoded_record["playback"]["queue"].get("title") is None
+        assert encoded_record["playback"].get("title") is None
+        assert "private.example" not in encoded_response.text
+        assert "encoded-queue-secret" not in encoded_response.text
+        assert "private.example" not in caplog.text
+        assert "encoded-queue-secret" not in caplog.text
+        client.portal.call(cleanup)
+
+        deeply_encoded = "http://x"
+        for _ in range(5):
+            deeply_encoded = quote(deeply_encoded, safe="")
+        deep_response = client.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "operation": "queue_start",
+                "queue_version": 1,
+                "playlist": "Deep encoding probe",
+                "items": [{"url": f"https://media.example.test/{deeply_encoded}"}],
+            },
+        )
+        assert deep_response.status_code == 200, deep_response.text
+        deep_record = deep_response.json()
+        assert deep_record["playback"].get("title") is None
+        assert deep_record["playback"]["queue"].get("title") is None
+        assert "http://x" not in deep_response.text
+        assert deeply_encoded not in deep_response.text
+        assert "http://x" not in caplog.text
+        assert deeply_encoded not in caplog.text
+        client.portal.call(cleanup)
+
+
+def test_native_queue_start_does_not_reconnect_or_retry_sink_failure(monkeypatch):
+    from backend.bl_haos.ha.player import MediaPlayerError
+
+    address = "10:22:33:44:55:66"
+    with TestClient(app) as client:
+        app.state.bt_manager._on_interfaces_added(
+            "/org/bluez/hci0/dev_10_22_33_44_55_66",
+            {
+                "org.bluez.Device1": {
+                    "Address": address,
+                    "Name": "Queue Speaker",
+                    "Adapter": "/org/bluez/hci0",
+                    "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                    "Paired": True,
+                    "Trusted": True,
+                    "Connected": True,
+                }
+            },
+        )
+        start_queue = AsyncMock(side_effect=MediaPlayerError("audio sink is unavailable"))
+        reconnect = AsyncMock(return_value=True)
+        monkeypatch.setattr(app.state.ha_bridge, "start_queue", start_queue)
+        monkeypatch.setattr(app.state.bt_manager, "connect_device", reconnect)
+        token = app.state.config_store.settings.native_token
+        response = client.post(
+            f"/api/native/speakers/{address}/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "operation": "queue_start",
+                "queue_version": 1,
+                "playlist": "One item",
+                "items": [{"url": "https://media.example.test/one.mp3", "title": "One"}],
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Native playback command failed"
+    start_queue.assert_awaited_once()
+    reconnect.assert_not_awaited()
+
+
+def test_native_queue_start_rejects_oversized_batch_before_dispatch(monkeypatch):
+    from backend.bl_haos.ha.player import MAX_QUEUE_ITEMS
+    from backend.bl_haos.api.routes import NativeCommandRequest
+    from backend.bl_haos.main import MAX_NATIVE_COMMAND_BODY_BYTES
+    from pydantic import ValidationError
+
+    with TestClient(app) as client:
+        start_queue = AsyncMock()
+        monkeypatch.setattr(app.state.ha_bridge, "start_queue", start_queue)
+        token = app.state.config_store.settings.native_token
+        response = client.post(
+            "/api/native/speakers/10:22:33:44:55:66/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "operation": "queue_start",
+                "queue_version": 1,
+                "playlist": "Too many items",
+                "items": [
+                    {"url": f"https://media.example.test/{index}.mp3"}
+                    for index in range(MAX_QUEUE_ITEMS + 1)
+                ],
+            },
+        )
+        aggregate_body = {
+            "operation": "queue_start",
+            "queue_version": 1,
+            "playlist": "Too much data",
+            "items": [
+                {"url": f"https://media.example.test/{'x' * 1100}"}
+                for _ in range(MAX_QUEUE_ITEMS)
+            ],
+        }
+        aggregate_response = client.post(
+            "/api/native/speakers/10:22:33:44:55:66/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json=aggregate_body,
+        )
+        raw_body = json.dumps({
+            "operation": "queue_start",
+            "queue_version": 1,
+            "playlist": "Whitespace padding",
+            "items": [{"url": "https://media.example.test/one.mp3"}],
+        }).encode() + b" " * (MAX_NATIVE_COMMAND_BODY_BYTES + 1)
+        raw_response = client.post(
+            "/api/native/speakers/10:22:33:44:55:66/command",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            content=raw_body,
+        )
+
+    assert response.status_code == 422
+    assert aggregate_response.status_code == 422
+    assert raw_response.status_code == 413
+    assert raw_response.content == b""
+    with pytest.raises(ValidationError) as caught:
+        NativeCommandRequest.model_validate(aggregate_body)
+    assert "Queue request is too large" in str(caught.value)
+    start_queue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_command_body_limit_counts_chunked_body_without_content_length():
+    from backend.bl_haos.main import (
+        MAX_NATIVE_COMMAND_BODY_BYTES,
+        NativeCommandBodyLimitMiddleware,
+    )
+
+    messages = iter((
+        {"type": "http.request", "body": b"x" * MAX_NATIVE_COMMAND_BODY_BYTES, "more_body": True},
+        {"type": "http.request", "body": b"x", "more_body": False},
+    ))
+    responses = []
+    dispatched = False
+
+    async def receive():
+        return next(messages)
+
+    async def send(message):
+        responses.append(message)
+
+    async def downstream(_scope, _receive, _send):
+        nonlocal dispatched
+        dispatched = True
+
+    middleware = NativeCommandBodyLimitMiddleware(downstream)
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/native/speakers/aa:bb:cc:dd:ee:11/command",
+            "headers": [],
+        },
+        receive,
+        send,
+    )
+
+    assert not dispatched
+    assert responses[0]["status"] == 413
+    assert responses[1]["body"] == b""
+
+
+def test_native_queue_control_contract_is_versioned_and_bounded():
+    from backend.bl_haos.api.routes import NativeCommandRequest
+    from pydantic import ValidationError
+
+    request = NativeCommandRequest.model_validate(
+        {"operation": "next", "queue_version": 1}
+    )
+    assert request.operation == "next"
+    assert request.queue_version == 1
+
+    invalid_payloads = [
+        {"operation": "next", "queue_version": 2},
+        {"operation": "set_shuffle", "queue_version": 1, "shuffle": "yes"},
+        {"operation": "set_repeat", "queue_version": 1, "repeat": "loop"},
+        {"operation": "queue_start", "queue_version": 2, "playlist": "x", "items": [{"url": "https://media.example.test/x"}]},
+        {"operation": "next", "queue_version": 1, "url": "https://media.example.test/x"},
+    ]
+    for payload in invalid_payloads:
+        with pytest.raises(ValidationError):
+            NativeCommandRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize("operation", ["next", "previous"])
+def test_native_queue_navigation_is_single_attempt_and_never_reconnects(monkeypatch, caplog, operation):
+    from backend.bl_haos.ha.player import MediaPlayerError
+
+    address = "10:22:33:44:55:67"
+    with TestClient(app) as client:
+        app.state.bt_manager._on_interfaces_added(
+            "/org/bluez/hci0/dev_10_22_33_44_55_67",
+            {
+                "org.bluez.Device1": {
+                    "Address": address,
+                    "Name": "Queue Speaker",
+                    "Adapter": "/org/bluez/hci0",
+                    "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                    "Paired": True,
+                    "Trusted": True,
+                    "Connected": True,
+                }
+            },
+        )
+        control_queue = AsyncMock(side_effect=MediaPlayerError("audio sink is unavailable"))
+        execute = AsyncMock()
+        reconnect = AsyncMock(return_value=True)
+        monkeypatch.setattr(app.state.ha_bridge, "control_queue", control_queue, raising=False)
+        monkeypatch.setattr(app.state.ha_bridge, "execute", execute)
+        monkeypatch.setattr(app.state.bt_manager, "connect_device", reconnect)
+        token = app.state.config_store.settings.native_token
+        response = client.post(
+            f"/api/native/speakers/{address}/command",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"operation": operation, "queue_version": 1},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Native playback command failed"
+    control_queue.assert_awaited_once_with(address, operation, shuffle=None, repeat=None)
+    execute.assert_not_awaited()
+    reconnect.assert_not_awaited()
+    assert "audio sink is unavailable" not in caplog.text + response.text
+
+
+def test_native_queue_controls_keep_bearer_and_trusted_sink_checks(monkeypatch):
+    address = "10:22:33:44:55:68"
+    with TestClient(app) as client:
+        app.state.bt_manager._on_interfaces_added(
+            "/org/bluez/hci0/dev_10_22_33_44_55_68",
+            {
+                "org.bluez.Device1": {
+                    "Address": address,
+                    "Name": "Untrusted Speaker",
+                    "Adapter": "/org/bluez/hci0",
+                    "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                    "Paired": True,
+                    "Trusted": False,
+                    "Connected": True,
+                }
+            },
+        )
+        control_queue = AsyncMock()
+        monkeypatch.setattr(app.state.ha_bridge, "control_queue", control_queue, raising=False)
+        endpoint = f"/api/native/speakers/{address}/command"
+        body = {"operation": "previous", "queue_version": 1}
+        unauthenticated = client.post(endpoint, json=body)
+        token = app.state.config_store.settings.native_token
+        untrusted = client.post(endpoint, headers={"Authorization": f"Bearer {token}"}, json=body)
+
+    assert unauthenticated.status_code == 401
+    assert untrusted.status_code == 409
+    control_queue.assert_not_awaited()
+
+
+def test_ingress_queue_control_uses_addon_route_without_native_bearer(monkeypatch):
+    address = "10:22:33:44:55:69"
+    with TestClient(app) as client:
+        app.state.bt_manager._on_interfaces_added(
+            "/org/bluez/hci0/dev_10_22_33_44_55_69",
+            {
+                "org.bluez.Device1": {
+                    "Address": address,
+                    "Name": "Ingress Queue Speaker",
+                    "Adapter": "/org/bluez/hci0",
+                    "UUIDs": ["0000110b-0000-1000-8000-00805f9b34fb"],
+                    "Paired": True,
+                    "Trusted": True,
+                    "Connected": True,
+                }
+            },
+        )
+        control_queue = AsyncMock(return_value={"status": "playing"})
+        monkeypatch.setattr(app.state.ha_bridge, "control_queue", control_queue, raising=False)
+        response = client.post(
+            f"/api/devices/{address}/queue/command",
+            json={"queue_version": 1, "operation": "next"},
+        )
+        shuffle_response = client.post(
+            f"/api/devices/{address}/queue/command",
+            json={"queue_version": 1, "operation": "set_shuffle", "shuffle": True},
+        )
+        repeat_response = client.post(
+            f"/api/devices/{address}/queue/command",
+            json={"queue_version": 1, "operation": "set_repeat", "repeat": "all"},
+        )
+        token = app.state.config_store.settings.native_token
+        secret_in_body = client.post(
+            f"/api/devices/{address}/queue/command",
+            json={"queue_version": 1, "operation": "next", "native_token": token},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["playback"]["state"] in {"idle", "playing", "paused"}
+    assert token not in response.text
+    assert shuffle_response.status_code == 200
+    assert repeat_response.status_code == 200
+    assert control_queue.await_args_list == [
+        ((address, "next"), {"shuffle": None, "repeat": None}),
+        ((address, "set_shuffle"), {"shuffle": True, "repeat": None}),
+        ((address, "set_repeat"), {"shuffle": None, "repeat": "all"}),
+    ]
+    assert secret_in_body.status_code == 422
+    assert token not in secret_in_body.text
 
 
 def test_background_spawn_outside_the_loop_disposes_the_coroutine():

@@ -17,7 +17,7 @@ ADDON_SLUG = "bl-haos"
 # Single source of truth for the runtime version. ``backend/tests/test_addon_config.py``
 # asserts it matches ``config.yaml`` so the add-on manifest and the daemon cannot
 # drift apart.
-VERSION = "0.2.67"
+VERSION = "0.2.69"
 
 # Logger namespace shared by every bridge module and the log format the daemon
 # installs at startup.
@@ -197,13 +197,13 @@ PAIRING_WINDOW_SECONDS = 90
 # ---------------------------------------------------------------------------
 # Reconnect policy
 # ---------------------------------------------------------------------------
-RECONNECT_INITIAL_BACKOFF_SECONDS = 1.0
-RECONNECT_BACKOFF_MULTIPLIER = 1.5
-RECONNECT_MIN_BACKOFF_SECONDS = 0.5
-RECONNECT_MAX_BACKOFF_SECONDS = 20.0
+RECONNECT_INITIAL_BACKOFF_SECONDS = 10.0
+RECONNECT_BACKOFF_MULTIPLIER = 2.0
+RECONNECT_MIN_BACKOFF_SECONDS = 10.0
+RECONNECT_MAX_BACKOFF_SECONDS = 120.0
 RECONNECT_POLL_INTERVAL_SECONDS = 0.5
 RECONNECT_MAX_FAILURES_BEFORE_BREAKER = 8
-RECONNECT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 10.0
+RECONNECT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 300.0
 RECONNECT_SELF_HEAL_FAILURE_THRESHOLD = 2
 RECONNECT_MIN_FAILURES_AFTER_HEAL = 3
 RECONNECT_BACKOFF_JITTER = 0.15

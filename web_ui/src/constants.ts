@@ -19,6 +19,10 @@ export const WS_PUBLIC_PATH = '/ws';
 export const JSON_CONTENT_TYPE = 'application/json';
 export const DEFAULT_PIN = '0000';
 export const PAYLOAD_DETAIL_KEY = 'detail';
+export const MAX_QUEUE_DISPLAY_LENGTH = 128;
+export const MAX_QUEUE_ITEMS = 250;
+export const MAX_QUEUE_SECONDS = 315576000;
+export const MAX_QUEUE_TIMESTAMP = 4102444800;
 
 // --- Parameterised paths -------------------------------------------------
 export const apiAdapterPower = (name: string) => `${API_ADAPTERS}/${name}/power`;
@@ -26,6 +30,7 @@ export const apiDevices = (audioOnly: boolean) => `${API_PREFIX}/devices?audio_o
 export const apiDeviceConnect = (address: string) => `${API_PREFIX}/devices/${address}/connect`;
 export const apiDeviceDisconnect = (address: string) => `${API_PREFIX}/devices/${address}/disconnect`;
 export const apiDeviceVolume = (address: string) => `${API_PREFIX}/devices/${address}/volume`;
+export const apiDeviceQueueCommand = (address: string) => `${API_PREFIX}/devices/${address}/queue/command`;
 export const apiDevice = (address: string) => `${API_PREFIX}/devices/${address}`;
 export const apiSpeakerSettings = (address: string) => `${API_SETTINGS}/speakers/${address}`;
 

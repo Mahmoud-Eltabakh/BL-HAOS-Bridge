@@ -5,7 +5,7 @@ import { DiscoveryModal } from './components/DiscoveryModal';
 import { AdapterStatus } from './components/AdapterStatus';
 import { SettingsModal } from './components/SettingsModal';
 import { apiClient, DeviceInfo, NativeDiagnostics } from './api/client';
-import { AlertCircle, Bluetooth, Plus, Volume2, RefreshCw, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react';
+import { AlertCircle, Bluetooth, Plus, Volume2, RefreshCw, ChevronDown, ChevronUp, ShieldCheck, Library } from 'lucide-react';
 
 export const App: React.FC = () => {
   const { adapters, devices, isScanning, wsConnected, error: bluetoothError, refreshData } = useBluetoothEvents();
@@ -92,6 +92,11 @@ export const App: React.FC = () => {
 
       {/* Integration Status Accordion */}
       <section className="neu-surface mt-4 rounded-lg overflow-hidden transition-all" aria-live="polite">
+        <a href="/bl-haos-media" target="_top" rel="noopener noreferrer"
+          className="neu-button min-h-11 m-3 px-4 py-2 inline-flex items-center gap-2 rounded-lg text-sm text-blue-300 focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-cyan-300 focus-visible:outline-offset-2">
+          <Library className="w-4 h-4" aria-hidden="true" />
+          <span>Open Media Catalog</span>
+        </a>
         <button
           onClick={() => setShowDiagnostics(!showDiagnostics)}
           className="w-full px-3 py-2 flex items-center justify-between text-xs neu-text-muted hover:text-white transition"

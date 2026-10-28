@@ -1,6 +1,35 @@
 # BL-HAOS
 ## Bluetooth Audio Adapter for Home Assistant OS
 
+### Phase 24 Media Catalog
+
+Integrated release 0.2.69 is undeployed, including the pre-existing reconnect
+fix. Local Core 2026.10.3 checks do not establish actual provider layout,
+session expiry or physical playback. Deployment and any further restart need
+separate authorization.
+
+After authorized installation, **Open Media Catalog** beside Home Assistant
+Native integration opens HA's `/bl-haos-media` panel; it is navigation-only.
+Alternatively use **Native Browse Media** on a native speaker. In **Play on**,
+select exactly one connected BL-HAOS speaker, browse audio/provider playlists
+and press **Play**. The opaque reference reaches native `media_player.play_media`
+unchanged; HA owns provider authentication and reference resolution. The bridge
+receives only the resolved playable request for decoding. A provider playlist
+stays one reference, not a local queue; submission does not prove audible playback.
+
+The panel does not store browser/add-on HA/provider credentials, use direct
+provider APIs, or accept raw URLs. Existing native direct-URL support is not a
+catalog fallback. The local Phase 25 candidate uses the authenticated panel and
+Home Assistant-owned storage for custom playlists of ordered Home Assistant
+media references and one-reference provider-playlist shortcuts; provider tracks
+are not copied. Explicit availability checks browse the exact HA media reference
+only; they do not resolve or play media and never rewrite saved IDs. This is
+local/mock behavior, not production acceptance. Phase 24 production requirements
+remain pending, T-24-15 remains OPEN/HIGH, and T-24-16 remains OPEN/MEDIUM. Phase
+26 owns launch, playback, and queue controls. Release and deployment are not
+approved. Root TESTING.md separates local SIL from authorized HAOS acceptance.
+Retired Docker E2E and fixture screenshots are not host proof.
+
 [![Home Assistant Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-blue.svg)](https://www.home-assistant.io)
 [![Architecture](https://img.shields.io/badge/arch-aarch64%20%7C%20amd64%20%7C%20armv7-green.svg)](build.yaml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -19,7 +48,7 @@
 - **Volume control that stays in sync**: `media_player.set_volume` writes straight to the speaker's A2DP sink, which `bluez5.enable-hw-volume` maps onto the speaker's own AVRCP volume. The bridge also reads the sink's real level back, so a change made with the speaker's own buttons reaches Home Assistant and the dashboard - see [Volume](DOCS.md#volume).
 - **Stutter-free playback**: the player clients are given an explicit buffer (500 ms by default, `BLHAOS_PLAYBACK_BUFFER_MS` to change it) instead of the small client default, because a Bluetooth link delivers in bursts and the speaker drains its own buffer at a fixed rate.
 - **A codec choice that does not drift**: LDAC is pinned to a steady bitrate by default (`sq`, 660 kbps) because its own `auto` mode adapts the bitrate while a song plays - heard as the quality changing mid-song. `hq`/`mq`/`auto` are one add-on option away, and the codec itself is pinnable per speaker in the dashboard.
-- **Aggressive Auto-Reconnect Engine**: Background daemon actively monitors connection health and instantly reconnects speakers when they wake from sleep or re-enter range.
+- **Conservative Scheduled Reconnection**: One bounded connection attempt at a time per adapter, with exponential retry delays and a five-minute cooldown after eight failures. Busy responses and presence advertisements preserve pacing; automatic attempts never reset a live link or remove pairing. Hardware/HAOS reconnect soak is pending authorized deployment; local tests do not prove the live fault is fixed.
 - **Multi-Adapter Support**: Run multiple Bluetooth USB dongles alongside onboard Bluetooth controllers with independent speaker assignments.
 
 ---
