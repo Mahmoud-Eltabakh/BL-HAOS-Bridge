@@ -25,8 +25,8 @@ media references and one-reference provider-playlist shortcuts; provider tracks
 are not copied. Explicit availability checks browse the exact HA media reference
 only; they do not resolve or play media and never rewrite saved IDs. This is
 local/mock behavior, not production acceptance. Phase 24 production requirements
-remain pending, T-24-15 remains OPEN/HIGH, and T-24-16 remains OPEN/MEDIUM. Phase
-26 owns launch, playback, and queue controls. Release and deployment are not
+remain pending, T-24-15 remains OPEN/HIGH, and T-24-16 remains OPEN/MEDIUM.
+Phase 26 owns launch, playback, and queue controls. Release and deployment are not
 approved. Root TESTING.md separates local SIL from authorized HAOS acceptance.
 Retired Docker E2E and fixture screenshots are not host proof.
 

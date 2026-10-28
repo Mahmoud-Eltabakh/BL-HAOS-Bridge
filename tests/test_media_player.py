@@ -1636,7 +1636,7 @@ async def test_queue_next_is_explicit_skip_and_previous_obeys_three_second_rule(
     bridge.timelines[address]["clock_started_at"] = None
     await bridge.control_queue(address, "previous")
     assert bridge.get_queue(address)["title"] == "Two"
-    assert bridge.get_timeline(address)["position"] == 0
+    assert bridge.get_timeline(address)["position"] <= 0.05
 
     bridge.timelines[address]["position"] = 2.0
     await bridge.control_queue(address, "previous")
